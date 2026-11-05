@@ -221,8 +221,9 @@ type fixOutcome struct {
 	postWrite error
 }
 
-// lintFixOne parses, applies safe remediation, saves, re-lints.
-// Re-lint keeps "remaining" accurate (e.g. an encoder stamp in a vendor string survives Clear).
+// lintFixOne parses, applies safe remediation, saves, and lints the result. The Document a save
+// returns is parsed from the written bytes, so "remaining" is accurate (e.g. an encoder stamp in a
+// vendor string survives Clear).
 func lintFixOne(ctx context.Context, path string, extra ...wl.WriteOption) (fixOutcome, error) {
 	doc, err := wl.ParseFile(ctx, path)
 	if err != nil {
@@ -240,23 +241,13 @@ func lintFixOne(ctx context.Context, path string, extra ...wl.WriteOption) (fixO
 	if err != nil {
 		return fixOutcome{}, err
 	}
-	_, res, err := plan.Execute(ctx, wl.SaveBack())
+	saved, res, err := plan.Execute(ctx, wl.SaveBack())
 	// Outcome follows res.Committed, not err (see writeFailed).
 	if writeFailed(res, err) {
 		return fixOutcome{}, err
 	}
-	postWrite := err // named: struct literal below is past other err assignments
-	// Committed: re-parse for post-fix state. Uncommitted: doc.Lint() still valid.
-	var remaining []wl.Finding
-	if res.Committed {
-		after, err := wl.ParseFile(ctx, path)
-		if err != nil {
-			return fixOutcome{}, err
-		}
-		remaining = after.Lint()
-	} else {
-		remaining = doc.Lint()
-	}
+	// A no-op save returns doc itself.
+	remaining := saved.Lint()
 	// No-op plan carries the NoOpPlan sentinel in operations; clear it for JSON/render.
 	operations := plan.Report().Operations
 	if plan.IsNoOp() {
@@ -279,7 +270,7 @@ func lintFixOne(ctx context.Context, path string, extra ...wl.WriteOption) (fixO
 		remaining:  remaining,
 		committed:  res.Committed,
 		lost:       lost,
-		postWrite:  postWrite,
+		postWrite:  err,
 	}, nil
 }
 

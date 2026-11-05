@@ -19,8 +19,8 @@ func hasInheritedWarn(ws []core.Warning) bool {
 }
 
 // TestStripEncoderNeutralizesOpusVendor checks that --strip-encoder on a
-// transcoder-stamped Opus vendor string is a write, and the result's warnings match
-// the neutralized vendor.
+// transcoder-stamped Opus vendor string is a write, and the written file carries the
+// neutralized vendor and no inherited-encoder warning.
 func TestStripEncoderNeutralizesOpusVendor(t *testing.T) {
 	const serial = 0x4F4747
 	head := []byte{'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 2, 0, 0, 0x80, 0xBB, 0, 0, 0, 0, 0}
@@ -48,11 +48,14 @@ func TestStripEncoderNeutralizesOpusVendor(t *testing.T) {
 	if plan.NoOp {
 		t.Fatal("--strip-encoder on a transcoded-but-otherwise-clean Opus must not be a no-op")
 	}
-	rd := plan.Result.Native.(*doc)
-	if rd.vendor != vorbis.WaxLabelVendor {
-		t.Errorf("result vendor = %q, want %q", rd.vendor, vorbis.WaxLabelVendor)
+	written, err := parse(context.Background(), core.BytesSource(renderPlan(t, stream, plan)), core.DefaultParseOptions())
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
 	}
-	if hasInheritedWarn(plan.Result.Warnings) {
-		t.Error("the result still carries an inherited-encoder warning")
+	if v := written.Native.(*doc).vendor; v != vorbis.WaxLabelVendor {
+		t.Errorf("written vendor = %q, want %q", v, vorbis.WaxLabelVendor)
+	}
+	if hasInheritedWarn(written.Warnings) {
+		t.Error("the written file still carries an inherited-encoder warning")
 	}
 }

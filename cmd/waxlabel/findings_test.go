@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -816,6 +818,41 @@ func TestSetVerifyConfirmation(t *testing.T) {
 	}
 }
 
+// Clearing the only ID3v2 frame of an MP3 with a zero byte before its first frame drops the tag and
+// leaves the zero byte first, so the output no longer reads as MP3: the save refuses as invalid data,
+// with or without --verify, and leaves the file as it was with no temp behind.
+func TestSetRefusesOutputThatNoLongerIdentifies(t *testing.T) {
+	audio, err := os.ReadFile(notagsMP3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Old Title")), []byte{0}, audio)
+	for _, args := range [][]string{{"set", "--clear", "TITLE", "--verify"}, {"set", "--clear", "TITLE"}, {"--json", "set", "--clear", "TITLE", "--verify"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			dir := t.TempDir()
+			file := filepath.Join(dir, "zero-after-tag.mp3")
+			if err := os.WriteFile(file, src, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			out, stderr, code := runCLI(t, append(args, file)...)
+			if code != 4 {
+				t.Fatalf("exit = %d, want 4 (invalid-data); stdout=%s stderr=%s", code, out, stderr)
+			}
+			if args[0] == "--json" {
+				if elems := decodeJSONList[jsonErrorEntry](t, out); len(elems) != 1 || elems[0].Error.Code != "invalid-data" {
+					t.Errorf("JSON = %s, want one invalid-data error", out)
+				}
+			} else if !strings.Contains(stderr, "invalid data") || !strings.Contains(stderr, "MP3") {
+				t.Errorf("stderr should say the written file no longer reads as MP3:\n%s", stderr)
+			}
+			if got, _ := os.ReadFile(file); !bytes.Equal(got, src) {
+				t.Error("the refused save changed the file")
+			}
+			assertNoTempsIn(t, dir)
+		})
+	}
+}
+
 // Stray positional from unquoted value refused; set adds "nothing was written", plan does not.
 func TestUnquotedValueHint(t *testing.T) {
 	file := copyFixture(t, sampleFLAC)
@@ -889,7 +926,7 @@ func TestEmptyFilenameUsage(t *testing.T) {
 
 func TestDiffPerFilePathPrefix(t *testing.T) {
 	t.Parallel()
-	png := writeTempImage(t, "red.png", minimalPNG())
+	png := writeTempImage(t, "red.png", testfile.PNG())
 	_, errb, code := runCLI(t, "diff", png, sampleFLAC)
 	if code < 2 {
 		t.Fatalf("diff of a non-audio file exit = %d, want a real error (>= 2); stderr=%s", code, errb)

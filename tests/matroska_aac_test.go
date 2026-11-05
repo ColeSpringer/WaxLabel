@@ -7,24 +7,26 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // mkFloat builds an EBML 8-byte float element, the form the two frequency elements take.
 func mkFloat(id uint64, f float64) []byte {
 	var b [8]byte
 	binary.BigEndian.PutUint64(b[:], math.Float64bits(f))
-	return mkEl(id, b[:])
+	return testfile.El(id, b[:])
 }
 
 // mkAudioTrackFile assembles a one-track Matroska around the given CodecID, Audio children,
 // and CodecPrivate. A cluster carries the essence so the file can be hashed.
 func mkAudioTrackFile(codecID string, private []byte, audioKids ...[]byte) []byte {
-	entry := concat(mkUint(idTrackType, 2), mkStr(idCodecID, codecID), mkEl(idAudio, concat(audioKids...)))
+	entry := concat(testfile.Uint(testfile.IDTrackType, 2), mkStr(testfile.IDCodecID, codecID), testfile.El(idAudio, concat(audioKids...)))
 	if private != nil {
-		entry = append(entry, mkEl(idCodecPrivate, private)...)
+		entry = append(entry, testfile.El(idCodecPrivate, private)...)
 	}
-	seg := concat(mkAudioCluster(), mkEl(idTracks, mkEl(idTrackEntry, entry)))
-	return concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkEl(idSegment, seg))
+	seg := concat(testfile.AudioCluster(0), testfile.El(testfile.IDTracks, testfile.El(testfile.IDTrackEntry, entry)))
+	return concat(testfile.EBMLHeader("matroska"), testfile.El(testfile.IDSegment, seg))
 }
 
 // An SBR track declares the core rate in SamplingFrequency and the played rate in
@@ -34,9 +36,9 @@ func TestMatroskaOutputSamplingFrequency(t *testing.T) {
 	t.Parallel()
 	asc := mp4ASC(t, "2b920800") // hierarchical SBR: core 22050, extension 44100
 	withOutput := mkAudioTrackFile("A_AAC/MPEG4/LC/SBR", asc,
-		mkFloat(idSampFreq, 22050), mkFloat(idOutSampFreq, 44100), mkUint(idChannels, 2))
+		mkFloat(idSampFreq, 22050), mkFloat(idOutSampFreq, 44100), testfile.Uint(idChannels, 2))
 	without := mkAudioTrackFile("A_AAC/MPEG4/LC/SBR", asc,
-		mkFloat(idSampFreq, 22050), mkUint(idChannels, 2))
+		mkFloat(idSampFreq, 22050), testfile.Uint(idChannels, 2))
 
 	tr := mustParseBytes(t, withOutput).Properties().First()
 	if tr.SampleRate != 44100 || tr.Channels != 2 {
@@ -73,7 +75,7 @@ func TestMatroskaAACRateFromCodecPrivate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			data := mkAudioTrackFile("A_AAC", mp4ASC(t, tc.asc),
-				mkFloat(idSampFreq, tc.coreRate), mkUint(idChannels, tc.coreChannels))
+				mkFloat(idSampFreq, tc.coreRate), testfile.Uint(idChannels, tc.coreChannels))
 			tr := mustParseBytes(t, data).Properties().First()
 			if tr.SampleRate != tc.rate || tr.CodecProfile != tc.profile {
 				t.Errorf("track = %d Hz / %q, want %d/%q", tr.SampleRate, tr.CodecProfile, tc.rate, tc.profile)
@@ -92,7 +94,7 @@ func TestMatroskaAACRateFromCodecPrivate(t *testing.T) {
 // CodecPrivate and "HE-AAC" without one.
 func TestMatroskaAACCodecIDSBRSurvivesSilentConfig(t *testing.T) {
 	t.Parallel()
-	kids := []([]byte){mkFloat(idSampFreq, 22050), mkUint(idChannels, 2)}
+	kids := []([]byte){mkFloat(idSampFreq, 22050), testfile.Uint(idChannels, 2)}
 	silent := mkAudioTrackFile("A_AAC/MPEG4/LC/SBR", mp4ASC(t, "1390"), kids...)
 	none := mkAudioTrackFile("A_AAC/MPEG4/LC/SBR", nil, kids...)
 	for name, data := range map[string][]byte{"silent config": silent, "no config": none} {
@@ -113,7 +115,7 @@ func TestMatroskaAACProfileFallsBackToCodecID(t *testing.T) {
 	t.Parallel()
 	// Object type 17 (error-resilient AAC LC): a real type with no distinguishing name here.
 	data := mkAudioTrackFile("A_AAC/MPEG4/LC", mp4ASC(t, "8a20"),
-		mkFloat(idSampFreq, 44100), mkUint(idChannels, 2))
+		mkFloat(idSampFreq, 44100), testfile.Uint(idChannels, 2))
 	tr := mustParseBytes(t, data).Properties().First()
 	if tr.Codec != "AAC" || tr.CodecProfile != "AAC LC" {
 		t.Errorf("codec = %q/%q, want AAC with the CodecID's AAC LC", tr.Codec, tr.CodecProfile)
@@ -128,7 +130,7 @@ func TestMatroskaAACProfileFallsBackToCodecID(t *testing.T) {
 func TestMatroskaOutputSamplingFrequencyBeatsCodecPrivate(t *testing.T) {
 	t.Parallel()
 	data := mkAudioTrackFile("A_AAC", mp4ASC(t, "2b920800"),
-		mkFloat(idSampFreq, 22050), mkFloat(idOutSampFreq, 32000), mkUint(idChannels, 2))
+		mkFloat(idSampFreq, 22050), mkFloat(idOutSampFreq, 32000), testfile.Uint(idChannels, 2))
 	if tr := mustParseBytes(t, data).Properties().First(); tr.SampleRate != 32000 {
 		t.Errorf("SampleRate = %d, want the declared 32000", tr.SampleRate)
 	}
@@ -140,7 +142,7 @@ func TestMatroskaHostileOutputSamplingFrequency(t *testing.T) {
 	t.Parallel()
 	for _, f := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), -44100, 0, math.MaxInt32} {
 		data := mkAudioTrackFile("A_FLAC", nil,
-			mkFloat(idSampFreq, 22050), mkFloat(idOutSampFreq, f), mkUint(idChannels, 2))
+			mkFloat(idSampFreq, 22050), mkFloat(idOutSampFreq, f), testfile.Uint(idChannels, 2))
 		if tr := mustParseBytes(t, data).Properties().First(); tr.SampleRate != 22050 {
 			t.Errorf("output rate %v: SampleRate = %d, want 22050", f, tr.SampleRate)
 		}
@@ -164,7 +166,7 @@ func TestMatroskaAACProfileFromCodecID(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.codecID, func(t *testing.T) {
 			t.Parallel()
-			data := mkAudioTrackFile(tc.codecID, nil, mkFloat(idSampFreq, 44100), mkUint(idChannels, 2))
+			data := mkAudioTrackFile(tc.codecID, nil, mkFloat(idSampFreq, 44100), testfile.Uint(idChannels, 2))
 			tr := mustParseBytes(t, data).Properties().First()
 			if tr.Codec != "AAC" || tr.CodecProfile != tc.profile {
 				t.Errorf("codec = %q/%q, want AAC/%q", tr.Codec, tr.CodecProfile, tc.profile)
@@ -182,7 +184,7 @@ func TestMatroskaLargeCodecPrivateReadsPrefixOnly(t *testing.T) {
 	t.Parallel()
 	asc := mp4ASC(t, "2b920800")
 	padded := append(append([]byte(nil), asc...), make([]byte, 4<<20)...)
-	kids := []([]byte){mkFloat(idSampFreq, 22050), mkUint(idChannels, 2)}
+	kids := []([]byte){mkFloat(idSampFreq, 22050), testfile.Uint(idChannels, 2)}
 	short := mustParseBytes(t, mkAudioTrackFile("A_AAC", asc, kids...)).Properties().First()
 	long := mustParseBytes(t, mkAudioTrackFile("A_AAC", padded, kids...)).Properties().First()
 	if short.SampleRate != long.SampleRate || short.CodecProfile != long.CodecProfile {
@@ -199,7 +201,7 @@ func TestMatroskaLargeCodecPrivateReadsPrefixOnly(t *testing.T) {
 func TestMatroskaNonAACCodecPrivateIgnored(t *testing.T) {
 	t.Parallel()
 	data := mkAudioTrackFile("A_FLAC", mp4ASC(t, "2b920800"),
-		mkFloat(idSampFreq, 44100), mkUint(idChannels, 2), mkUint(idBitDepth, 16))
+		mkFloat(idSampFreq, 44100), testfile.Uint(idChannels, 2), testfile.Uint(idBitDepth, 16))
 	tr := mustParseBytes(t, data).Properties().First()
 	if tr.Codec != "FLAC" || tr.CodecProfile != "" || tr.SampleRate != 44100 {
 		t.Errorf("track = %q/%q at %d Hz, want FLAC with no profile at 44100", tr.Codec, tr.CodecProfile, tr.SampleRate)

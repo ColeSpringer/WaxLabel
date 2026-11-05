@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -56,10 +57,7 @@ func TestTrailingBytesReported(t *testing.T) {
 // other RIFF region: bytes after the last chunk but still inside the declared container size, which
 // the writer keeps counted in the recomputed size rather than moving outside it.
 func TestTrailingBytesInsideContainer(t *testing.T) {
-	body := append([]byte("WAVE"), wavFmtPCM()...)
-	body = append(body, wavData(400)...)
-	body = append(body, junk...)
-	data := append(append([]byte("RIFF"), wavLE32(len(body))...), body...)
+	data := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVData(400), junk)
 
 	doc := mustParseBytes(t, data)
 	if !lintHasCode(doc, "trailing-bytes") {
@@ -121,10 +119,7 @@ func TestMP4AppendedJunkReported(t *testing.T) {
 // RIFF/IFF walk stops on a well-formed ID3v1 trailer by shape, so it knows exactly what those 128
 // bytes are. Reporting them as bytes that belong to nothing would be false.
 func TestInContainerID3v1NamedNotCalledJunk(t *testing.T) {
-	body := append([]byte("WAVE"), wavFmtPCM()...)
-	body = append(body, wavData(400)...)
-	body = append(body, id3v1("Title", "", "", "2021", "", 255)...)
-	data := append(append([]byte("RIFF"), wavLE32(len(body))...), body...)
+	data := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVData(400), testfile.ID3v1("Title", "", "", "2021", "", 255))
 
 	doc := mustParseBytes(t, data)
 	var msg string

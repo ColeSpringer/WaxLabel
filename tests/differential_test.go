@@ -12,6 +12,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -68,7 +69,7 @@ func TestDifferentialFFmpegAcceptsOurOutput(t *testing.T) {
 	path := copyToTemp(t, sampleFLAC)
 	doc := mustParseFile(t, path)
 	plan, err := doc.Edit().Set(tag.Title, "Valid FLAC").AddPicture(wl.Picture{
-		Type: wl.PicFrontCover, Data: tinyPNG(),
+		Type: wl.PicFrontCover, Data: testfile.PNG(),
 	}).Prepare()
 	if err != nil {
 		t.Fatal(err)

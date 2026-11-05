@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // Adding a description to an existing MP4 cover with no other change is a no-op write: the covr
@@ -16,7 +17,7 @@ func TestMP4PictureMetadataWarningSurvivesNoOp(t *testing.T) {
 	// Build an m4a carrying a plain front cover (no description).
 	base := readFixture(t, "../testdata/notags.m4a")
 	withCoverPlan, err := mustParseBytes(t, base).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatalf("setup prepare: %v", err)
 	}

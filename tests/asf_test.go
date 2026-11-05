@@ -13,6 +13,7 @@ import (
 	"unicode/utf16"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -357,7 +358,7 @@ func TestWMADuplicateValueFolded(t *testing.T) {
 // WM/Picture descriptor, including its role and description; which ASF stores and most other
 // picture conventions do not.
 func TestWMAPicture(t *testing.T) {
-	png := tinyPNG()
+	png := testfile.PNG()
 	data := asfFile(
 		asfStreamProperties(0x0161, 2, 44100, 16),
 		asfExtContentDescription(
@@ -383,7 +384,7 @@ func TestWMAPicture(t *testing.T) {
 // large cover is written into the Header Extension's Metadata objects rather than the Extended
 // Content Description, whose value length is only 16 bits.
 func TestWMAPictureInMetadataObject(t *testing.T) {
-	png := tinyPNG()
+	png := testfile.PNG()
 	data := asfFile(
 		asfStreamProperties(0x0161, 2, 44100, 16),
 		asfHeaderExtension(

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -13,29 +14,6 @@ const (
 	idSeekID       = 0x53AB
 	idSeekPosition = 0x53AC
 )
-
-// minWidthVINT encodes n as the shortest valid EBML data-size VINT. The shared sizeVINT helper
-// always emits 8 bytes, so it cannot exercise width-changing Segment sizes.
-func minWidthVINT(n int) []byte {
-	v := uint64(n)
-	for w := 1; w <= 8; w++ {
-		if v < uint64(1)<<(7*w)-1 {
-			b := make([]byte, w)
-			for i := w - 1; i >= 0; i-- {
-				b[i] = byte(v)
-				v >>= 8
-			}
-			b[0] |= 0x80 >> (w - 1) // width marker bit
-			return b
-		}
-	}
-	return sizeVINT(n) // unreachable for test-sized bodies
-}
-
-// mkSegmentMinWidth wraps body in a Segment whose data-size VINT is minimal width.
-func mkSegmentMinWidth(body []byte) []byte {
-	return concat(idToBytes(idSegment), minWidthVINT(len(body)), body)
-}
 
 // segVINTWidth returns the byte width of the Segment data-size VINT in a Matroska file.
 func segVINTWidth(t *testing.T, data []byte) int {
@@ -50,7 +28,7 @@ func segVINTWidth(t *testing.T, data []byte) int {
 	}
 	segOff := idn + szn + int(sz)
 	id, sidn, ok := readVint(data, segOff, true)
-	if !ok || id != idSegment {
+	if !ok || id != testfile.IDSegment {
 		t.Fatalf("expected Segment at %d, got %#x", segOff, id)
 	}
 	_, w, ok := readVint(data, segOff+sidn, false)
@@ -69,32 +47,9 @@ func assertSegmentVINTWidened(t *testing.T, src, out []byte) {
 	}
 }
 
-// buildMinSegMultiCluster is buildMultiClusterMKA's trailing-Cues layout wrapped in a minimal-width
-// Segment VINT.
-func buildMinSegMultiCluster(t *testing.T, title string) []byte {
-	t.Helper()
-	info := mkEl(idInfo, mkStr(idSegTitle, title))
-	tracks := mkEl(idTracks, mkEl(idTrackEntry, concat(
-		mkUint(idTrackType, 2), // audio
-		mkStr(idCodecID, "A_PCM/INT/LIT"),
-	)))
-	pre := len(info) + len(tracks)
-	c0, c1, c2 := mkAudioClusterTS(0), mkAudioClusterTS(1), mkAudioClusterTS(2)
-	mkCues := func(o0, o1, o2 int) []byte {
-		return mkEl(idCues, concat(mkCuePointAt(0, o0), mkCuePointAt(1, o1), mkCuePointAt(2, o2)))
-	}
-	o0 := pre
-	o1, o2 := o0+len(c0), o0+len(c0)+len(c1)
-	if o2 > 0xFFFF {
-		t.Fatalf("setup: cluster offset %d exceeds the 2-byte cue slot before any edit", o2)
-	}
-	body := concat(info, tracks, c0, c1, c2, mkCues(o0, o1, o2))
-	return concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkSegmentMinWidth(body))
-}
-
 // checks chained edits after a Segment size VINT widens.
 func TestMatroskaChainedEditAcrossSegmentVINTWidthCues(t *testing.T) {
-	src := buildMinSegMultiCluster(t, "x")
+	src := testfile.MultiCluster(false, true)
 	if got := mustParseBytes(t, src).Fields().Title; got != "x" {
 		t.Fatalf("source title = %q, want x", got)
 	}
@@ -105,7 +60,7 @@ func TestMatroskaChainedEditAcrossSegmentVINTWidthCues(t *testing.T) {
 	assertSegmentVINTWidened(t, src, out1)
 	assertAllCuesPointAtClusters(t, out1, true)
 
-	// The second edit runs on the returned document without reparsing it first.
+	// The second edit starts from the Document the first write returned.
 	out2, _ := saveMatroska(t, out1, doc1.Edit().Set(tag.Artist, "A2"))
 	assertAllCuesPointAtClusters(t, out2, true)
 	essenceUnchanged(t, src, out2)
@@ -119,27 +74,27 @@ func TestMatroskaChainedEditAcrossSegmentVINTWidthCues(t *testing.T) {
 // SeekHead to be rebuilt with updated positions.
 func buildMinSegSeekHeadMKA(t *testing.T, title string) []byte {
 	t.Helper()
-	info := mkEl(idInfo, mkStr(idSegTitle, title))
-	cluster := mkAudioCluster()
-	tags := mkEl(idTags, mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"))))
+	info := testfile.El(testfile.IDInfo, mkStr(testfile.IDSegTitle, title))
+	cluster := testfile.AudioCluster(0)
+	tags := testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ARTIST", "AA"))))
 
 	seek := func(oInfo, oTags int) []byte {
 		entry := func(id uint64, pos int) []byte {
-			return mkEl(idSeek, concat(mkEl(idSeekID, idToBytes(id)), mkUint(idSeekPosition, uint64(pos))))
+			return testfile.El(idSeek, concat(testfile.El(idSeekID, testfile.IDBytes(id)), testfile.Uint(idSeekPosition, uint64(pos))))
 		}
-		return mkEl(idSeekHead, concat(entry(idInfo, oInfo), entry(idTags, oTags)))
+		return testfile.El(idSeekHead, concat(entry(testfile.IDInfo, oInfo), entry(testfile.IDTags, oTags)))
 	}
 	seekLen := len(seek(0, 0)) // fixed 8-byte position slots: length is value-independent
 	oInfo := seekLen
 	oTags := seekLen + len(info) + len(cluster)
 	body := concat(seek(oInfo, oTags), info, cluster, tags)
-	return concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkSegmentMinWidth(body))
+	return concat(testfile.EBMLHeader("matroska"), testfile.MinWidthSegment(body))
 }
 
 // assertSeekEntriesResolve: each SeekPosition points at a top-level element matching SeekID.
 func assertSeekEntriesResolve(t *testing.T, data []byte) {
 	t.Helper()
-	_, segData, segEnd, ok := elemRange(data, 0, len(data), idSegment, nil)
+	_, segData, segEnd, ok := elemRange(data, 0, len(data), testfile.IDSegment, nil)
 	if !ok {
 		t.Fatal("no Segment in output")
 	}

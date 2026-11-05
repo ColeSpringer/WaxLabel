@@ -10,6 +10,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -122,8 +123,8 @@ func TestRemovePicturesMatchOnce(t *testing.T) {
 	doc := mustParseFile(t, sampleFLAC)
 	base := len(doc.Pictures())
 	ed := doc.Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).
-		AddPicture(wl.Picture{Type: wl.PicBackCover, Data: tinyPNG()})
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
+		AddPicture(wl.Picture{Type: wl.PicBackCover, Data: testfile.PNG()})
 	calls := 0
 	ed.RemovePictures(func(wl.Picture) bool { calls++; return false })
 	if want := base + 2; calls != want {
@@ -340,7 +341,7 @@ func TestRejectNULInEditValues(t *testing.T) {
 	// A NUL in an added picture's description is rejected (the PNG bytes are valid, so
 	// only the description triggers it).
 	if _, err := mustParseFile(t, path).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG(), Description: "desc\x00rest"}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG(), Description: "desc\x00rest"}).
 		Prepare(); !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("NUL in picture description: err = %v, want ErrInvalidData", err)
 	}
@@ -363,9 +364,9 @@ func TestRejectNULInEditValues(t *testing.T) {
 // contradicting one.
 func TestPictureMIMESniffReconcile(t *testing.T) {
 	// Embed path: PNG bytes wrongly declared JPEG with a bogus width; both corrected.
-	embed := wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Width: 999, Data: tinyPNG()}
+	embed := wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Width: 999, Data: testfile.PNG()}
 	if !embed.SniffAuthoritative() {
-		t.Fatal("tinyPNG should sniff as a recognized image")
+		t.Fatal("testfile.PNG should sniff as a recognized image")
 	}
 	if embed.MIME != "image/png" {
 		t.Errorf("authoritative MIME = %q, want image/png (bytes win over the caller's lie)", embed.MIME)
@@ -377,9 +378,9 @@ func TestPictureMIMESniffReconcile(t *testing.T) {
 	// SniffInto (fill-only) in isolation: a set MIME that disagrees with the bytes is left as
 	// is and only an empty field is filled. This is the method contract, not the codec read
 	// path; the decoders call SniffAuthoritative, so dump reports the sniffed type.
-	read := wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Data: tinyPNG()}
+	read := wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Data: testfile.PNG()}
 	if !read.SniffInto() {
-		t.Fatal("tinyPNG should sniff as a recognized image")
+		t.Fatal("testfile.PNG should sniff as a recognized image")
 	}
 	if read.MIME != "image/jpeg" {
 		t.Errorf("SniffInto MIME = %q, want the set image/jpeg preserved (fill-only leaves it)", read.MIME)

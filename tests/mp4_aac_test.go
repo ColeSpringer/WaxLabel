@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // mp4ZeroConfig returns a copy of an MP4 with the esds descriptor payload zeroed, so the codec
@@ -38,7 +40,7 @@ func mp4ASC(t *testing.T, s string) []byte {
 // carries the given AudioSpecificConfig, with the media timescale set independently so a
 // test can withhold the second witness the implicit-SBR rule needs.
 func mp4AACFile(entryRate, entryChannels, timescale int, esds []byte) []byte {
-	return mp4AssembleStsd(mp4Stsd(mp4StsdEntry("mp4a", entryChannels, 16, entryRate, esds)),
+	return testfile.MP4AssembleStsd(testfile.MP4Stsd(testfile.MP4StsdEntry("mp4a", entryChannels, 16, entryRate, esds)),
 		nil, nil, nil, timescale)
 }
 
@@ -150,15 +152,15 @@ func TestMP4AACImplicitSBRKeepsEntryRate(t *testing.T) {
 func TestMP4AACWaveWrappedEsds(t *testing.T) {
 	t.Parallel()
 	wave := mp4Wave(
-		mp4Atom("frma", []byte("mp4a")),
-		mp4Atom("mp4a", make([]byte, 4)),
-		mp4EsdsShort(mp4ASC(t, "1010")),
+		testfile.MP4Atom("frma", []byte("mp4a")),
+		testfile.MP4Atom("mp4a", make([]byte, 4)),
+		testfile.MP4EsdsShort(mp4ASC(t, "1010")),
 	)
-	v1 := mp4AssembleStsd(mp4Stsd(mp4StsdEntryV1("mp4a", 2, 16, 0, wave)), nil, nil, nil, 44100)
+	v1 := testfile.MP4AssembleStsd(testfile.MP4Stsd(mp4StsdEntryV1("mp4a", 2, 16, 0, wave)), nil, nil, nil, 44100)
 	if tr := mustParseBytes(t, v1).Properties().Tracks[0]; tr.SampleRate != 96000 || tr.CodecProfile != "AAC LC" {
 		t.Errorf("v1 entry: %d Hz / %q, want 96000/\"AAC LC\"", tr.SampleRate, tr.CodecProfile)
 	}
-	v2 := mp4AssembleStsd(mp4Stsd(mp4StsdEntryV2("mp4a", 96000, 2, 0, wave)), nil, nil, nil, 44100)
+	v2 := testfile.MP4AssembleStsd(testfile.MP4Stsd(mp4StsdEntryV2("mp4a", 96000, 2, 0, wave)), nil, nil, nil, 44100)
 	if tr := mustParseBytes(t, v2).Properties().Tracks[0]; tr.SampleRate != 96000 || tr.CodecProfile != "AAC LC" {
 		t.Errorf("v2 entry: %d Hz / %q, want 96000/\"AAC LC\"", tr.SampleRate, tr.CodecProfile)
 	}
@@ -170,10 +172,10 @@ func TestMP4EsdsMalformedKeepsEntry(t *testing.T) {
 	t.Parallel()
 	asc := mp4ASC(t, "1010") // would report 96000 if it were read
 	// The well-formed nest, so each case can break exactly one thing in it.
-	dsi := mp4DescrShort(0x05, asc)
-	decoderCfg := mp4DescrShort(0x04, slices.Concat([]byte{0x40, 0x15}, make([]byte, 11), dsi))
+	dsi := testfile.MP4DescrShort(0x05, asc)
+	decoderCfg := testfile.MP4DescrShort(0x04, slices.Concat([]byte{0x40, 0x15}, make([]byte, 11), dsi))
 	esBody := slices.Concat([]byte{0, 1, 0}, decoderCfg) // ES_ID, no optional fields
-	esds := func(descr []byte) []byte { return mp4Atom("esds", append([]byte{0, 0, 0, 0}, descr...)) }
+	esds := func(descr []byte) []byte { return testfile.MP4Atom("esds", append([]byte{0, 0, 0, 0}, descr...)) }
 
 	cases := []struct {
 		name string
@@ -184,10 +186,10 @@ func TestMP4EsdsMalformedKeepsEntry(t *testing.T) {
 		{"ES length over-declared", esds(slices.Concat([]byte{0x03, byte(len(esBody) + 8)}, esBody))},
 		{"ES length under-declared", esds(slices.Concat([]byte{0x03, 2}, esBody))},
 		{"a fifth length byte", esds(slices.Concat([]byte{0x03, 0x80, 0x80, 0x80, 0x80}, esBody))},
-		{"box too small for its FullBox header", mp4Atom("esds", make([]byte, 3))},
-		{"DecoderConfig body too short", esds(mp4DescrShort(0x03,
-			slices.Concat([]byte{0, 1, 0}, mp4DescrShort(0x04, make([]byte, 12)))))},
-		{"object type indication carrying no config", mp4EsdsRaw(0xE1, asc, mp4DescrShort)},
+		{"box too small for its FullBox header", testfile.MP4Atom("esds", make([]byte, 3))},
+		{"DecoderConfig body too short", esds(testfile.MP4DescrShort(0x03,
+			slices.Concat([]byte{0, 1, 0}, testfile.MP4DescrShort(0x04, make([]byte, 12)))))},
+		{"object type indication carrying no config", testfile.MP4EsdsRaw(0xE1, asc, testfile.MP4DescrShort)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -208,7 +210,7 @@ func TestMP4EsdsMalformedKeepsEntry(t *testing.T) {
 func TestMP4EsdsMP3ObjectType(t *testing.T) {
 	t.Parallel()
 	for _, oti := range []byte{0x69, 0x6B} {
-		data := mp4AACFile(44100, 2, 44100, mp4EsdsRaw(oti, nil, mp4DescrShort))
+		data := mp4AACFile(44100, 2, 44100, testfile.MP4EsdsRaw(oti, nil, testfile.MP4DescrShort))
 		tr := mustParseBytes(t, data).Properties().Tracks[0]
 		if tr.Codec != "MP3" || tr.CodecProfile != "" {
 			t.Errorf("oti %#x: codec = %q/%q, want MP3 with no profile", oti, tr.Codec, tr.CodecProfile)

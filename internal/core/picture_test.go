@@ -1,10 +1,14 @@
 package core
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
+)
 
 // TestProjectPicturesSniffs: display projection sniffs MIME; clone leaves originals untouched.
 func TestProjectPicturesSniffs(t *testing.T) {
-	gif := append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
+	gif := testfile.GIF()
 	orig := []Picture{
 		{Type: PicFrontCover, MIME: "image/png", Data: gif},
 		{Type: PicFrontCover, MIME: "", Data: gif},

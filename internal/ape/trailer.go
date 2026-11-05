@@ -142,46 +142,9 @@ func (p TrailerPlan) Segments(size int64) []bits.Segment {
 	return segs
 }
 
-// Result builds the post-write trailer without re-parsing.
-func (p TrailerPlan) Result(start int64, src Trailer) Trailer {
-	var newTag *Tag
-	if len(p.Items) > 0 {
-		newTag = NewEmpty()
-		if src.Tag != nil {
-			newTag.Version, newTag.HasHeader = src.Tag.Version, src.Tag.HasHeader
-		}
-		newTag.Items = p.Items
-		newTag.Offset = start
-		newTag.Size = int64(len(p.Bytes))
-	}
-	return Trailer{Tag: newTag, TagLen: int64(len(p.Bytes)), ID3v1: p.ID3v1, Start: start}
-}
-
 // LegacyFamilies: ID3v1 into family view without promoting into canonical.
 func LegacyFamilies(auth tag.TagSet, id3v1 []byte) []core.FamilyValue {
 	return id3.LegacyV1Families(auth, id3v1)
-}
-
-// CarryWarnings: recompute item-derived codes from written items so the result
-// matches a fresh parse (rewrite may remove the item a prior warning described).
-func CarryWarnings(prior []core.Warning, proj Projection, items []Item, id3v1 []byte) []core.Warning {
-	var out []core.Warning
-	for _, w := range prior {
-		switch w.Code {
-		case core.WarnInvalidPicture, core.WarnInheritedEncoder, core.WarnInvalidText, core.WarnInvalidTagKey:
-			continue // recomputed below from the written items
-		case core.WarnTrailingID3v1:
-			if len(id3v1) == 0 {
-				continue
-			}
-		}
-		out = append(out, w)
-	}
-	out = append(out, proj.Warnings...)
-	written := &Tag{Items: items}
-	out = append(out, InvalidUTF8Warnings(written)...)
-	out = append(out, InvalidKeyWarnings(written)...)
-	return append(out, EncoderNoise(items)...)
 }
 
 // TrailingWrite inputs [PlanTrailingWrite]: audio before Start; optional Leading
@@ -194,9 +157,9 @@ type TrailingWrite struct {
 }
 
 // PlanTrailingWrite: shared rewrite for trailing-APEv2 containers.
-// result builds codec-specific post-write Media (not called on no-op).
+// result builds the codec's plan result (not called on no-op).
 func PlanTrailingWrite(w TrailingWrite, base, edited *core.Media, opts core.WriteOptions,
-	result func(tp TrailerPlan, newLeadingLen, newSize int64) *core.Media) (*core.WritePlan, error) {
+	result func(tp TrailerPlan, newLeadingLen int64) *core.Media) (*core.WritePlan, error) {
 
 	tagsChanged := !base.Tags.Equal(edited.Tags)
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
@@ -238,7 +201,7 @@ func PlanTrailingWrite(w TrailingWrite, base, edited *core.Media, opts core.Writ
 	newSize := bits.OutputLen(segs)
 	report.BytesAfter = newSize
 
-	res := result(tp, newLeadingLen, newSize)
+	res := result(tp, newLeadingLen)
 	// Downgrade only catches rebuild drops; legacy strip is structural change.
 	if np := core.DowngradeNoOp(w.Format, edited.Identity.Size, base, res,
 		base.Tags.Equal(res.Tags), stripLeading || stripTrailing, report.Warnings); np != nil {

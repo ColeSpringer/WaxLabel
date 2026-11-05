@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // mp3MOV is copied from WaxFlow's container/mp4 corpus, where it is one remux of a single encode
@@ -22,11 +24,11 @@ const mp3MOV = "../testdata/mp3.mov"
 // in the form ffmpeg writes for a mono track. It is a sibling of the codec configuration
 // boxes and must not be mistaken for one.
 func mp4QTChan() []byte {
-	return mp4Atom("chan", slices.Concat(
-		[]byte{0, 0, 0, 0},  // FullBox version/flags
-		mp4be32(0x00010000), // mChannelLayoutTag: take the channels from the bitmap
-		mp4be32(4),          // mChannelBitmap: center
-		mp4be32(0),          // mNumberChannelDescriptions
+	return testfile.MP4Atom("chan", slices.Concat(
+		[]byte{0, 0, 0, 0},        // FullBox version/flags
+		testfile.BE32(0x00010000), // mChannelLayoutTag: take the channels from the bitmap
+		testfile.BE32(4),          // mChannelBitmap: center
+		testfile.BE32(0),          // mNumberChannelDescriptions
 	))
 }
 
@@ -48,17 +50,17 @@ func TestMP4QuickTimeFourccCodecs(t *testing.T) {
 		{"mp3 v1", mp4StsdEntryV1(".mp3", 1, 16, 22050, mp4QTChan()), 22050, "MP3", ".mp3", 1, 16},
 		// QTFF's Windows-codec spelling: "ms" then the WAVE format tag. The fourcc holds a NUL, so it can
 		// never be the profile; the tag names the codec outright.
-		{"ms wave tag", mp4StsdEntry("ms\x00\x55", 2, 16, 44100), 44100, "MP3", "", 2, 16},
+		{"ms wave tag", testfile.MP4StsdEntry("ms\x00\x55", 2, 16, 44100), 44100, "MP3", "", 2, 16},
 
 		// sowt is 16-bit here and 24-bit there: for the entries whose fourcc names no
 		// width, the samplesize field is the only witness and stands.
-		{"sowt 16", mp4StsdEntry("sowt", 2, 16, 44100), 44100, "PCM", "sowt", 2, 16},
-		{"sowt 24", mp4StsdEntry("sowt", 2, 24, 44100), 44100, "PCM", "sowt", 2, 24},
+		{"sowt 16", testfile.MP4StsdEntry("sowt", 2, 16, 44100), 44100, "PCM", "sowt", 2, 16},
+		{"sowt 24", testfile.MP4StsdEntry("sowt", 2, 24, 44100), 44100, "PCM", "sowt", 2, 24},
 
 		// in24 and fl64 name their width, and a v1 entry writes 16 regardless.
 		{"in24 v1", mp4StsdEntryV1("in24", 2, 16, 44100), 44100, "PCM", "in24", 2, 24},
 		{"fl64 v1", mp4StsdEntryV1("fl64", 2, 16, 44100), 44100, "IEEE float64", "fl64", 2, 64},
-		{"ulaw", mp4StsdEntry("ulaw", 1, 16, 8000), 8000, "mu-law", "ulaw", 1, 8},
+		{"ulaw", testfile.MP4StsdEntry("ulaw", 1, 16, 8000), 8000, "mu-law", "ulaw", 1, 8},
 		{"ima4 v1", mp4StsdEntryV1("ima4", 2, 16, 44100), 44100, "IMA ADPCM", "ima4", 2, 4},
 
 		// A v2 entry's format flags are the only place a float lpcm stream declares itself;
@@ -73,18 +75,18 @@ func TestMP4QuickTimeFourccCodecs(t *testing.T) {
 
 		// The ISOBMFF pair keep their width in a pcmC box. At 64 bits the fourcc alone
 		// would name the 32-bit float form, so the box names the codec too.
-		{"ipcm pcmC 24", mp4StsdEntry("ipcm", 2, 16, 48000, mp4PcmC(24)), 48000, "PCM", "ipcm", 2, 24},
-		{"ipcm pcmC 32", mp4StsdEntry("ipcm", 2, 16, 48000, mp4PcmC(32)), 48000, "PCM", "ipcm", 2, 32},
-		{"fpcm pcmC 32", mp4StsdEntry("fpcm", 2, 16, 48000, mp4PcmC(32)), 48000, "IEEE float", "fpcm", 2, 32},
-		{"fpcm pcmC 64", mp4StsdEntry("fpcm", 2, 16, 48000, mp4PcmC(64)), 48000, "IEEE float64", "", 2, 64},
+		{"ipcm pcmC 24", testfile.MP4StsdEntry("ipcm", 2, 16, 48000, mp4PcmC(24)), 48000, "PCM", "ipcm", 2, 24},
+		{"ipcm pcmC 32", testfile.MP4StsdEntry("ipcm", 2, 16, 48000, mp4PcmC(32)), 48000, "PCM", "ipcm", 2, 32},
+		{"fpcm pcmC 32", testfile.MP4StsdEntry("fpcm", 2, 16, 48000, mp4PcmC(32)), 48000, "IEEE float", "fpcm", 2, 32},
+		{"fpcm pcmC 64", testfile.MP4StsdEntry("fpcm", 2, 16, 48000, mp4PcmC(64)), 48000, "IEEE float64", "", 2, 64},
 		// A pcmC behind a sibling box is still found: the walk skips what is not a codec
 		// configuration rather than stopping at the first child.
-		{"ipcm pcmC behind chan", mp4StsdEntry("ipcm", 2, 16, 48000, mp4QTChan(), mp4PcmC(24)), 48000, "PCM", "ipcm", 2, 24},
+		{"ipcm pcmC behind chan", testfile.MP4StsdEntry("ipcm", 2, 16, 48000, mp4QTChan(), mp4PcmC(24)), 48000, "PCM", "ipcm", 2, 24},
 		// With no pcmC the entry field stands for ipcm, a width integer PCM can have. For
 		// fpcm it is the fixed 16 every writer stores and no 16-bit float exists, so the
 		// width is reported as unknown rather than as an impossible format.
-		{"ipcm no pcmC", mp4StsdEntry("ipcm", 2, 16, 48000), 48000, "PCM", "ipcm", 2, 16},
-		{"fpcm no pcmC", mp4StsdEntry("fpcm", 2, 16, 48000), 48000, "IEEE float", "fpcm", 2, 0},
+		{"ipcm no pcmC", testfile.MP4StsdEntry("ipcm", 2, 16, 48000), 48000, "PCM", "ipcm", 2, 16},
+		{"fpcm no pcmC", testfile.MP4StsdEntry("fpcm", 2, 16, 48000), 48000, "IEEE float", "fpcm", 2, 0},
 
 		// The canonical codec table folds case, so the width the same fourcc names must
 		// fold with it: an uppercase entry cannot read as float at the entry's fixed 16.
@@ -92,7 +94,7 @@ func TestMP4QuickTimeFourccCodecs(t *testing.T) {
 		{"IN24 uppercase", mp4StsdEntryV1("IN24", 2, 16, 44100), 44100, "PCM", "IN24", 2, 24},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			data := mp4AssembleStsd(mp4Stsd(c.entry), nil, nil, nil, c.rate)
+			data := testfile.MP4AssembleStsd(testfile.MP4Stsd(c.entry), nil, nil, nil, c.rate)
 			tr := mustParseBytes(t, data).Properties().First()
 			if tr.Codec != c.codec || tr.CodecProfile != c.profile {
 				t.Errorf("codec = %q / profile %q, want %q / %q", tr.Codec, tr.CodecProfile, c.codec, c.profile)

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -18,9 +19,9 @@ import (
 func TestWavPackCoverSlotWrite(t *testing.T) {
 	src := readFixture(t, notagsWV)
 	plan, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).
-		AddPicture(wl.Picture{Type: wl.PicArtist, Data: tinyJPEG()}).
-		AddPicture(wl.Picture{Type: wl.PicBand, Data: tinyGIF()}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
+		AddPicture(wl.Picture{Type: wl.PicArtist, Data: testfile.JPEG()}).
+		AddPicture(wl.Picture{Type: wl.PicBand, Data: testfile.GIF()}).
 		Prepare(wl.WithAllowUnsupportedDrop())
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
@@ -38,7 +39,7 @@ func TestWavPackCoverSlotWrite(t *testing.T) {
 	if len(pics) != 2 || pics[0].Type != wl.PicFrontCover || pics[1].Type != wl.PicBackCover {
 		t.Fatalf("pictures = %+v, want the front cover plus the artist stored under the back name", pics)
 	}
-	if !bytes.Equal(pics[0].Data, tinyPNG()) || !bytes.Equal(pics[1].Data, tinyJPEG()) {
+	if !bytes.Equal(pics[0].Data, testfile.PNG()) || !bytes.Equal(pics[1].Data, testfile.JPEG()) {
 		t.Error("written cover bytes do not match the added images")
 	}
 	for _, f := range doc.Lint() {
@@ -54,9 +55,9 @@ func TestWavPackCoverSlotWrite(t *testing.T) {
 func TestWavPackSlotlessPictureRefusedWithoutDropOption(t *testing.T) {
 	src := readFixture(t, notagsWV)
 	_, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).
-		AddPicture(wl.Picture{Type: wl.PicArtist, Data: tinyJPEG()}).
-		AddPicture(wl.Picture{Type: wl.PicBand, Data: tinyGIF()}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
+		AddPicture(wl.Picture{Type: wl.PicArtist, Data: testfile.JPEG()}).
+		AddPicture(wl.Picture{Type: wl.PicBand, Data: testfile.GIF()}).
 		Prepare()
 	if !errors.Is(err, waxerr.ErrUnsupportedTag) {
 		t.Errorf("Prepare err = %v, want ErrUnsupportedTag for a slotless picture without the drop option", err)
@@ -68,14 +69,14 @@ func TestWavPackSlotlessPictureRefusedWithoutDropOption(t *testing.T) {
 func TestWavPackAddedFrontReplacesExisting(t *testing.T) {
 	src := readFixture(t, notagsWV)
 	seed, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
 	fronted := applyToBytes(t, src, seed)
 
 	plan, err := mustParseBytes(t, fronted).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyJPEG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.JPEG()}).Prepare()
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
@@ -86,7 +87,7 @@ func TestWavPackAddedFrontReplacesExisting(t *testing.T) {
 		t.Errorf("plan warnings = %+v, want a warning for the replaced pre-existing front", plan.Report().Warnings)
 	}
 	pics := mustParseBytes(t, applyToBytes(t, fronted, plan)).Pictures()
-	if len(pics) != 1 || pics[0].Type != wl.PicFrontCover || !bytes.Equal(pics[0].Data, tinyJPEG()) {
+	if len(pics) != 1 || pics[0].Type != wl.PicFrontCover || !bytes.Equal(pics[0].Data, testfile.JPEG()) {
 		t.Fatalf("pictures = %+v, want only the newly added front cover", pics)
 	}
 }
@@ -96,15 +97,15 @@ func TestWavPackAddedFrontReplacesExisting(t *testing.T) {
 func TestWavPackCoverSlotNoOpKeepsWarning(t *testing.T) {
 	src := readFixture(t, notagsWV)
 	seed, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).
-		AddPicture(wl.Picture{Type: wl.PicBackCover, Data: tinyJPEG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
+		AddPicture(wl.Picture{Type: wl.PicBackCover, Data: testfile.JPEG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
 	full := applyToBytes(t, src, seed)
 
 	plan, err := mustParseBytes(t, full).Edit().
-		AddPicture(wl.Picture{Type: wl.PicArtist, Data: tinyGIF()}).Prepare(wl.WithAllowUnsupportedDrop())
+		AddPicture(wl.Picture{Type: wl.PicArtist, Data: testfile.GIF()}).Prepare(wl.WithAllowUnsupportedDrop())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,9 +123,9 @@ func TestWavPackCoverSlotNoOpKeepsWarning(t *testing.T) {
 func TestTransferCoverSlotReport(t *testing.T) {
 	flacSrc := readFixture(t, sampleFLAC)
 	seed, err := mustParseBytes(t, flacSrc).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).
-		AddPicture(wl.Picture{Type: wl.PicArtist, Data: tinyJPEG()}).
-		AddPicture(wl.Picture{Type: wl.PicBand, Data: tinyGIF()}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
+		AddPicture(wl.Picture{Type: wl.PicArtist, Data: testfile.JPEG()}).
+		AddPicture(wl.Picture{Type: wl.PicBand, Data: testfile.GIF()}).
 		Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +155,7 @@ func TestTransferCoverSlotReport(t *testing.T) {
 	if len(pics) != 2 || pics[0].Type != wl.PicFrontCover || pics[1].Type != wl.PicBackCover {
 		t.Fatalf("transferred pictures = %+v, want the front plus the artist under the back name", pics)
 	}
-	if !bytes.Equal(pics[0].Data, tinyPNG()) || !bytes.Equal(pics[1].Data, tinyJPEG()) {
+	if !bytes.Equal(pics[0].Data, testfile.PNG()) || !bytes.Equal(pics[1].Data, testfile.JPEG()) {
 		t.Error("transferred cover bytes do not match the source images")
 	}
 }

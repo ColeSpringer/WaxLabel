@@ -85,9 +85,9 @@ func WithLockWait(fn func()) WriteOption {
 	return func(o *core.WriteOptions) { o.LockWait = fn }
 }
 
-// WithVerifyEssence hashes audio during copy and compares the written output.
-// SaveBack/SaveAsFile re-read the temp before commit. WriteTo verifies only
-// bytes copied from the source (stream cannot be re-read).
+// WithVerifyEssence adds an audio check to the read-back every write runs: the output's essence,
+// as a fresh parse finds it, must hash to the source's and sit where the plan placed it.
+// SaveBack and SaveAsFile check the temp before the rename; WriteTo checks before streaming.
 func WithVerifyEssence() WriteOption {
 	return func(o *core.WriteOptions) { o.VerifyEssence = true }
 }

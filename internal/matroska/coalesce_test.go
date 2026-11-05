@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -112,10 +113,6 @@ func TestCoalesceWriteRoundTripsDescriptorCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planShift: %v", err)
 	}
-	if got := countChildID(plan.Result.Native.(*doc).wb.children, idCluster); got != 1 {
-		t.Errorf("result document: %d cluster descriptors, want 1", got)
-	}
-
 	var buf bytes.Buffer
 	if _, err := bits.Write(context.Background(), &buf, core.BytesSource(src), plan.Segments, nil); err != nil {
 		t.Fatalf("bits.Write: %v", err)
@@ -123,6 +120,9 @@ func TestCoalesceWriteRoundTripsDescriptorCount(t *testing.T) {
 	re := parseMKA(t, buf.Bytes())
 	if got := countChildID(re.Native.(*doc).wb.children, idCluster); got != 1 {
 		t.Errorf("reparsed output: %d cluster descriptors, want 1", got)
+	}
+	if got, want := plan.Result.EssenceRanges(), re.EssenceRanges(); !slices.Equal(got, want) {
+		t.Errorf("plan result essence = %v, want the reparsed output's %v", got, want)
 	}
 	if got, _ := re.Tags.First(tag.Title); got != bigTitle {
 		t.Errorf("reparsed title = %q, want the edited title", got)

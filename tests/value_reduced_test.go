@@ -4,14 +4,15 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
 // ID3v2.3 warns when ORIGINALDATE loses month and day precision. A year-only value is already in
 // the stored form, and ID3v2.4 keeps the full date in TDOR, so neither case warns.
 func TestMP3OriginalDateValueReduced(t *testing.T) {
-	v23 := append(id3v2(3, textFrame(3, "TIT2", "T")), mp3Audio(t)...)
-	v24 := append(id3v2(4, textFrame(4, "TIT2", "T")), mp3Audio(t)...)
+	v23 := append(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T")), mp3Audio(t)...)
+	v24 := append(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "T")), mp3Audio(t)...)
 
 	// v2.3 full date is truncated to year.
 	full := prepareWith(t, v23, func(e *wl.Editor) { e.Set(tag.OriginalDate, "2019-06-07") })
@@ -42,8 +43,8 @@ func TestMP3OriginalDateValueReduced(t *testing.T) {
 // warn value-reduced. A value to the minute is lossless (no over-warn), and ID3v2.4 keeps seconds
 // in TDRC.
 func TestMP3RecordingDateSecondsValueReduced(t *testing.T) {
-	v23 := append(id3v2(3, textFrame(3, "TIT2", "T")), mp3Audio(t)...)
-	v24 := append(id3v2(4, textFrame(4, "TIT2", "T")), mp3Audio(t)...)
+	v23 := append(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T")), mp3Audio(t)...)
+	v24 := append(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "T")), mp3Audio(t)...)
 
 	// v2.3 seconds are dropped by HHMM TIME.
 	secs := prepareWith(t, v23, func(e *wl.Editor) { e.Set(tag.RecordingDate, "2020-07-04T13:05:45") })

@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 
+	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -158,9 +160,9 @@ func noEssence(ranges [][2]int64) bool {
 	return true
 }
 
-// hasNoAudioWarning reports whether the parser set WarnNoAudioFrames. Digest,
-// VerifyEssence, and Prepare consult it so flagged files are not hashed,
-// verified, or rewritten.
+// hasNoAudioWarning reports whether the parser set WarnNoAudioFrames. The digests,
+// VerifyEssence, Prepare and a write's read-back consult it, so a flagged file is
+// never hashed, verified, rewritten or written.
 func hasNoAudioWarning(media *core.Media) bool {
 	for _, w := range media.Warnings {
 		if w.Code == core.WarnNoAudioFrames {
@@ -170,9 +172,15 @@ func hasNoAudioWarning(media *core.Media) bool {
 	return false
 }
 
+// hashHook, when set, runs at the start of every hashRanges pass. Test-only.
+var hashHook func()
+
 // hashRanges hashes optional prefix bytes then src over each [start,end) range.
 // Checks ctx between chunks. src need only support ReadAt.
 func hashRanges(ctx context.Context, src io.ReaderAt, prefix []byte, ranges [][2]int64) ([]byte, error) {
+	if hashHook != nil {
+		hashHook()
+	}
 	h := sha256.New()
 	h.Write(prefix)
 	buf := make([]byte, 1<<16)
@@ -196,8 +204,12 @@ func hashRanges(ctx context.Context, src io.ReaderAt, prefix []byte, ranges [][2
 			if rem := end - off; rem < n {
 				n = rem
 			}
-			if _, err := src.ReadAt(buf[:n], off); err != nil {
-				return nil, fmt.Errorf("%w: essence read at %d: %v", waxerr.ErrInvalidData, off, err)
+			if err := bits.ReadFullAt(src, buf[:n], off); err != nil {
+				// A source that ends early is invalid data; any other read error keeps its cause.
+				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+					return nil, fmt.Errorf("%w: essence read at %d: %v", waxerr.ErrInvalidData, off, err)
+				}
+				return nil, fmt.Errorf("essence read at %d: %w", off, err)
 			}
 			h.Write(buf[:n])
 			off += n

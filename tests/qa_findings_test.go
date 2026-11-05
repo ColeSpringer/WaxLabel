@@ -9,6 +9,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -128,15 +129,12 @@ func TestPlanReportIsDefensiveCopy(t *testing.T) {
 	}
 }
 
-// the album SimpleTags a Matroska write synthesizes (re-emitted canonical values) must carry their
-// rendered bytes, so a second unrelated edit on the returned in-memory Document (not a re-parse)
-// does not mistake a freshly generated tag for one whose source bytes were too big to capture.
+// A second unrelated edit on the Document a Matroska write returns keeps the ARTIST SimpleTag the
+// first edit wrote.
 func TestMatroskaReturnedDocumentReEditable(t *testing.T) {
 	src := readFixture(t, sampleMKA)
-	// Edit 1 changes ARTIST, synthesizing the ARTIST SimpleTag in the returned document.
 	out1, doc1 := saveMatroska(t, src, mustParseBytes(t, src).Edit().Set(tag.Artist, "Edit One"))
-	// Edit 2 on the returned document changes a DIFFERENT album tag, leaving the synthesized ARTIST
-	// unchanged; this must not fail the preservation check.
+	// Edit 2, on the returned document, changes ALBUM and must keep ARTIST.
 	plan, err := doc1.Edit().Set(tag.Album, "Edit Two").Prepare()
 	if err != nil {
 		t.Fatalf("second edit on the returned Document failed: %v", err)
@@ -221,8 +219,8 @@ func chapterSetTwo(e *wl.Editor) *wl.Editor {
 // QuickTime path: re-applying an identical multi-chapter list to an already-written file collapses
 // to a no-op.
 func TestMP4ChapterReapplyMultiNoOpQT(t *testing.T) {
-	data := mp4QTFile([]int{0, 5000}, []string{"Seed A", "Seed B"})
-	_, re := execChapters(t, data, chapterSetTwo)
+	data := testfile.MP4QTFile([]int{0, 5000}, []string{"Seed A", "Seed B"})
+	re := execChapters(t, data, chapterSetTwo)
 	plan2, err := chapterSetTwo(re.Edit()).Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -235,15 +233,15 @@ func TestMP4ChapterReapplyMultiNoOpQT(t *testing.T) {
 // same on the chpl-only fallback (no QuickTime track).
 func TestMP4ChapterReapplyMultiNoOpChpl(t *testing.T) {
 	build := func(stcoOff uint32) []byte {
-		// -1 encodes the max track id 0xFFFFFFFF through mp4be32's uint32 conversion on every int width;
+		// -1 encodes the max track id 0xFFFFFFFF through BE32's uint32 conversion on every int width;
 		// int(uint32(0xFFFFFFFF)) overflows a 32-bit int at compile time.
-		moov := mp4Atom("moov", mp4AudioTrakTkhd(-1, stcoOff))
-		return slices.Concat(mp4Ftyp(), moov, mp4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
+		moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(-1, stcoOff))
+		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
 	}
 	tmp := build(0)
 	data := build(uint32(bytes.Index(tmp, []byte("mdat")) + 4))
 
-	_, re := execChapters(t, data, chapterSetTwo)
+	re := execChapters(t, data, chapterSetTwo)
 	for _, e := range re.Native().Describe() {
 		if e.Kind == "moov chapter track" {
 			t.Fatal("expected the chpl-only fallback, but a QuickTime chapter track was created")
@@ -263,7 +261,7 @@ func TestMP4ChapterReapplyMultiNoOpChpl(t *testing.T) {
 // DowngradeNoOp does not carry the conflict warning.
 func TestMP4ChapterConflictedReapplyResolvesThenCollapses(t *testing.T) {
 	chpl := mp4Chpl(1, []time.Duration{0, 5 * time.Second}, []string{"Nero One", "Nero Two"})
-	data := mp4QTFile([]int{0, 5000}, []string{"QT One", "QT Two"}, chpl)
+	data := testfile.MP4QTFile([]int{0, 5000}, []string{"QT One", "QT Two"}, chpl)
 
 	doc := mustParseBytes(t, data)
 	if !chapterWarn(doc, wl.WarnChapterSourceConflict) {
@@ -319,14 +317,14 @@ func TestVorbisDiscReadSideFold(t *testing.T) {
 // carried onto the no-op report, as value-reduced is for an over-precise date.
 func TestMP4ChapterReapplyTruncatedTitleCarriesWarning(t *testing.T) {
 	longTitle := strings.Repeat("a", 300) // exceeds the 255-byte chapter-title limit
-	data := mp4QTFile([]int{0, 5000}, []string{"Seed A", "Seed B"})
+	data := testfile.MP4QTFile([]int{0, 5000}, []string{"Seed A", "Seed B"})
 	set := func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
 			wl.Chapter{Start: 0, Title: longTitle},
 			wl.Chapter{Start: 5 * time.Second, Title: "Two"},
 		)
 	}
-	_, re := execChapters(t, data, set)
+	re := execChapters(t, data, set)
 	plan2, err := set(re.Edit()).Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -342,7 +340,7 @@ func TestMP4ChapterReapplyTruncatedTitleCarriesWarning(t *testing.T) {
 // the chapter no-op collapse must not drop an edit: an explicit End on the last chapter of a
 // QuickTime-track file encodes that value into the final sample's stts duration (chapterDeltas).
 func TestMP4ChapterLastEndEditNotCollapsed(t *testing.T) {
-	data := mp4QTFile([]int{0, 5000}, []string{"A", "B"})
+	data := testfile.MP4QTFile([]int{0, 5000}, []string{"A", "B"})
 	// Same starts/titles the file already projects, but the last chapter gains an explicit End (8 s).
 	plan, err := mustParseBytes(t, data).Edit().SetChapters(
 		wl.Chapter{Start: 0, Title: "A"},

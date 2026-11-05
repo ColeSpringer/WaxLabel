@@ -6,11 +6,12 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // headlessPNG is a PNG with its signature and first IHDR byte removed: bytes no decoder can
 // read, under whatever label a container declares for them.
-func headlessPNG() []byte { return tinyPNG()[9:] }
+func headlessPNG() []byte { return testfile.PNG()[9:] }
 
 // declared image/png over undecodable bytes reads as the unrecognized MIME with no dimensions, on
 // every container that stores a label, and lint flags it, matching what the write path already does
@@ -20,9 +21,9 @@ func TestJunkPictureUnderDeclaredMIMEDegrades(t *testing.T) {
 		name string
 		file []byte
 	}{
-		{"id3 APIC", mp3WithFrames(t, id3Frame(4, "APIC", apicBody("image/png", 3, headlessPNG())))},
+		{"id3 APIC", mp3WithFrames(t, testfile.ID3Frame(4, "APIC", apicBody("image/png", 3, headlessPNG())))},
 		{"flac PICTURE", flacWithCommentBlock(nil, wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Width: 16, Height: 16, Depth: 24, Data: headlessPNG()})},
-		{"mp4 covr", mp4Tagged(covrItemAtom(14, headlessPNG()))},
+		{"mp4 covr", testfile.MP4Tagged(covrItemAtom(14, headlessPNG()))},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -53,7 +54,7 @@ func TestJunkPictureUnderDeclaredMIMEDegrades(t *testing.T) {
 // covers must be a known image format drops it; one that stores any cover keeps the bytes under
 // the unrecognized label.
 func TestJunkPictureNeverRelabeledOnTransfer(t *testing.T) {
-	src := mustParseBytes(t, mp3WithFrames(t, id3Frame(4, "APIC", apicBody("image/png", 3, headlessPNG()))))
+	src := mustParseBytes(t, mp3WithFrames(t, testfile.ID3Frame(4, "APIC", apicBody("image/png", 3, headlessPNG()))))
 
 	// MP4's covr atom can only label JPEG, PNG or BMP, so the junk cover cannot be stored.
 	rep, err := src.PlanTransfer(wl.FormatMP4)
@@ -91,7 +92,7 @@ func TestLinkPictureSurvivesPictureEdit(t *testing.T) {
 		name string
 		file []byte
 	}{
-		{"id3 APIC", mp3WithFrames(t, id3Frame(4, "APIC", apicBody(wl.LinkMIME, 3, []byte(url))))},
+		{"id3 APIC", mp3WithFrames(t, testfile.ID3Frame(4, "APIC", apicBody(wl.LinkMIME, 3, []byte(url))))},
 		{"flac PICTURE", flacWithCommentBlock(nil, wl.Picture{Type: wl.PicFrontCover, MIME: wl.LinkMIME, Data: []byte(url)})},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -101,7 +102,7 @@ func TestLinkPictureSurvivesPictureEdit(t *testing.T) {
 				t.Fatalf("read pictures = %+v, want one %s picture holding the URL", pics, wl.LinkMIME)
 			}
 			// An edit that re-renders the picture set: the link must come back out intact.
-			plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicBackCover, Data: tinyPNG()}).Prepare()
+			plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicBackCover, Data: testfile.PNG()}).Prepare()
 			if err != nil {
 				t.Fatal(err)
 			}

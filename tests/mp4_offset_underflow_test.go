@@ -8,6 +8,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -17,25 +18,25 @@ import (
 
 // mp4Co64 builds a 64-bit chunk-offset table.
 func mp4Co64(entries ...uint64) []byte {
-	body := slices.Concat([]byte{0, 0, 0, 0}, mp4be32(len(entries)))
+	body := slices.Concat([]byte{0, 0, 0, 0}, testfile.BE32(len(entries)))
 	for _, e := range entries {
 		b := make([]byte, 8)
 		binary.BigEndian.PutUint64(b, e)
 		body = append(body, b...)
 	}
-	return mp4Atom("co64", body)
+	return testfile.MP4Atom("co64", body)
 }
 
-// mp4AudioTrakChapCo64 is mp4AudioTrakChap with a co64 in place of the stco, so a shrinking
+// mp4AudioTrakChapCo64 is testfile.MP4AudioTrakChap with a co64 in place of the stco, so a shrinking
 // rewrite covers the 64-bit entry path, where a wrap is not caught by the stco table's own
 // 4 GiB ceiling.
 func mp4AudioTrakChapCo64(chapTrackID int, chunk uint64) []byte {
-	tkhd := mp4Atom("tkhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), mp4be32(1), make([]byte, 4)))
-	tref := mp4Atom("tref", mp4Atom("chap", mp4be32(chapTrackID)))
-	stbl := mp4Atom("stbl", slices.Concat(mp4StsdAudio(), mp4Co64(chunk)))
-	minf := mp4Atom("minf", stbl)
-	mdia := mp4Atom("mdia", slices.Concat(mp4HdlrSoun(), mp4Mdhd(44100), minf))
-	return mp4Atom("trak", slices.Concat(tkhd, tref, mdia))
+	tkhd := testfile.MP4Atom("tkhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), testfile.BE32(1), make([]byte, 4)))
+	tref := testfile.MP4Atom("tref", testfile.MP4Atom("chap", testfile.BE32(chapTrackID)))
+	stbl := testfile.MP4Atom("stbl", slices.Concat(testfile.MP4StsdAudio(), mp4Co64(chunk)))
+	minf := testfile.MP4Atom("minf", stbl)
+	mdia := testfile.MP4Atom("mdia", slices.Concat(testfile.MP4HdlrSoun(), testfile.MP4Mdhd(44100), minf))
+	return testfile.MP4Atom("trak", slices.Concat(tkhd, tref, mdia))
 }
 
 func TestMP4ShrinkingRewriteRefusesUnderflowingOffset(t *testing.T) {
@@ -53,10 +54,10 @@ func TestMP4ShrinkingRewriteRefusesUnderflowingOffset(t *testing.T) {
 
 	kids := slices.Concat(
 		mp4AudioTrakChapCo64(2, chunk),
-		mp4TextTrak(2, 1000, starts, titles, 99999),
+		testfile.MP4TextTrak(2, 1000, starts, titles, 99999),
 	)
-	data := slices.Concat(mp4Ftyp(), mp4Atom("moov", kids),
-		mp4Atom("mdat", slices.Concat(bytes.Repeat([]byte{0xA7}, 120), mp4SamplesBlob(titles))))
+	data := slices.Concat(testfile.MP4Ftyp(), testfile.MP4Atom("moov", kids),
+		testfile.MP4Atom("mdat", slices.Concat(bytes.Repeat([]byte{0xA7}, 120), testfile.MP4SamplesBlob(titles))))
 
 	_, err := mustParseBytes(t, data).Edit().SetChapters().Prepare()
 	if !errors.Is(err, waxerr.ErrInvalidData) {

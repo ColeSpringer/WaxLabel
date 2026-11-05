@@ -1,36 +1,19 @@
 package vorbis
 
 import (
-	"encoding/binary"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
-
-// commentListWithRaw renders a comment list by hand so an entry with no "=" can be placed
-// in it; RenderCommentList would compose one from a Name and a Value.
-func commentListWithRaw(vendor string, entries ...string) []byte {
-	le := func(n int) []byte {
-		b := make([]byte, 4)
-		binary.LittleEndian.PutUint32(b, uint32(n))
-		return b
-	}
-	out := append(le(len(vendor)), vendor...)
-	out = append(out, le(len(entries))...)
-	for _, e := range entries {
-		out = append(out, le(len(e))...)
-		out = append(out, e...)
-	}
-	return out
-}
 
 // TestUnseparatedEntryRoundTripsVerbatim checks that an entry with no "=" survives parse
 // and render byte for byte, so a rewrite does not erase it.
 func TestUnseparatedEntryRoundTripsVerbatim(t *testing.T) {
-	body := commentListWithRaw("vend", "TITLE=Song", "noequalshere", "ARTIST=Band")
+	body := testfile.VorbisComments("vend", "TITLE=Song", "noequalshere", "ARTIST=Band") // entries as given, one with no "="
 	vendor, cs, n, err := ParseCommentList(body, 1<<20, 0)
 	if err != nil {
 		t.Fatal(err)

@@ -3,27 +3,14 @@ package id3
 import (
 	"bytes"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
-// pngHeader is a 1x1 RGBA PNG header, enough for the sniffer. Its IHDR length field
-// carries a NUL at offset 8, which is what a missing description terminator splits on.
-func pngHeader() []byte {
-	return []byte{
-		0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A,
-		0x00, 0x00, 0x00, 0x0D, 'I', 'H', 'D', 'R',
-		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
-	}
-}
-
 func TestCutDescription(t *testing.T) {
-	png := pngHeader()
+	png := testfile.PNG() // its IHDR length field has a NUL at offset 8, where a missing terminator splits
 	junk := []byte("not an image at all")
-	// A minimal complete JPEG: SOI then a 3x5 SOF0, which the sniffer needs to recognize it.
-	jpeg := []byte{
-		0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x05, 0x00, 0x03,
-		0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
-	}
+	jpeg := testfile.JPEG() // complete, as the sniffer needs
 	cases := []struct {
 		name     string
 		declared string

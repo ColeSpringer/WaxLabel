@@ -11,100 +11,28 @@ import (
 	"unicode/utf8"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
 // Synthetic AIFF / AIFF-C builders. The SSND chunk is silence; tests assert on metadata structure
 // and round-trips, not on decoded audio.
 
-func aiffBE16(n int) []byte { return []byte{byte(n >> 8), byte(n)} }
-func aiffBE32(n int) []byte { return []byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)} }
-
-// aiffChunk wraps a chunk body in its 8-byte header, word-aligning with a pad
-// byte when the body length is odd.
-func aiffChunk(id string, body []byte) []byte {
-	out := append([]byte(id), aiffBE32(len(body))...)
-	out = append(out, body...)
-	if len(body)&1 == 1 {
-		out = append(out, 0)
-	}
-	return out
-}
-
-// aiffFile assembles a FORM/AIFF (or AIFC) file from chunk bytes.
-func aiffFile(formType string, chunks ...[]byte) []byte {
-	body := []byte(formType)
-	for _, c := range chunks {
-		body = append(body, c...)
-	}
-	out := append([]byte("FORM"), aiffBE32(len(body))...)
-	return append(out, body...)
-}
-
-// aiffRate80 encodes an integer sample rate as an 80-bit IEEE 754
-// extended-precision float (the form AIFF's COMM chunk stores the rate in).
-func aiffRate80(rate uint32) []byte {
-	b := make([]byte, 10)
-	if rate == 0 {
-		return b
-	}
-	mant := uint64(rate)
-	exp := 16383 + 63
-	for mant&(1<<63) == 0 {
-		mant <<= 1
-		exp--
-	}
-	b[0] = byte(exp >> 8)
-	b[1] = byte(exp)
-	binary.BigEndian.PutUint64(b[2:], mant)
-	return b
-}
-
-// aiffCOMM builds a plain-AIFF 18-byte COMM chunk.
-func aiffCOMM(channels, numFrames, sampleSize int, rate uint32) []byte {
-	b := slices.Concat(aiffBE16(channels), aiffBE32(numFrames), aiffBE16(sampleSize), aiffRate80(rate))
-	return aiffChunk("COMM", b)
-}
-
-// aiffCOMMC builds an AIFF-C COMM chunk: the 18 common bytes, a 4-byte
-// compression type, and an empty pascal-string compression name.
-func aiffCOMMC(channels, numFrames, sampleSize int, rate uint32, compType string) []byte {
-	return aiffCOMMCFrames(channels, uint32(numFrames), sampleSize, rate, compType)
-}
-
-// aiffCOMMCFrames is aiffCOMMC with the frame count as the uint32 the field is, for a
-// count no int holds on a 32-bit build.
-func aiffCOMMCFrames(channels int, numFrames uint32, sampleSize int, rate uint32, compType string) []byte {
-	b := slices.Concat(aiffBE16(channels), binary.BigEndian.AppendUint32(nil, numFrames), aiffBE16(sampleSize), aiffRate80(rate))
-	b = append(b, []byte(compType)...)
-	b = append(b, 0, 0) // pascal string: length 0, plus a pad byte to even it out
-	return aiffChunk("COMM", b)
-}
-
 // aiffSSND builds an SSND chunk: an 8-byte offset/blockSize sub-header followed by
 // n silent sample-frame bytes.
 func aiffSSND(n int) []byte {
 	body := make([]byte, 8+n) // offset=0, blockSize=0, then samples
-	return aiffChunk("SSND", body)
-}
-
-// aiffSSNDOffset builds an SSND chunk whose "offset" sub-header field is non-zero: `align`
-// block-alignment bytes precede the `samples` sample frames. A reader must begin the sample-frame
-// (essence) region after those alignment bytes.
-func aiffSSNDOffset(offset int, align, samples []byte) []byte {
-	body := slices.Concat(aiffBE32(offset), aiffBE32(0), align, samples)
-	return aiffChunk("SSND", body)
+	return testfile.AIFFChunk("SSND", body)
 }
 
 // aiffText builds a native text chunk (NAME/AUTH/"(c) "/ANNO).
-func aiffText(id, value string) []byte { return aiffChunk(id, []byte(value)) }
+func aiffText(id, value string) []byte { return testfile.AIFFChunk(id, []byte(value)) }
 
-// aiffID3 wraps ID3v2 tag bytes (built with id3v2/textFrame from mp3_synth_test)
-// in an uppercase "ID3 " chunk.
-func aiffID3(tagBytes []byte) []byte { return aiffChunk("ID3 ", tagBytes) }
+// aiffID3 wraps ID3v2 tag bytes in an uppercase "ID3 " chunk.
+func aiffID3(tagBytes []byte) []byte { return testfile.AIFFChunk("ID3 ", tagBytes) }
 
 // stdCOMM is a common 18-byte COMM: stereo, 44100 Hz, 16-bit, 1000 frames.
-func stdCOMM() []byte { return aiffCOMM(2, 1000, 16, 44100) }
+func stdCOMM() []byte { return testfile.COMM(2, 1000, 16, 44100) }
 
 // stdSSND holds every frame stdCOMM declares, 4 bytes each, so a file built from the
 // pair is one whose two chunks agree: shorter sound data would read as COMM overstating.
@@ -119,7 +47,7 @@ func sampleDuration(n uint64, rate int) time.Duration {
 func withinDuration(a, b, tol time.Duration) bool { d := a - b; return d <= tol && d >= -tol }
 
 func TestAIFFSynthParseNativeText(t *testing.T) {
-	data := aiffFile("AIFF",
+	data := testfile.AIFF("AIFF",
 		aiffText("NAME", "Synth Title"),
 		aiffText("AUTH", "Synth Author"),
 		aiffText("(c) ", "ACME Records"),
@@ -161,7 +89,7 @@ func TestAIFFSynthParseNativeText(t *testing.T) {
 }
 
 func TestAIFFSynthRoundTripNativeText(t *testing.T) {
-	data := aiffFile("AIFF", aiffText("NAME", "Old"), stdCOMM(), stdSSND())
+	data := testfile.AIFF("AIFF", aiffText("NAME", "Old"), stdCOMM(), stdSSND())
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "New").Set(tag.Artist, "Added").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -181,8 +109,8 @@ func TestAIFFSynthRoundTripNativeText(t *testing.T) {
 }
 
 func TestAIFFCapabilitiesAndNative(t *testing.T) {
-	data := aiffFile("AIFF", aiffText("NAME", "T"), stdCOMM(), stdSSND(),
-		aiffID3(id3v2(3, textFrame(3, "TIT2", "T"))))
+	data := testfile.AIFF("AIFF", aiffText("NAME", "T"), stdCOMM(), stdSSND(),
+		aiffID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T"))))
 	doc := mustParseBytes(t, data)
 
 	caps := doc.Capabilities()
@@ -247,7 +175,7 @@ func TestAIFFCCodecNames(t *testing.T) {
 		{"XYZ!", "XYZ!", ""},             // unknown printable type passes through bare
 		{"\x01\x02\x03\x04", "????", ""}, // non-printable bytes are sanitized
 	} {
-		data := aiffFile("AIFC", aiffCOMMC(2, 100, 16, 44100, tc.comp), aiffSSND(64))
+		data := testfile.AIFF("AIFC", testfile.COMMC(2, 100, 16, 44100, tc.comp), aiffSSND(64))
 		tr := mustParseBytes(t, data).Properties().First()
 		if tr.Codec != tc.want || tr.CodecProfile != tc.wantProfile {
 			t.Errorf("compType %q -> codec %q / profile %q, want %q / %q",
@@ -259,8 +187,8 @@ func TestAIFFCCodecNames(t *testing.T) {
 func TestAIFFMalformedSampleRateNoNaN(t *testing.T) {
 	// Huge exponent + zero mantissa is 0; naive decode yields NaN. mant==0 must report rate 0, no panic.
 	rate := []byte{0x7F, 0xFE, 0, 0, 0, 0, 0, 0, 0, 0} // exp=0x7FFE, mantissa=0
-	commBody := slices.Concat(aiffBE16(2), aiffBE32(100), aiffBE16(16), rate)
-	data := aiffFile("AIFF", aiffText("NAME", "T"), aiffChunk("COMM", commBody), aiffSSND(64))
+	commBody := slices.Concat(testfile.BE16(2), testfile.BE32(100), testfile.BE16(16), rate)
+	data := testfile.AIFF("AIFF", aiffText("NAME", "T"), testfile.AIFFChunk("COMM", commBody), aiffSSND(64))
 
 	doc := mustParseBytes(t, data)
 	if got := doc.Properties().First().SampleRate; got != 0 {
@@ -278,14 +206,14 @@ func TestAIFFMalformedSampleRateNoNaN(t *testing.T) {
 
 func TestAIFFHostileCOMMBitrateNotNegative(t *testing.T) {
 	// Hostile COMM geometry overflows int64 bitrate; cap must keep Bitrate non-negative (MaxInt32).
-	commBody := slices.Concat(aiffBE16(0xFFFF), aiffBE32(100), aiffBE16(0xFFFF), aiffRate80(3_000_000_000))
-	data := aiffFile("AIFF", aiffChunk("COMM", commBody), aiffSSND(64))
+	commBody := slices.Concat(testfile.BE16(0xFFFF), testfile.BE32(100), testfile.BE16(0xFFFF), testfile.Rate80(3_000_000_000))
+	data := testfile.AIFF("AIFF", testfile.AIFFChunk("COMM", commBody), aiffSSND(64))
 	tr := mustParseBytes(t, data).Properties().First()
 	if tr.Bitrate != math.MaxInt32 {
 		t.Errorf("hostile COMM bitrate = %d, want saturation at %d", tr.Bitrate, math.MaxInt32)
 	}
 	// Packetized path: clamp must run after frames-per-packet division, not before (else MaxInt32/64).
-	ima4 := aiffFile("AIFC", aiffCOMMC(0xFFFF, 100, 4, 3_000_000_000, "ima4"), aiffSSND(34*0xFFFF))
+	ima4 := testfile.AIFF("AIFC", testfile.COMMC(0xFFFF, 100, 4, 3_000_000_000, "ima4"), aiffSSND(34*0xFFFF))
 	if got := mustParseBytes(t, ima4).Properties().First().Bitrate; got != math.MaxInt32 {
 		t.Errorf("hostile ima4 COMM bitrate = %d, want saturation at %d", got, math.MaxInt32)
 	}
@@ -297,14 +225,14 @@ func TestAIFFHostileCOMMBitrateNotNegative(t *testing.T) {
 func TestAIFFCorruptId3NotDuplicatedOnForcedRewrite(t *testing.T) {
 	// A lone "ID3 " chunk whose body is not a valid ID3 tag leaves no authoritative ID3. An edit that
 	// forces a new ID3 chunk (adding a picture) must drop the stale chunk, or a re-parse flags a
-	// duplicate and disagrees with the returned document.
+	// duplicate.
 	corrupt := aiffID3([]byte("corrupt-not-a-valid-tag")) // fails id3.ParseTag
-	data := aiffFile("AIFF", aiffText("NAME", "T"), stdCOMM(), stdSSND(), corrupt)
+	data := testfile.AIFF("AIFF", aiffText("NAME", "T"), stdCOMM(), stdSSND(), corrupt)
 	doc := mustParseBytes(t, data)
 	if doc.Fields().Title != "T" { // native NAME is authoritative; the corrupt ID3 gave nothing
 		t.Fatalf("title = %q", doc.Fields().Title)
 	}
-	plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
+	plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,10 +256,10 @@ func TestAIFFSynthAIFCFloatCodec(t *testing.T) {
 	// A synthetic AIFF-C with an "fl32" compression type: the form type is AIFC, the
 	// 24-byte COMM decodes the compression type to a codec name, and an edit
 	// preserves the AIFC form type and the audio essence.
-	data := aiffFile("AIFC",
-		aiffChunk("FVER", []byte{0xA2, 0x80, 0x51, 0x40}),
+	data := testfile.AIFF("AIFC",
+		testfile.AIFFChunk("FVER", []byte{0xA2, 0x80, 0x51, 0x40}),
 		aiffText("NAME", "Float"),
-		aiffCOMMC(2, 500, 32, 48000, "fl32"),
+		testfile.COMMC(2, 500, 32, 48000, "fl32"),
 		aiffSSND(800))
 
 	doc := mustParseBytes(t, data)
@@ -365,12 +293,12 @@ func TestAIFFSynthAIFCFloatCodec(t *testing.T) {
 func TestAIFFId3TakesPrecedenceOverNative(t *testing.T) {
 	// ID3 and a NAME chunk disagree on the title; the ID3 value wins and the native
 	// value is surfaced as an unselected (conflicting) AIFF family entry.
-	data := aiffFile("AIFF",
+	data := testfile.AIFF("AIFF",
 		aiffText("NAME", "Native Title"),
 		aiffText("AUTH", "Shared Artist"),
 		stdCOMM(),
 		stdSSND(),
-		aiffID3(id3v2(4, textFrame(4, "TIT2", "ID3 Title"), textFrame(4, "TPE1", "Shared Artist"))))
+		aiffID3(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "ID3 Title"), testfile.TextFrame(4, "TPE1", "Shared Artist"))))
 
 	doc := mustParseBytes(t, data)
 	if doc.Fields().Title != "ID3 Title" {
@@ -396,11 +324,11 @@ func TestAIFFId3TakesPrecedenceOverNative(t *testing.T) {
 func TestAIFFId3PlusNativeDisjointKeysPreserved(t *testing.T) {
 	// ID3 carries Title; a "(c) " chunk carries a Copyright ID3 lacks. The native-only value must merge
 	// into the canonical set and survive an unrelated edit.
-	data := aiffFile("AIFF",
+	data := testfile.AIFF("AIFF",
 		aiffText("(c) ", "ACME Records"),
 		stdCOMM(),
 		stdSSND(),
-		aiffID3(id3v2(3, textFrame(3, "TIT2", "T"))))
+		aiffID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T"))))
 
 	doc := mustParseBytes(t, data)
 	if doc.Fields().Title != "T" {
@@ -427,7 +355,7 @@ func TestAIFFId3PlusNativeDisjointKeysPreserved(t *testing.T) {
 }
 
 func TestAIFFNativeAuthoritativeWhenNoId3(t *testing.T) {
-	data := aiffFile("AIFF",
+	data := testfile.AIFF("AIFF",
 		aiffText("NAME", "Only Native"),
 		aiffText("AUTH", "Native Artist"),
 		stdCOMM(), stdSSND())
@@ -448,7 +376,7 @@ func TestAIFFNativeAuthoritativeWhenNoId3(t *testing.T) {
 func TestAIFFNonNativeKeyPromotesToId3(t *testing.T) {
 	// Composer has no native chunk, so it forces an ID3 chunk; the native chunks
 	// are kept and stay in sync for the representable keys.
-	data := aiffFile("AIFF", aiffText("NAME", "T"), stdCOMM(), stdSSND())
+	data := testfile.AIFF("AIFF", aiffText("NAME", "T"), stdCOMM(), stdSSND())
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Composer, "Stravinsky").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -469,7 +397,7 @@ func TestAIFFNonNativeKeyPromotesToId3(t *testing.T) {
 func TestAIFFMultiValueArtistForcesId3(t *testing.T) {
 	// A multi-value artist cannot be stored in the single-valued AUTH chunk, so it
 	// forces the ID3 chunk and round-trips fully there.
-	data := aiffFile("AIFF", aiffText("AUTH", "Solo"), stdCOMM(), stdSSND())
+	data := testfile.AIFF("AIFF", aiffText("AUTH", "Solo"), stdCOMM(), stdSSND())
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Artist, "A", "B").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -487,7 +415,7 @@ func TestAIFFMultiValueArtistForcesId3(t *testing.T) {
 func TestAIFFMultiCommentStaysNative(t *testing.T) {
 	// Comment is the one multi-valued native slot (repeated ANNO), so two comments
 	// do not force an ID3 chunk and round-trip as two ANNO chunks.
-	data := aiffFile("AIFF", stdCOMM(), stdSSND())
+	data := testfile.AIFF("AIFF", stdCOMM(), stdSSND())
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Comment, "one", "two").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -509,7 +437,7 @@ func TestAIFFMultiCommentStaysNative(t *testing.T) {
 // repeated ANNO comments are treated as a valid multi-valued COMMENT field, not as a lint or dump
 // conflict.
 func TestAIFFMultiCommentNotFlaggedConflict(t *testing.T) {
-	data := aiffFile("AIFF", stdCOMM(), stdSSND())
+	data := testfile.AIFF("AIFF", stdCOMM(), stdSSND())
 	out := applyToBytes(t, data, mustPlan(t, mustParseBytes(t, data).Edit().Set(tag.Comment, "one", "two")))
 	doc := mustParseBytes(t, out)
 	if vals, _ := doc.Tags().Get(tag.Comment); !slices.Equal(vals, []string{"one", "two"}) {
@@ -527,7 +455,7 @@ func TestAIFFMultiCommentNotFlaggedConflict(t *testing.T) {
 }
 
 func TestAIFFStripNativeConsolidatesToId3(t *testing.T) {
-	data := aiffFile("AIFF", aiffText("NAME", "Keep"), aiffText("AUTH", "A"), stdCOMM(), stdSSND())
+	data := testfile.AIFF("AIFF", aiffText("NAME", "Keep"), aiffText("AUTH", "A"), stdCOMM(), stdSSND())
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Keep").
 		Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
 	if err != nil {
@@ -552,8 +480,8 @@ func TestAIFFStripNativeConsolidatesToId3(t *testing.T) {
 func TestAIFFStripNativeConsolidatesToId3WithExistingId3(t *testing.T) {
 	// An ID3 chunk holds TITLE; native text chunks hold keys ID3 lacks (AUTH -> Artist, "(c) " ->
 	// Copyright). When --legacy strip removes the native chunks, those values must move into ID3.
-	id3Chunk := aiffID3(id3v2(4, textFrame(4, "TIT2", "Original Title")))
-	data := aiffFile("AIFF", aiffText("AUTH", "Native Artist"), aiffText("(c) ", "Native Copyright"),
+	id3Chunk := aiffID3(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Original Title")))
+	data := testfile.AIFF("AIFF", aiffText("AUTH", "Native Artist"), aiffText("(c) ", "Native Copyright"),
 		id3Chunk, stdCOMM(), stdSSND())
 
 	t.Run("unchanged native-only keys survive", func(t *testing.T) {
@@ -604,9 +532,9 @@ func TestAIFFStripNativeConsolidatesToId3WithExistingId3(t *testing.T) {
 func TestAIFFPreservesUnknownChunks(t *testing.T) {
 	// An "FVER" chunk and a "MARK" chunk (neither modeled) must survive an edit
 	// byte-for-byte and keep their order relative to SSND.
-	fver := aiffChunk("FVER", []byte{0xA2, 0x80, 0x51, 0x40})
-	mark := aiffChunk("MARK", []byte{0, 1, 2, 3})
-	data := aiffFile("AIFF", fver, aiffText("NAME", "X"), stdCOMM(), stdSSND(), mark)
+	fver := testfile.AIFFChunk("FVER", []byte{0xA2, 0x80, 0x51, 0x40})
+	mark := testfile.AIFFChunk("MARK", []byte{0, 1, 2, 3})
+	data := testfile.AIFF("AIFF", fver, aiffText("NAME", "X"), stdCOMM(), stdSSND(), mark)
 
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Y").Prepare()
 	if err != nil {
@@ -627,10 +555,8 @@ func TestAIFFPreservesUnknownChunks(t *testing.T) {
 func TestAIFFAppendedDataKeptOutsideFormSize(t *testing.T) {
 	// A 128-byte ID3v1-style tag appended after the FORM chunk (excluded from the declared FORM size)
 	// must be preserved verbatim AND kept outside the recomputed FORM size on rewrite.
-	base := aiffFile("AIFF", aiffText("NAME", "T"), stdCOMM(), stdSSND())
-	trailer := make([]byte, 128)
-	copy(trailer, "TAG")
-	copy(trailer[3:], "Trailing Title")
+	base := testfile.AIFF("AIFF", aiffText("NAME", "T"), stdCOMM(), stdSSND())
+	trailer := testfile.ID3v1("Trailing Title", "", "", "", "", 0)
 	data := append(slices.Clone(base), trailer...)
 
 	doc := mustParseBytes(t, data)
@@ -657,17 +583,17 @@ func TestAIFFAppendedDataKeptOutsideFormSize(t *testing.T) {
 
 func TestAIFFId3ChunkLowercaseVariantRead(t *testing.T) {
 	// Some tools write the chunk id as lowercase "id3 ". It must read as a tag.
-	data := aiffFile("AIFF", stdCOMM(), stdSSND(),
-		aiffChunk("id3 ", id3v2(4, textFrame(4, "TIT2", "Lower"))))
+	data := testfile.AIFF("AIFF", stdCOMM(), stdSSND(),
+		testfile.AIFFChunk("id3 ", testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Lower"))))
 	if got := mustParseBytes(t, data).Fields().Title; got != "Lower" {
 		t.Errorf("lowercase id3 chunk title = %q", got)
 	}
 }
 
 func TestAIFFDuplicateId3ChunksDropped(t *testing.T) {
-	data := aiffFile("AIFF", stdCOMM(), stdSSND(),
-		aiffID3(id3v2(3, textFrame(3, "TIT2", "Primary"))),
-		aiffID3(id3v2(3, textFrame(3, "TIT2", "Stale"))))
+	data := testfile.AIFF("AIFF", stdCOMM(), stdSSND(),
+		aiffID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Primary"))),
+		aiffID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Stale"))))
 	doc := mustParseBytes(t, data)
 	if doc.Fields().Title != "Primary" {
 		t.Errorf("first id3 should be authoritative: title = %q", doc.Fields().Title)
@@ -695,7 +621,7 @@ func TestAIFFDuplicateId3ChunksDropped(t *testing.T) {
 func TestAIFFLatin1NativeValueDecodes(t *testing.T) {
 	// A legacy Latin-1 native value (0xE9 == 'é') must decode to valid UTF-8 in the
 	// canonical model.
-	data := aiffFile("AIFF", aiffText("NAME", "caf\xe9"), stdCOMM(), stdSSND())
+	data := testfile.AIFF("AIFF", aiffText("NAME", "caf\xe9"), stdCOMM(), stdSSND())
 	title := mustParseBytes(t, data).Fields().Title
 	if title != "café" {
 		t.Errorf("Latin-1 native value decoded to %q, want %q", title, "café")
@@ -707,7 +633,7 @@ func TestAIFFLatin1NativeValueDecodes(t *testing.T) {
 
 func TestAIFFClearAllRemovesNativeChunks(t *testing.T) {
 	// Clearing the only tag drops the now-empty native chunk.
-	data := aiffFile("AIFF", aiffText("NAME", "Gone"), stdCOMM(), stdSSND())
+	data := testfile.AIFF("AIFF", aiffText("NAME", "Gone"), stdCOMM(), stdSSND())
 	plan, err := mustParseBytes(t, data).Edit().Clear(tag.Title).Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -722,8 +648,8 @@ func TestAIFFClearAllRemovesNativeChunks(t *testing.T) {
 }
 
 func TestAIFFNumericGenreFromId3(t *testing.T) {
-	data := aiffFile("AIFF", stdCOMM(), stdSSND(),
-		aiffID3(id3v2(3, textFrame(3, "TCON", "(17)"), textFrame(3, "TIT2", "T"))))
+	data := testfile.AIFF("AIFF", stdCOMM(), stdSSND(),
+		aiffID3(testfile.ID3v2(3, testfile.TextFrame(3, "TCON", "(17)"), testfile.TextFrame(3, "TIT2", "T"))))
 	doc := mustParseBytes(t, data)
 	if g := doc.Fields().Genres; len(g) != 1 || g[0] != "Rock" {
 		t.Errorf("numeric genre (17) -> %v, want [Rock]", g)
@@ -736,7 +662,7 @@ func TestAIFFNumericGenreFromId3(t *testing.T) {
 func TestAIFFBareFileEditsGoNative(t *testing.T) {
 	// A bare AIFF (no tag containers) receiving a native-representable edit writes
 	// native text chunks, matching ffmpeg's own default, with no ID3 chunk.
-	data := aiffFile("AIFF", stdCOMM(), stdSSND())
+	data := testfile.AIFF("AIFF", stdCOMM(), stdSSND())
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Fresh").Set(tag.Comment, "note").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -759,15 +685,15 @@ func TestAIFFBareFileEditsGoNative(t *testing.T) {
 func TestAIFFTruncatedSSNDWarns(t *testing.T) {
 	t.Run("declared overruns file", func(t *testing.T) {
 		// The SSND header declares 100000 bytes but only the 8-byte sub-header plus a little audio follow.
-		ssndHdr := slices.Concat([]byte("SSND"), aiffBE32(100000))
-		data := aiffFile("AIFF", stdCOMM(), slices.Concat(ssndHdr, make([]byte, 8+200)))
+		ssndHdr := slices.Concat([]byte("SSND"), testfile.BE32(100000))
+		data := testfile.AIFF("AIFF", stdCOMM(), slices.Concat(ssndHdr, make([]byte, 8+200)))
 		doc := mustParseBytes(t, data)
 		if !hasWarning(doc, wl.WarnTruncatedAudio) {
 			t.Errorf("expected truncated-audio warning; got %v", doc.Warnings())
 		}
 	})
 	t.Run("intact file not flagged", func(t *testing.T) {
-		data := aiffFile("AIFF", stdCOMM(), stdSSND())
+		data := testfile.AIFF("AIFF", stdCOMM(), stdSSND())
 		if doc := mustParseBytes(t, data); hasWarning(doc, wl.WarnTruncatedAudio) {
 			t.Errorf("an intact AIFF must not be flagged truncated; got %v", doc.Warnings())
 		}
@@ -787,7 +713,7 @@ func aiffWithFormSize(data []byte, declared uint32) []byte {
 // NAME beside the stranded copy. AIFF and WAV share iff.WalkChunksRecovering.
 func TestAIFFShortFormSizeRecovered(t *testing.T) {
 	name := aiffText("NAME", "Stranded")
-	full := aiffFile("AIFF", aiffCOMM(2, 100, 16, 44100), aiffSSND(400), name)
+	full := testfile.AIFF("AIFF", testfile.COMM(2, 100, 16, 44100), aiffSSND(400), name)
 	data := aiffWithFormSize(full, uint32(len(full)-8-len(name)))
 
 	doc := mustParseBytes(t, data)
@@ -811,7 +737,7 @@ func TestAIFFShortFormSizeRecovered(t *testing.T) {
 }
 
 func TestAIFFAppendedBytesStillTrailing(t *testing.T) {
-	base := aiffFile("AIFF", aiffCOMM(2, 100, 16, 44100), aiffSSND(400))
+	base := testfile.AIFF("AIFF", testfile.COMM(2, 100, 16, 44100), aiffSSND(400))
 	data := append(slices.Clone(base), bytes.Repeat([]byte{0xCD}, 40)...)
 	doc := mustParseBytes(t, data)
 	if hasWarning(doc, wl.WarnDistrustedBlockSize) {
@@ -827,7 +753,7 @@ func TestAIFFAppendedBytesStillTrailing(t *testing.T) {
 func TestAIFFSentinelSSNDSizeReported(t *testing.T) {
 	ssnd := aiffSSND(400)
 	copy(ssnd[4:8], []byte{0xFF, 0xFF, 0xFF, 0xFF})
-	doc := mustParseBytes(t, aiffFile("AIFF", aiffCOMM(2, 100, 16, 44100), ssnd))
+	doc := mustParseBytes(t, testfile.AIFF("AIFF", testfile.COMM(2, 100, 16, 44100), ssnd))
 	if !hasWarning(doc, wl.WarnUnknownChunkSize) {
 		t.Errorf("the size-unknown sentinel left no signal at all; got %v", doc.Warnings())
 	}
@@ -835,14 +761,14 @@ func TestAIFFSentinelSSNDSizeReported(t *testing.T) {
 		t.Errorf("a size-unknown SSND must not be flagged truncated; got %v", doc.Warnings())
 	}
 	// The control: an ordinary AIFF must not gain the warning.
-	clean := mustParseBytes(t, aiffFile("AIFF", aiffCOMM(2, 100, 16, 44100), aiffSSND(400)))
+	clean := mustParseBytes(t, testfile.AIFF("AIFF", testfile.COMM(2, 100, 16, 44100), aiffSSND(400)))
 	if hasWarning(clean, wl.WarnUnknownChunkSize) {
 		t.Errorf("an ordinary AIFF must stay quiet: %v", clean.Warnings())
 	}
 }
 
 func TestAIFFConflictingTextChunkSurvivesUnrelatedEdit(t *testing.T) {
-	data := aiffFile("AIFF", stdCOMM(), aiffText("NAME", "Aiff Title"), aiffID3(id3v2(4, textFrame(4, "TIT2", "Id3 Title"))), stdSSND())
+	data := testfile.AIFF("AIFF", stdCOMM(), aiffText("NAME", "Aiff Title"), aiffID3(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Id3 Title"))), stdSSND())
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Album, "Z").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -878,7 +804,7 @@ func TestAIFFConflictingTextChunkSurvivesUnrelatedEdit(t *testing.T) {
 }
 
 func TestAIFFDuplicateNameChunksSurviveUnrelatedEdit(t *testing.T) {
-	data := aiffFile("AIFF", stdCOMM(), aiffText("NAME", "one"), aiffText("NAME", "two"), stdSSND())
+	data := testfile.AIFF("AIFF", stdCOMM(), aiffText("NAME", "one"), aiffText("NAME", "two"), stdSSND())
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Artist, "A").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -893,8 +819,8 @@ func TestAIFFDuplicateNameChunksSurviveUnrelatedEdit(t *testing.T) {
 // state, so an edit that names nothing must not rewrite it. Without the gate the writer would
 // restamp the ID3 value over NAME on every pass.
 func TestAIFFEmptyEditOnConflictingChunksIsNoOp(t *testing.T) {
-	data := aiffFile("AIFF", stdCOMM(), aiffText("NAME", "Aiff Title"),
-		aiffID3(id3v2(4, textFrame(4, "TIT2", "Id3 Title"))), stdSSND())
+	data := testfile.AIFF("AIFF", stdCOMM(), aiffText("NAME", "Aiff Title"),
+		aiffID3(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Id3 Title"))), stdSSND())
 	plan, err := mustParseBytes(t, data).Edit().Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -908,8 +834,8 @@ func TestAIFFEmptyEditOnConflictingChunksIsNoOp(t *testing.T) {
 // select has no canonical key to carry it into the ID3 chunk. doc.go's contract says such a loss
 // must be reported.
 func TestAIFFLegacyStripWarnsAboutDestroyedTextValues(t *testing.T) {
-	data := aiffFile("AIFF", stdCOMM(), aiffText("NAME", "Aiff Title"),
-		aiffID3(id3v2(4, textFrame(4, "TIT2", "Id3 Title"))), stdSSND())
+	data := testfile.AIFF("AIFF", stdCOMM(), aiffText("NAME", "Aiff Title"),
+		aiffID3(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Id3 Title"))), stdSSND())
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Album, "Z").Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
 	if err != nil {
 		t.Fatal(err)

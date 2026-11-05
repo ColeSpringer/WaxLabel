@@ -188,36 +188,35 @@ func buildShiftItems(wb *writeBase, ch changes, r *rendered) (items []outItem, s
 		switch {
 		case c.id == idSeekHead && wb.seek != nil:
 			seekIdx = len(items)
-			items = append(items, copyItem(c, itemSeek))
+			items = append(items, copyItem(c))
 		case c.id == idCues && wb.cues != nil:
 			cuesIdx = len(items)
-			items = append(items, copyItem(c, itemOther))
+			items = append(items, copyItem(c))
 		case c.id == idCRC32 && wb.segVoidFromCRC != nil:
 			// Substitute the stale Segment-level CRC with the captured length-identical Void.
-			// litItem records idVoid as the output id, so the returned doc carries a Void.
-			items = append(items, litItem(idVoid, wb.segVoidFromCRC, c.start, itemOther))
+			items = append(items, litItem(idVoid, wb.segVoidFromCRC, c.start))
 		case c.id == idInfo && ch.title:
-			items = append(items, litItem(idInfo, r.info, c.start, itemInfo))
+			items = append(items, litItem(idInfo, r.info, c.start))
 		case c.id == idTags && ch.simple:
 			if tagsPlaced || r.tags == nil {
 				continue // dropped, or a second Tags master (the first carries every group)
 			}
 			tagsPlaced = true
-			items = append(items, litItem(idTags, r.tags, c.start, itemTags))
+			items = append(items, litItem(idTags, r.tags, c.start))
 		case c.id == idAttachments && ch.pictures:
 			if attachPlaced || r.attach == nil {
 				continue // dropped, or a second Attachments master
 			}
 			attachPlaced = true
-			items = append(items, litItem(idAttachments, r.attach, c.start, itemAttach))
+			items = append(items, litItem(idAttachments, r.attach, c.start))
 		case c.id == idChapters && ch.chapters:
 			if chaptersPlaced || r.chapters == nil {
 				continue // dropped (cleared), or a second Chapters element
 			}
 			chaptersPlaced = true
-			items = append(items, litItem(idChapters, r.chapters, c.start, itemChapters))
+			items = append(items, litItem(idChapters, r.chapters, c.start))
 		default:
-			items = append(items, copyItem(c, itemOther))
+			items = append(items, copyItem(c))
 		}
 	}
 	if insertAt < 0 {
@@ -227,13 +226,13 @@ func buildShiftItems(wb *writeBase, ch changes, r *rendered) (items []outItem, s
 	// but not added to an existing SeekHead.
 	var created []outItem
 	if ch.simple && !tagsPlaced && r.tags != nil {
-		created = append(created, litItem(idTags, r.tags, -1, itemTags))
+		created = append(created, litItem(idTags, r.tags, -1))
 	}
 	if ch.pictures && !attachPlaced && r.attach != nil {
-		created = append(created, litItem(idAttachments, r.attach, -1, itemAttach))
+		created = append(created, litItem(idAttachments, r.attach, -1))
 	}
 	if ch.chapters && !chaptersPlaced && r.chapters != nil {
-		created = append(created, litItem(idChapters, r.chapters, -1, itemChapters))
+		created = append(created, litItem(idChapters, r.chapters, -1))
 	}
 	if len(created) > 0 {
 		items = insertItems(items, insertAt, created)
@@ -340,8 +339,8 @@ func encodeCues(points []cuePoint, crc *crcSpot, sizeHint int, om offsetMap, inS
 	return out, int64(len(out)), true
 }
 
-func copyItem(c l1elem, kind itemKind) outItem {
-	return outItem{id: c.id, srcOff: c.start, n: c.total(), origStart: c.start, kind: kind}
+func copyItem(c l1elem) outItem {
+	return outItem{id: c.id, srcOff: c.start, n: c.total(), origStart: c.start}
 }
 
 func insertItems(items []outItem, at int, extra []outItem) []outItem {
@@ -405,22 +404,8 @@ func assembleShift(wb *writeBase, items []outItem, segLead []bits.Segment, outSe
 			lay.segs = append(lay.segs, bits.Copy(it.srcOff, it.n))
 		}
 		lay.children = append(lay.children, l1elem{id: it.id, start: it.outOff, dataEnd: it.outOff + it.n})
-		switch it.kind {
-		case itemSeek:
-			lay.seekRaw, lay.seekStart = it.lit, it.outOff
-		case itemInfo:
-			lay.infoRaw, lay.infoStart = it.lit, it.outOff
-		case itemAttach:
-			lay.hasAttach = true
-			lay.attach = attachBlock{start: it.outOff, end: it.outOff + it.n, hasCRC: wb.attach != nil && wb.attach.hasCRC}
-		case itemChapters:
-			lay.chaptersRaw = it.lit
-		}
 		if it.id == idCluster && lay.clusterStart == 0 {
 			lay.clusterStart = it.outOff
-		}
-		if it.id == idCues && wb.cues != nil {
-			lay.cuesRaw, lay.cuesStart = it.lit, it.outOff
 		}
 	}
 	if trailing > 0 {
@@ -428,12 +413,6 @@ func assembleShift(wb *writeBase, items []outItem, segLead []bits.Segment, outSe
 	}
 	if lay.clusterStart == 0 {
 		lay.clusterStart = lay.size
-	}
-	if wb.seek != nil && lay.seekRaw == nil {
-		lay.seekRaw, lay.seekStart = wb.seek.raw, childStart(lay.children, idSeekHead)
-	}
-	if wb.info != nil && lay.infoRaw == nil {
-		lay.infoRaw, lay.infoStart = wb.info.raw, childStart(lay.children, idInfo)
 	}
 	return lay
 }

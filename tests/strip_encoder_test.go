@@ -1,18 +1,18 @@
 package waxlabel_test
 
 import (
-	"context"
 	"slices"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
 // the inherited-encoder finding also fires on a bare transcoder vendor string, so lint --fix must
 // not clear a clean, user-set ENCODER tag as collateral.
 func TestPlanLintFixPreservesCleanEncoder(t *testing.T) {
-	data := flacWithVendor("Lavf58.76.100", "ENCODER=MyTagger 1.0", "TITLE=Song")
+	data := testfile.TaggedFLAC("Lavf58.76.100", "ENCODER=MyTagger 1.0", "TITLE=Song")
 	doc := mustParseBytes(t, data)
 	if !hasInheritedEncoder(doc) {
 		t.Fatal("setup: a Lavf-vendor FLAC should flag inherited-encoder")
@@ -38,7 +38,7 @@ func TestPlanLintFixPreservesCleanEncoder(t *testing.T) {
 // companion: when the ENCODER value is a transcoder stamp, lint --fix still clears it (the gate
 // reuses the linter's own noise test, so it can never disagree with the finding).
 func TestPlanLintFixClearsStampEncoder(t *testing.T) {
-	data := flacWithVendor("reference libFLAC", "ENCODER=Lavf58.76.100", "TITLE=Song")
+	data := testfile.TaggedFLAC("reference libFLAC", "ENCODER=Lavf58.76.100", "TITLE=Song")
 	doc := mustParseBytes(t, data)
 	if !hasInheritedEncoder(doc) {
 		t.Fatal("setup: a Lavf ENCODER comment should flag inherited-encoder")
@@ -46,23 +46,6 @@ func TestPlanLintFixClearsStampEncoder(t *testing.T) {
 	if fix := doc.PlanLintFix(); !fix.Patch.Touches(tag.Encoder) {
 		t.Errorf("PlanLintFix must clear a transcoder-stamp ENCODER; patch keys = %v", fix.Patch.Keys())
 	}
-}
-
-// flacWithVendor builds a minimal FLAC whose Vorbis comment block carries the given vendor
-// string and comments.
-func flacWithVendor(vendor string, entries ...string) []byte {
-	le := func(n int) []byte { return []byte{byte(n), byte(n >> 8), byte(n >> 16), byte(n >> 24)} }
-	vc := append(le(len(vendor)), vendor...)
-	vc = append(vc, le(len(entries))...)
-	for _, e := range entries {
-		vc = append(vc, le(len(e))...)
-		vc = append(vc, e...)
-	}
-	out := []byte("fLaC")
-	out = append(out, flacBlock(0, false, validStreamInfo())...)
-	out = append(out, flacBlock(4, false, vc)...)
-	out = append(out, flacBlock(1, true, make([]byte, 4))...)
-	return append(out, 0xFF, 0xF8)
 }
 
 // hasInheritedEncoder reports whether a document's lint flags an inherited-encoder stamp.
@@ -80,7 +63,7 @@ func hasInheritedEncoder(doc *wl.Document) bool {
 func TestPlanLintFixMultiValueEncoderRemovesStamp(t *testing.T) {
 	// A clean ENCODER value first, then a Lavf stamp (a FLAC with two ENCODER comments); the
 	// vendor is a non-Lavf string so only the ENCODER comment carries the stamp.
-	data := flacWithVendor("reference libFLAC", "ENCODER=MyTagger 1.0", "ENCODER=Lavf58.76.100", "TITLE=Song")
+	data := testfile.TaggedFLAC("reference libFLAC", "ENCODER=MyTagger 1.0", "ENCODER=Lavf58.76.100", "TITLE=Song")
 	doc := mustParseBytes(t, data)
 	if !hasInheritedEncoder(doc) {
 		t.Fatal("setup: a stamped ENCODER value should flag inherited-encoder")
@@ -99,9 +82,9 @@ func TestPlanLintFixMultiValueEncoderRemovesStamp(t *testing.T) {
 }
 
 // --strip-encoder rewrites a transcoder-stamped FLAC vendor even when no ENCODER comment is
-// present. The returned document and a fresh parse of the written bytes should both lint cleanly.
+// present, so the written file lints cleanly.
 func TestStripEncoderNeutralizesFlacVendor(t *testing.T) {
-	data := flacWithVendor("Lavf58.76.100", "TITLE=Song")
+	data := testfile.TaggedFLAC("Lavf58.76.100", "TITLE=Song")
 	src := mustParseBytes(t, data)
 	if !hasInheritedEncoder(src) {
 		t.Fatal("setup: a Lavf-vendor FLAC should flag inherited-encoder")
@@ -118,21 +101,12 @@ func TestStripEncoderNeutralizesFlacVendor(t *testing.T) {
 		t.Errorf("Operations missing 'vendor stamp neutralized': %v", plan.Report().Operations)
 	}
 
-	// The returned in-memory document's Lint is based on the neutralized vendor.
-	var w writerTo
-	resDoc, _, err := plan.Execute(context.Background(), wl.WriteTo(&w, wl.BytesSource(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if hasInheritedEncoder(resDoc) {
-		t.Error("the returned document still flags inherited-encoder in-memory")
-	}
-	// A fresh parse of the written bytes is clean too (the vendor is neutralized on disk).
-	if hasInheritedEncoder(mustParseBytes(t, w.b)) {
+	re := mustParseBytes(t, applyToBytes(t, data, plan))
+	if hasInheritedEncoder(re) {
 		t.Error("re-parsed FLAC still flags inherited-encoder after --strip-encoder")
 	}
 	// The tag is untouched by the strip.
-	if v, _ := mustParseBytes(t, w.b).Get(tag.Title); len(v) != 1 || v[0] != "Song" {
+	if v, _ := re.Get(tag.Title); len(v) != 1 || v[0] != "Song" {
 		t.Errorf("TITLE = %v, want [Song] (strip must not disturb tags)", v)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -19,7 +20,7 @@ import (
 // the packet count was understood.
 func TestAIFFCPacketizedEssenceUnchanged(t *testing.T) {
 	t.Parallel()
-	data := aiffFile("AIFC", aiffText("NAME", "Packets"), aiffCOMMC(1, 690, 4, 44100, "ima4"), aiffSSND(690*34))
+	data := testfile.AIFF("AIFC", aiffText("NAME", "Packets"), testfile.COMMC(1, 690, 4, 44100, "ima4"), aiffSSND(690*34))
 	before := essenceOf(t, data)
 	if got := before.String(); got != "sha256/aiff-ssnd-v2:b09ea364c32d3e22d90f62b4c103efec8317b786beed62a940f66b7e124e0484" {
 		t.Errorf("digest = %s, want the value minted before the packet fix", got)
@@ -84,8 +85,8 @@ func TestAIFFCPacketizedGeometry(t *testing.T) {
 	t.Parallel()
 	for _, c := range aiffGeometryRows {
 		t.Run(c.name, func(t *testing.T) {
-			comm := aiffCOMMC(c.channels, c.count, c.size, 44100, c.comp)
-			doc := mustParseBytes(t, aiffFile("AIFC", comm, aiffSSND(c.ssnd)))
+			comm := testfile.COMMC(c.channels, c.count, c.size, 44100, c.comp)
+			doc := mustParseBytes(t, testfile.AIFF("AIFC", comm, aiffSSND(c.ssnd)))
 			tr := doc.Properties().First()
 			if tr.TotalSamples != c.samples {
 				t.Errorf("total samples = %d, want %d", tr.TotalSamples, c.samples)
@@ -105,7 +106,7 @@ func TestAIFFCPacketizedGeometry(t *testing.T) {
 			}
 
 			// Half the SSND bytes gone: the surviving packets set the reported length.
-			cut := mustParseBytes(t, aiffFile("AIFC", comm, truncatedSSND(8+c.ssnd, 8+c.ssnd/2)))
+			cut := mustParseBytes(t, testfile.AIFF("AIFC", comm, testfile.TruncatedSSND(8+c.ssnd, 8+c.ssnd/2)))
 			if !hasWarning(cut, wl.WarnTruncatedAudio) {
 				t.Error("a truncated SSND should flag truncated-audio")
 			}
@@ -129,18 +130,18 @@ func TestAIFFCPacketizedGeometry(t *testing.T) {
 // with no audio at all is no-audio-frames instead.
 func TestAIFFCOverstatedCOMMWarns(t *testing.T) {
 	t.Parallel()
-	over := mustParseBytes(t, aiffFile("AIFF", aiffCOMM(2, 1000, 16, 44100), aiffSSND(100*4)))
+	over := mustParseBytes(t, testfile.AIFF("AIFF", testfile.COMM(2, 1000, 16, 44100), aiffSSND(100*4)))
 	if !hasWarning(over, wl.WarnTruncatedAudio) {
 		t.Error("COMM overstating the SSND chunk should flag truncated-audio")
 	}
 	if got := over.Properties().First().TotalSamples; got != 100 {
 		t.Errorf("total samples = %d, want the 100 the chunk holds", got)
 	}
-	whole := mustParseBytes(t, aiffFile("AIFF", stdCOMM(), stdSSND()))
+	whole := mustParseBytes(t, testfile.AIFF("AIFF", stdCOMM(), stdSSND()))
 	if hasWarning(whole, wl.WarnTruncatedAudio) {
 		t.Error("a file whose chunks agree must not flag truncated-audio")
 	}
-	none := mustParseBytes(t, aiffFile("AIFF", stdCOMM(), aiffSSND(0)))
+	none := mustParseBytes(t, testfile.AIFF("AIFF", stdCOMM(), aiffSSND(0)))
 	if hasWarning(none, wl.WarnTruncatedAudio) || !hasWarning(none, wl.WarnNoAudioFrames) {
 		t.Errorf("an empty SSND is no-audio-frames, not truncated-audio; got %v", none.Warnings())
 	}
@@ -150,7 +151,7 @@ func TestAIFFCOverstatedCOMMWarns(t *testing.T) {
 // the bytes on disk, in plain AIFF as in AIFF-C. ffprobe reports the same figure.
 func TestAIFFStoredWidthBitrate(t *testing.T) {
 	t.Parallel()
-	tr := mustParseBytes(t, aiffFile("AIFF", aiffCOMM(2, 1000, 20, 44100), aiffSSND(1000*6))).Properties().First()
+	tr := mustParseBytes(t, testfile.AIFF("AIFF", testfile.COMM(2, 1000, 20, 44100), aiffSSND(1000*6))).Properties().First()
 	if tr.Bitrate != 2116800 {
 		t.Errorf("bitrate = %d, want 2116800 (a 20-bit sample stores 3 bytes)", tr.Bitrate)
 	}
@@ -164,7 +165,7 @@ func TestAIFFStoredWidthBitrate(t *testing.T) {
 // no panic, on a 32-bit build as much as a 64-bit one.
 func TestAIFFCHostileFrameCountCapped(t *testing.T) {
 	t.Parallel()
-	data := aiffFile("AIFC", aiffCOMMCFrames(1, math.MaxUint32, 4, 44100, "ima4"), aiffSSND(68))
+	data := testfile.AIFF("AIFC", testfile.COMMCFrames(1, math.MaxUint32, 4, 44100, "ima4"), aiffSSND(68))
 	tr := mustParseBytes(t, data).Properties().First()
 	if tr.TotalSamples != 128 || tr.Bitrate != 187425 {
 		t.Errorf("samples %d / bitrate %d, want 128 / 187425", tr.TotalSamples, tr.Bitrate)
@@ -240,7 +241,7 @@ func TestAIFFDifferentialFFmpegPacketized(t *testing.T) {
 		}
 		t.Run("synthetic "+c.name, func(t *testing.T) {
 			path := filepath.Join(dir, strings.ReplaceAll(c.name, " ", "-")+".aifc")
-			data := aiffFile("AIFC", aiffCOMMC(c.channels, c.count, c.size, 44100, c.comp), aiffSSND(c.ssnd))
+			data := testfile.AIFF("AIFC", testfile.COMMC(c.channels, c.count, c.size, 44100, c.comp), aiffSSND(c.ssnd))
 			if err := os.WriteFile(path, data, 0o644); err != nil {
 				t.Fatal(err)
 			}

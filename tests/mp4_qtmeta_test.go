@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -29,7 +30,7 @@ func mp4MdtaFile(names []string, values []string) []byte {
 	for i, v := range values {
 		items = append(items, mp4KeyItem(i+1, v))
 	}
-	return mp4Assemble(mp4HdlrMdta(), mp4Keys(names...), mp4Ilst(items...))
+	return testfile.MP4Assemble(mp4HdlrMdta(), mp4Keys(names...), testfile.MP4Ilst(items...))
 }
 
 // An ffmpeg "+use_metadata_tags" file keys its ilst items by index into a keys box holding bare
@@ -101,7 +102,7 @@ func TestMP4MdtaUnknownKeyPreserved(t *testing.T) {
 
 // plain .mov keeps its tags as direct udta children with no meta box at all.
 func TestMP4UdtaTextRead(t *testing.T) {
-	data := mp4AssembleUdta(
+	data := testfile.MP4AssembleUdta(
 		mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "QT Title")),
 		mp4UdtaText("\xa9swr", mp4QTTextEntry(langUnd, "Lavf62.3.100")),
 	)
@@ -127,7 +128,7 @@ func TestMP4UdtaTextRead(t *testing.T) {
 // ffprobe's "title-eng"). The first undefined/English entry supplies the canonical value, and
 // every other entry survives a rewrite verbatim.
 func TestMP4UdtaMultiLanguageCanonicalValue(t *testing.T) {
-	data := mp4AssembleUdta(mp4UdtaText("\xa9nam",
+	data := testfile.MP4AssembleUdta(mp4UdtaText("\xa9nam",
 		mp4QTTextEntry(langDeu, "Deutscher Titel"),
 		mp4QTTextEntry(langEng, "English Title"),
 	))
@@ -141,9 +142,9 @@ func TestMP4UdtaMultiLanguageCanonicalValue(t *testing.T) {
 // disagreement reaches conflicting-families without the two values merging into a multi-value the
 // next write would store as one.
 func TestMP4UdtaIlstDisagreementConflicts(t *testing.T) {
-	data := mp4AssembleUdta(
+	data := testfile.MP4AssembleUdta(
 		mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "Udta Title")),
-		mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "Ilst Title"))),
+		testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "Ilst Title"))),
 	)
 	doc := mustParseBytes(t, data)
 	conflict := false
@@ -180,9 +181,9 @@ func TestMP4UdtaIlstDisagreementConflicts(t *testing.T) {
 
 // edit touching neither store must not launder a disagreement away.
 func TestMP4UdtaIlstDisagreementSurvivesUnrelatedEdit(t *testing.T) {
-	data := mp4AssembleUdta(
+	data := testfile.MP4AssembleUdta(
 		mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "Udta Title")),
-		mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "Ilst Title"))),
+		testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "Ilst Title"))),
 	)
 	doc := mustParseBytes(t, data)
 	plan, err := doc.Edit().Set(tag.Artist, "Unrelated").Prepare()
@@ -208,9 +209,9 @@ func TestMP4UdtaIlstDisagreementSurvivesUnrelatedEdit(t *testing.T) {
 // udta child outside the text vocabulary is not decoded and must survive a rewrite through the
 // verbatim udta splice.
 func TestMP4UdtaUnmappedAtomPreserved(t *testing.T) {
-	data := mp4AssembleUdta(
+	data := testfile.MP4AssembleUdta(
 		mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "Before")),
-		mp4Atom("XTRA", []byte("opaque-user-data")),
+		testfile.MP4Atom("XTRA", []byte("opaque-user-data")),
 	)
 	doc := mustParseBytes(t, data)
 	plan, err := doc.Edit().Set(tag.Artist, "Someone").Prepare()
@@ -263,7 +264,7 @@ func TestMP4MdtaWriteStaysKeyed(t *testing.T) {
 // file whose only tag store is udta-level text atoms is edited there, with no meta/ilst created
 // beside it, so ffprobe reports one title, not the two a second store would produce.
 func TestMP4UdtaOnlyWritesInPlace(t *testing.T) {
-	data := mp4AssembleUdta(
+	data := testfile.MP4AssembleUdta(
 		mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "Before")),
 		mp4UdtaText("\xa9swr", mp4QTTextEntry(langUnd, "Lavf62.3.100")),
 	)
@@ -288,7 +289,7 @@ func TestMP4UdtaOnlyWritesInPlace(t *testing.T) {
 // rewriting a multi-language atom replaces only the canonical entry; the other translations survive
 // verbatim.
 func TestMP4UdtaKeepsOtherLanguagesOnWrite(t *testing.T) {
-	data := mp4AssembleUdta(mp4UdtaText("\xa9nam",
+	data := testfile.MP4AssembleUdta(mp4UdtaText("\xa9nam",
 		mp4QTTextEntry(langEng, "English Title"),
 		mp4QTTextEntry(langDeu, "Deutscher Titel"),
 	))
@@ -309,9 +310,9 @@ func TestMP4UdtaKeepsOtherLanguagesOnWrite(t *testing.T) {
 // when both stores exist the ilst is the write target, and the udta-level atom for the same
 // canonical key is rewritten to match, so the two cannot disagree after a write.
 func TestMP4UdtaSyncedWithIlst(t *testing.T) {
-	data := mp4AssembleUdta(
+	data := testfile.MP4AssembleUdta(
 		mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "Stale Title")),
-		mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "Stale Title"))),
+		testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "Stale Title"))),
 	)
 	doc := mustParseBytes(t, data)
 	plan, err := doc.Edit().Set(tag.Title, "Synced").Prepare()
@@ -334,7 +335,7 @@ func TestMP4UdtaSyncedWithIlst(t *testing.T) {
 }
 
 func TestMP4UdtaClearedRemovesAtom(t *testing.T) {
-	data := mp4AssembleUdta(
+	data := testfile.MP4AssembleUdta(
 		mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "Doomed")),
 		mp4UdtaText("\xa9ART", mp4QTTextEntry(langUnd, "Kept")),
 	)
@@ -441,7 +442,7 @@ func ffprobeFormatTags(t *testing.T, path string) map[string]string {
 // nothing. Encoding index-keyed items into it would name entries in a table that does not exist, so
 // the write falls back to the four-character encoder and the values still read back.
 func TestMP4MdtaWithoutKeysBoxFallsBack(t *testing.T) {
-	data := mp4Assemble(mp4HdlrMdta(), mp4Ilst(mp4Text("\xa9nam", "Before")))
+	data := testfile.MP4Assemble(mp4HdlrMdta(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "Before")))
 	doc := mustParseBytes(t, data)
 	if got := doc.Fields().Title; got != "Before" {
 		t.Fatalf("TITLE = %q, want Before (an unresolved item falls through to the four-cc dispatch)", got)
@@ -464,8 +465,8 @@ func TestMP4MdtaWithoutKeysBoxFallsBack(t *testing.T) {
 // turns negative under a 32-bit int, which would pass the bounds check and panic the lookup.
 func TestMP4MdtaOutOfRangeIndexPreserved(t *testing.T) {
 	// "\xa9nam" reads as the index 0xA96E616D (2842583405), far past a one-entry table.
-	data := mp4Assemble(mp4HdlrMdta(), mp4Keys("title"),
-		mp4Ilst(mp4KeyItem(1, "Kept"), mp4Text("\xa9nam", "Out Of Range")))
+	data := testfile.MP4Assemble(mp4HdlrMdta(), mp4Keys("title"),
+		testfile.MP4Ilst(mp4KeyItem(1, "Kept"), testfile.MP4Text("\xa9nam", "Out Of Range")))
 	doc := mustParseBytes(t, data)
 	if got := doc.Fields().Title; got != "Kept" {
 		t.Errorf("TITLE = %q, want Kept (from the in-range keys entry)", got)
@@ -480,8 +481,8 @@ func TestMP4MdtaOutOfRangeIndexPreserved(t *testing.T) {
 }
 
 func TestMP4MdtaCoverSurvivesTagEdit(t *testing.T) {
-	data := mp4Assemble(mp4HdlrMdta(), mp4Keys("title", "covr"),
-		mp4Ilst(mp4KeyItem(1, "Before"), mp4KeyItemData(2, mp4Data(13, tinyJPEG()))))
+	data := testfile.MP4Assemble(mp4HdlrMdta(), mp4Keys("title", "covr"),
+		testfile.MP4Ilst(mp4KeyItem(1, "Before"), mp4KeyItemData(2, testfile.MP4Data(13, testfile.JPEG()))))
 	doc := mustParseBytes(t, data)
 	if len(doc.Pictures()) != 1 {
 		t.Fatalf("setup: pictures = %d, want 1", len(doc.Pictures()))
@@ -502,7 +503,7 @@ func TestMP4MdtaCoverSurvivesTagEdit(t *testing.T) {
 // clearing a key must not take the atom's other-language entries with it, which qtmeta.go promises
 // to preserve verbatim.
 func TestMP4UdtaClearKeepsOtherLanguages(t *testing.T) {
-	data := mp4AssembleUdta(mp4UdtaText("\xa9nam",
+	data := testfile.MP4AssembleUdta(mp4UdtaText("\xa9nam",
 		mp4QTTextEntry(langEng, "English Title"),
 		mp4QTTextEntry(langDeu, "Deutscher Titel"),
 	))
@@ -526,7 +527,7 @@ func TestMP4UdtaClearKeepsOtherLanguages(t *testing.T) {
 // atom whose canonical entry is empty contributes no tag, so the key is absent from the edit; the
 // delete path must still not take the other-language entries with it.
 func TestMP4UdtaEmptyCanonicalEntryKeepsSiblings(t *testing.T) {
-	data := mp4AssembleUdta(
+	data := testfile.MP4AssembleUdta(
 		mp4UdtaText("\xa9nam", mp4QTTextEntry(langEng, ""), mp4QTTextEntry(langDeu, "Nur Deutsch")),
 		mp4UdtaText("\xa9ART", mp4QTTextEntry(langUnd, "Someone")),
 	)

@@ -11,12 +11,13 @@ import (
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/atomicfile"
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // TestExportPictureRoundTrip: exported bytes match source image; JSON reports picture metadata.
 func TestExportPictureRoundTrip(t *testing.T) {
 	t.Parallel()
-	cover := writeTempImage(t, "cover.png", minimalPNG())
+	cover := writeTempImage(t, "cover.png", testfile.PNG())
 	f := copyFixture(t, notagsFLAC)
 	if _, errb, code := runCLI(t, "set", f, "--add-cover", cover); code != 0 {
 		t.Fatalf("authoring the cover exit %d: %s", code, errb)
@@ -31,15 +32,15 @@ func TestExportPictureRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read exported file: %v", err)
 	}
-	if !bytes.Equal(got, minimalPNG()) {
-		t.Errorf("exported bytes are not byte-identical to the source image (got %d bytes, want %d)", len(got), len(minimalPNG()))
+	if !bytes.Equal(got, testfile.PNG()) {
+		t.Errorf("exported bytes are not byte-identical to the source image (got %d bytes, want %d)", len(got), len(testfile.PNG()))
 	}
 	var jp jsonExportPicture // export-picture emits a single object, not the array plan/set do
 	if err := json.Unmarshal([]byte(out), &jp); err != nil {
 		t.Fatalf("export JSON: %v\n%s", err, out)
 	}
-	if jp.Picture.MIME != "image/png" || jp.Picture.Bytes != len(minimalPNG()) || jp.Output != outPath {
-		t.Errorf("export JSON = %+v, want image/png / %d bytes / output %q", jp, len(minimalPNG()), outPath)
+	if jp.Picture.MIME != "image/png" || jp.Picture.Bytes != len(testfile.PNG()) || jp.Output != outPath {
+		t.Errorf("export JSON = %+v, want image/png / %d bytes / output %q", jp, len(testfile.PNG()), outPath)
 	}
 }
 
@@ -47,8 +48,8 @@ func TestExportPictureRoundTrip(t *testing.T) {
 // no pictures, no default front cover).
 func TestExportPictureSelectorErrors(t *testing.T) {
 	t.Parallel()
-	pngA := writeTempImage(t, "a.png", minimalPNG())
-	pngB := writeTempImage(t, "b.png", append(minimalPNG(), 0x00)) // distinct bytes, same role
+	pngA := writeTempImage(t, "a.png", testfile.PNG())
+	pngB := writeTempImage(t, "b.png", append(testfile.PNG(), 0x00)) // distinct bytes, same role
 	f := copyFixture(t, notagsFLAC)
 	// Two front covers: role selector ambiguous; default cannot pick.
 	if _, errb, code := runCLI(t, "set", f, "--add-picture", "front-cover="+pngA, "--add-picture", "front-cover="+pngB); code != 0 {
@@ -84,7 +85,7 @@ func TestExportPictureSelectorErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(got, append(minimalPNG(), 0x00)) {
+	if !bytes.Equal(got, append(testfile.PNG(), 0x00)) {
 		t.Errorf("--picture 2 exported the wrong cover")
 	}
 
@@ -139,7 +140,7 @@ func TestExportPictureRefusesInputAsOutput(t *testing.T) {
 // TestExportPictureOverwriteGate: existing -o refused unless --overwrite.
 func TestExportPictureOverwriteGate(t *testing.T) {
 	t.Parallel()
-	cover := writeTempImage(t, "cover.png", minimalPNG())
+	cover := writeTempImage(t, "cover.png", testfile.PNG())
 	f := copyFixture(t, notagsFLAC)
 	if _, errb, code := runCLI(t, "set", f, "--add-cover", cover); code != 0 {
 		t.Fatalf("authoring exit %d: %s", code, errb)
@@ -158,16 +159,16 @@ func TestExportPictureOverwriteGate(t *testing.T) {
 	if _, _, code := runCLI(t, "export-picture", f, "-o", out, "--overwrite"); code != 0 {
 		t.Errorf("--overwrite should replace the existing file, got exit %d", code)
 	}
-	if got, _ := os.ReadFile(out); !bytes.Equal(got, minimalPNG()) {
+	if got, _ := os.ReadFile(out); !bytes.Equal(got, testfile.PNG()) {
 		t.Errorf("--overwrite did not write the cover bytes")
 	}
 }
 
-// coveredFLAC is a FLAC fixture carrying minimalPNG as its front cover.
+// coveredFLAC is a FLAC fixture carrying testfile.PNG as its front cover.
 func coveredFLAC(t *testing.T) string {
 	t.Helper()
 	f := copyFixture(t, notagsFLAC)
-	if _, errb, code := runCLI(t, "set", f, "--add-cover", writeTempImage(t, "cover.png", minimalPNG())); code != 0 {
+	if _, errb, code := runCLI(t, "set", f, "--add-cover", writeTempImage(t, "cover.png", testfile.PNG())); code != 0 {
 		t.Fatalf("authoring exit %d: %s", code, errb)
 	}
 	return f
@@ -192,7 +193,7 @@ func TestExportPictureReplacesAtomically(t *testing.T) {
 	if _, errb, code := runCLI(t, "export-picture", f, "-o", linked, "--overwrite"); code != 0 {
 		t.Fatalf("export over a hard link exit %d: %s", code, errb)
 	}
-	if got, _ := os.ReadFile(linked); !bytes.Equal(got, minimalPNG()) {
+	if got, _ := os.ReadFile(linked); !bytes.Equal(got, testfile.PNG()) {
 		t.Error("the export did not write the cover bytes")
 	}
 	if got, _ := os.ReadFile(alias); string(got) != "alias" {
@@ -210,7 +211,7 @@ func TestExportPictureReplacesAtomically(t *testing.T) {
 	if _, errb, code := runCLI(t, "export-picture", f, "-o", ro, "--overwrite"); code != 0 {
 		t.Fatalf("export over a read-only file exit %d: %s", code, errb)
 	}
-	if got, _ := os.ReadFile(ro); !bytes.Equal(got, minimalPNG()) {
+	if got, _ := os.ReadFile(ro); !bytes.Equal(got, testfile.PNG()) {
 		t.Error("the read-only target was not replaced")
 	}
 	if info, err := os.Stat(ro); err != nil || info.Mode().Perm() != 0o444 {
@@ -238,7 +239,7 @@ func TestExportPictureCommittedThenStepFailed(t *testing.T) {
 	if code != 0 || !strings.Contains(errb, "written, but a step after the write failed") {
 		t.Errorf("exit = %d, stderr = %q; want 0 and the post-write warning", code, errb)
 	}
-	if got, _ := os.ReadFile(out); !bytes.Equal(got, minimalPNG()) {
+	if got, _ := os.ReadFile(out); !bytes.Equal(got, testfile.PNG()) {
 		t.Error("the cover is not at the output")
 	}
 	jsonOut, _, code := runCLI(t, "--json", "export-picture", f, "-o", out, "--overwrite")
@@ -272,26 +273,8 @@ func mp3JunkCover(t *testing.T) []byte {
 	body := []byte{0x00}
 	body = append(body, "image/png"...)
 	body = append(body, 0x00, 0x03, 0x00)
-	body = append(body, minimalPNG()[8:]...)
-	return append(id3v24Tag(t, "APIC", body), audio...)
-}
-
-// id3v24Tag wraps one frame in ID3v2.4 with synchsafe tag and frame sizes.
-func id3v24Tag(t *testing.T, id string, body []byte) []byte {
-	t.Helper()
-	synchsafe := func(n int) []byte {
-		if n >= 1<<28 {
-			t.Fatalf("%d does not fit a synchsafe size", n)
-		}
-		return []byte{byte(n >> 21 & 0x7F), byte(n >> 14 & 0x7F), byte(n >> 7 & 0x7F), byte(n & 0x7F)}
-	}
-	frame := append([]byte(id), synchsafe(len(body))...)
-	frame = append(frame, 0x00, 0x00) // frame flags
-	frame = append(frame, body...)
-
-	tag := append([]byte("ID3"), 0x04, 0x00, 0x00) // version 2.4.0, no tag flags
-	tag = append(tag, synchsafe(len(frame))...)
-	return append(tag, frame...)
+	body = append(body, testfile.PNG()[8:]...)
+	return append(testfile.ID3v2(4, testfile.ID3Frame(4, "APIC", body)), audio...)
 }
 
 // TestExportPictureJunkReportsUnrecognized: junk APIC exports as octet-stream, not declared png.

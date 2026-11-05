@@ -9,6 +9,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -16,14 +17,14 @@ import (
 
 // mkAtom builds a ChapterAtom with a UID, start/end (ns), and an optional title.
 func mkAtom(uid, startNs, endNs uint64, title string) []byte {
-	body := concat(mkUint(idChapterUID, uid), mkUint(idChapTimeStart, startNs))
+	body := concat(testfile.Uint(idChapterUID, uid), testfile.Uint(idChapTimeStart, startNs))
 	if endNs > 0 {
-		body = concat(body, mkUint(idChapTimeEnd, endNs))
+		body = concat(body, testfile.Uint(idChapTimeEnd, endNs))
 	}
 	if title != "" {
-		body = concat(body, mkEl(idChapDisplay, mkStr(idChapString, title)))
+		body = concat(body, testfile.El(idChapDisplay, mkStr(idChapString, title)))
 	}
-	return mkEl(idChapterAtom, body)
+	return testfile.El(idChapterAtom, body)
 }
 
 // mkEdition builds an EditionEntry, optionally marked default, with a prefix
@@ -32,16 +33,16 @@ func mkEdition(def bool, prefix []byte, atoms ...[]byte) []byte {
 	var body []byte
 	body = append(body, prefix...)
 	if def {
-		body = append(body, mkUint(idEditionFlagDf, 1)...)
+		body = append(body, testfile.Uint(idEditionFlagDf, 1)...)
 	}
 	body = append(body, concat(atoms...)...)
-	return mkEl(idEditionEntry, body)
+	return testfile.El(idEditionEntry, body)
 }
 
 // buildMatroskaCh assembles a minimal file with an Info title, a Chapters element, and optional
 // Tags.
 func buildMatroskaCh(docType, title string, chapters, tags []byte) []byte {
-	return buildMatroska(docType, title, concat(chapters, tags))
+	return testfile.Matroska(docType, title, concat(chapters, tags))
 }
 
 func ms(n int) time.Duration { return time.Duration(n) * time.Millisecond }
@@ -80,8 +81,8 @@ func TestMatroskaReadChapters(t *testing.T) {
 	}
 }
 
-// A title edit on the fixture (the absorption path, since the file has a Void) reparses
-// identically and leaves the cluster essence untouched.
+// A chapter edit on the fixture (the absorption path, since the file has a Void) reads back
+// exactly and leaves the cluster essence untouched.
 func TestMatroskaChapterRoundTripFixture(t *testing.T) {
 	src := readFixture(t, chaptersMKA)
 	newChaps := []wl.Chapter{
@@ -97,10 +98,6 @@ func TestMatroskaChapterRoundTripFixture(t *testing.T) {
 	re := mustParseBytes(t, out)
 	if !equalChapterLists(re.Chapters(), newChaps) {
 		t.Errorf("reparsed chapters = %+v, want %+v", re.Chapters(), newChaps)
-	}
-	// The result document equals a fresh parse.
-	if !equalChapterLists(outDoc.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v", outDoc.Chapters(), re.Chapters())
 	}
 	essenceUnchanged(t, src, out)
 	// Other metadata survives the chapter edit.
@@ -257,14 +254,14 @@ func TestMatroskaChapterWebMAllowed(t *testing.T) {
 // chapter edit reuses each chapter's original ChapterUID by position, so chapter-scoped SimpleTags
 // that reference a UID stay valid.
 func TestMatroskaChapterUIDsPreserved(t *testing.T) {
-	chapters := mkEl(idChapters, mkEdition(true, nil,
+	chapters := testfile.El(idChapters, mkEdition(true, nil,
 		mkAtom(42, 0, uint64(ms(200)), "First"),
 		mkAtom(99, uint64(ms(200)), uint64(ms(400)), "Second"),
 	))
 	// A chapter-scoped tag referencing ChapterUID 42 (preserved verbatim).
-	tags := mkEl(idTags, mkEl(idTag, concat(
-		mkEl(idTargets, concat(mkUint(idTgtTypeVal, 30), mkUint(idTagChapUID, 42))),
-		mkSimple("ARTIST", "Chapter Performer"))))
+	tags := testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(
+		testfile.El(testfile.IDTargets, concat(testfile.Uint(testfile.IDTgtTypeVal, 30), testfile.Uint(idTagChapUID, 42))),
+		testfile.SimpleTag("ARTIST", "Chapter Performer"))))
 	data := buildMatroskaCh("matroska", "T", chapters, tags)
 
 	if got := mustParseBytes(t, data).Chapters(); len(got) != 2 || got[0].Title != "First" {
@@ -291,9 +288,9 @@ func TestMatroskaChapterUIDsPreserved(t *testing.T) {
 
 // only the default edition is re-rendered on an edit; a non-default edition is preserved verbatim.
 func TestMatroskaMultiEditionPreserved(t *testing.T) {
-	chapters := mkEl(idChapters, concat(
+	chapters := testfile.El(idChapters, concat(
 		mkEdition(true, nil, mkAtom(1, 0, uint64(ms(300)), "DefaultChap")),
-		mkEdition(false, mkUint(idEditionUID, 7777), mkAtom(2, 0, uint64(ms(300)), "NonDefaultChap")),
+		mkEdition(false, testfile.Uint(idEditionUID, 7777), mkAtom(2, 0, uint64(ms(300)), "NonDefaultChap")),
 	))
 	data := buildMatroskaCh("matroska", "T", chapters, nil)
 
@@ -317,9 +314,9 @@ func TestMatroskaMultiEditionPreserved(t *testing.T) {
 // Clearing chapters on a multi-edition file removes the whole Chapters element. Dropping only
 // the default edition would promote a hidden non-default edition into view.
 func TestMatroskaChapterClearMultiEdition(t *testing.T) {
-	chapters := mkEl(idChapters, concat(
+	chapters := testfile.El(idChapters, concat(
 		mkEdition(true, nil, mkAtom(1, 0, uint64(ms(300)), "DefaultChap")),
-		mkEdition(false, mkUint(idEditionUID, 7777), mkAtom(2, 0, uint64(ms(300)), "HiddenChap")),
+		mkEdition(false, testfile.Uint(idEditionUID, 7777), mkAtom(2, 0, uint64(ms(300)), "HiddenChap")),
 	))
 	data := buildMatroskaCh("matroska", "T", chapters, nil)
 	out, outDoc := saveMatroska(t, data, mustParseBytes(t, data).Edit().ClearChapters())
@@ -341,7 +338,7 @@ func TestMatroskaChapterClearMultiEdition(t *testing.T) {
 // file whose ChapterAtoms are stored out of start order projects sorted by start (so re-setting it
 // is a no-op) and keeps each chapter aligned with its own ChapterUID on a re-render.
 func TestMatroskaChapterOutOfOrderSorted(t *testing.T) {
-	chapters := mkEl(idChapters, mkEdition(true, nil,
+	chapters := testfile.El(idChapters, mkEdition(true, nil,
 		mkAtom(200, uint64(ms(200)), uint64(ms(400)), "Second"), // stored first, starts later
 		mkAtom(100, 0, uint64(ms(200)), "First"),                // stored second, starts at 0
 	))
@@ -377,14 +374,14 @@ func TestMatroskaChapterOutOfOrderSorted(t *testing.T) {
 // editing a default edition that carries a nested sub-chapter or a second (other-language) display
 // drops that structure, surfaced as a plan-time WarnChaptersFlattened.
 func TestMatroskaChapterFlattenWarns(t *testing.T) {
-	nested := mkEl(idChapterAtom, concat(
-		mkUint(idChapterUID, 1), mkUint(idChapTimeStart, 0),
-		mkEl(idChapDisplay, mkStr(idChapString, "Top")),
-		mkEl(idChapterAtom, concat( // a nested sub-chapter the flat model cannot hold
-			mkUint(idChapterUID, 9), mkUint(idChapTimeStart, uint64(ms(100))),
-			mkEl(idChapDisplay, mkStr(idChapString, "Sub")))),
+	nested := testfile.El(idChapterAtom, concat(
+		testfile.Uint(idChapterUID, 1), testfile.Uint(idChapTimeStart, 0),
+		testfile.El(idChapDisplay, mkStr(idChapString, "Top")),
+		testfile.El(idChapterAtom, concat( // a nested sub-chapter the flat model cannot hold
+			testfile.Uint(idChapterUID, 9), testfile.Uint(idChapTimeStart, uint64(ms(100))),
+			testfile.El(idChapDisplay, mkStr(idChapString, "Sub")))),
 	))
-	data := buildMatroskaCh("matroska", "T", mkEl(idChapters, mkEdition(true, nil, nested)), nil)
+	data := buildMatroskaCh("matroska", "T", testfile.El(idChapters, mkEdition(true, nil, nested)), nil)
 
 	plan, err := mustParseBytes(t, data).Edit().SetChapters(wl.Chapter{Start: 0, Title: "Edited"}).Prepare()
 	if err != nil {
@@ -403,7 +400,7 @@ func TestMatroskaChapterFlattenWarns(t *testing.T) {
 	}
 
 	// A flat file (no nested atoms, single display) edits without the warning.
-	flat := buildMatroskaCh("matroska", "T", mkEl(idChapters, mkEdition(true, nil,
+	flat := buildMatroskaCh("matroska", "T", testfile.El(idChapters, mkEdition(true, nil,
 		mkAtom(1, 0, uint64(ms(200)), "Solo"))), nil)
 	plain, err := mustParseBytes(t, flat).Edit().SetChapters(wl.Chapter{Start: 0, Title: "X"}).Prepare()
 	if err != nil {
@@ -441,9 +438,9 @@ func TestMatroskaChapterPreservedAcrossTagEdit(t *testing.T) {
 	}
 }
 
-// chapter edit applied to the returned document (without re-parsing) round-trips, proving the
-// result carries a valid rewrite base and chapter model forward.
-func TestMatroskaChapterReEditNoReparse(t *testing.T) {
+// A chapter edit on the Document a chapter write returned round-trips: the writer takes its own
+// output as a rewrite base.
+func TestMatroskaChapterReEditOfReturnedDocument(t *testing.T) {
 	src := readFixture(t, chaptersMKA)
 	out1, doc1 := saveMatroska(t, src, mustParseBytes(t, src).Edit().SetChapters(
 		wl.Chapter{Start: 0, End: ms(300), Title: "First Pass"}))

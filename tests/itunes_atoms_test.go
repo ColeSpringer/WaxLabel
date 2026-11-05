@@ -8,23 +8,24 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
 // mp4AllITunesAtoms builds a file carrying every projected iTunes structured atom, plus the three
 // classic text atoms (©wrk, ©mvn, ©enc).
 func mp4AllITunesAtoms() []byte {
-	return mp4Tagged(
-		mp4Text("\xa9nam", "T"),
-		mp4Atom("rtng", mp4Data(21, []byte{1})),
-		mp4Atom("pgap", mp4Data(21, []byte{1})),
-		mp4Atom("shwm", mp4Data(21, []byte{0})),
-		mp4Atom("tmpo", mp4Data(21, []byte{0, 128})),
-		mp4Atom("\xa9mvi", mp4Data(21, []byte{0, 3})),
-		mp4Atom("\xa9mvc", mp4Data(21, []byte{0, 12})),
-		mp4Text("\xa9wrk", "Symphony No. 5"),
-		mp4Text("\xa9mvn", "Allegro con brio"),
-		mp4Text("\xa9enc", "Jane Encoder"),
+	return testfile.MP4Tagged(
+		testfile.MP4Text("\xa9nam", "T"),
+		testfile.MP4Atom("rtng", testfile.MP4Data(21, []byte{1})),
+		testfile.MP4Atom("pgap", testfile.MP4Data(21, []byte{1})),
+		testfile.MP4Atom("shwm", testfile.MP4Data(21, []byte{0})),
+		testfile.MP4Atom("tmpo", testfile.MP4Data(21, []byte{0, 128})),
+		testfile.MP4Atom("\xa9mvi", testfile.MP4Data(21, []byte{0, 3})),
+		testfile.MP4Atom("\xa9mvc", testfile.MP4Data(21, []byte{0, 12})),
+		testfile.MP4Text("\xa9wrk", "Symphony No. 5"),
+		testfile.MP4Text("\xa9mvn", "Allegro con brio"),
+		testfile.MP4Text("\xa9enc", "Jane Encoder"),
 	)
 }
 
@@ -86,15 +87,15 @@ func TestMP4ITunesAtomDecodeFidelity(t *testing.T) {
 		key  tag.Key
 		want string
 	}{
-		{"advisory zero", mp4Atom("rtng", mp4Data(21, []byte{0})), tag.ITunesAdvisory, "0"},
-		{"advisory legacy four", mp4Atom("rtng", mp4Data(21, []byte{4})), tag.ITunesAdvisory, "4"},
-		{"implicit type accepted", mp4Atom("rtng", mp4Data(0, []byte{2})), tag.ITunesAdvisory, "2"},
-		{"tmpo one byte", mp4Atom("tmpo", mp4Data(21, []byte{128})), tag.BPM, "128"},
-		{"tmpo four bytes", mp4Atom("tmpo", mp4Data(21, []byte{0, 0, 0, 200})), tag.BPM, "200"},
+		{"advisory zero", testfile.MP4Atom("rtng", testfile.MP4Data(21, []byte{0})), tag.ITunesAdvisory, "0"},
+		{"advisory legacy four", testfile.MP4Atom("rtng", testfile.MP4Data(21, []byte{4})), tag.ITunesAdvisory, "4"},
+		{"implicit type accepted", testfile.MP4Atom("rtng", testfile.MP4Data(0, []byte{2})), tag.ITunesAdvisory, "2"},
+		{"tmpo one byte", testfile.MP4Atom("tmpo", testfile.MP4Data(21, []byte{128})), tag.BPM, "128"},
+		{"tmpo four bytes", testfile.MP4Atom("tmpo", testfile.MP4Data(21, []byte{0, 0, 0, 200})), tag.BPM, "200"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			doc := mustParseBytes(t, mp4Tagged(mp4Text("\xa9nam", "T"), c.item))
+			doc := mustParseBytes(t, testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"), c.item))
 			if v, ok := doc.Get(c.key); !ok || len(v) != 1 || v[0] != c.want {
 				t.Errorf("%s = %v (ok=%v), want %q", c.key, v, ok, c.want)
 			}
@@ -105,7 +106,7 @@ func TestMP4ITunesAtomDecodeFidelity(t *testing.T) {
 // Setting the eight keys on a bare file writes structured atoms with type-21 data, no "----"
 // freeform fallback, and round-trips, including a literal advisory 0.
 func TestMP4ITunesWriteCreatesAtoms(t *testing.T) {
-	data := mp4Tagged(mp4Text("\xa9nam", "T"))
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 	// The two flags get distinct values so a swapped pgap/shwm encoder fails the byte pins.
 	plan, err := mustParseBytes(t, data).Edit().
 		Set(tag.ITunesAdvisory, "1").
@@ -187,7 +188,7 @@ func TestMP4ITunesAtomsSurviveUnrelatedEdit(t *testing.T) {
 // write-time warnings: an unstorable integer or BPM drops with WarnValueDropped, a non-boolean flag
 // coerces to 0, and a fractional BPM coerces with the rounded value named in the message.
 func TestMP4ITunesDropAndCoerceWarnings(t *testing.T) {
-	data := mp4Tagged(mp4Text("\xa9nam", "T"))
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 	planWarning := func(key tag.Key, val string, code wl.WarningCode) (string, bool) {
 		t.Helper()
 		p, err := mustParseBytes(t, data).Edit().Set(key, val).Prepare()
@@ -242,9 +243,9 @@ func TestMP4ITunesDropAndCoerceWarnings(t *testing.T) {
 // selected.
 func TestMP4ITunesAdvisoryDualRepresentation(t *testing.T) {
 	build := func(freeformVal string) []byte {
-		return mp4Tagged(
-			mp4Text("\xa9nam", "T"),
-			mp4Atom("rtng", mp4Data(21, []byte{1})),
+		return testfile.MP4Tagged(
+			testfile.MP4Text("\xa9nam", "T"),
+			testfile.MP4Atom("rtng", testfile.MP4Data(21, []byte{1})),
 			mp4Freeform("com.apple.iTunes", "ITUNESADVISORY", freeformVal),
 		)
 	}
@@ -267,7 +268,7 @@ func TestMP4ITunesAdvisoryDualRepresentation(t *testing.T) {
 // freeform-only ITUNESADVISORY file: it reads, and any edit (buildItems rebuilds every owned item)
 // migrates it to the structured rtng atom with the value intact.
 func TestMP4ITunesAdvisoryFreeformMigration(t *testing.T) {
-	data := mp4Tagged(mp4Text("\xa9nam", "T"), mp4Freeform("com.apple.iTunes", "ITUNESADVISORY", "2"))
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"), mp4Freeform("com.apple.iTunes", "ITUNESADVISORY", "2"))
 	doc := mustParseBytes(t, data)
 	if v, _ := doc.Get(tag.ITunesAdvisory); len(v) != 1 || v[0] != "2" {
 		t.Fatalf("freeform ITUNESADVISORY = %v, want [2]", v)
@@ -292,7 +293,7 @@ func TestMP4ITunesAdvisoryFreeformMigration(t *testing.T) {
 // ©enc mapping: an old freeform ----:ENCODEDBY still reads (valid-key fallback), any edit migrates
 // it to ©enc, and a ©enc file round-trips.
 func TestMP4EncodedBySpellingMigration(t *testing.T) {
-	data := mp4Tagged(mp4Text("\xa9nam", "T"), mp4Freeform("com.apple.iTunes", "ENCODEDBY", "Jane"))
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"), mp4Freeform("com.apple.iTunes", "ENCODEDBY", "Jane"))
 	doc := mustParseBytes(t, data)
 	if v, _ := doc.Get(tag.EncodedBy); len(v) != 1 || v[0] != "Jane" {
 		t.Fatalf("freeform ENCODEDBY = %v, want [Jane]", v)
@@ -310,7 +311,7 @@ func TestMP4EncodedBySpellingMigration(t *testing.T) {
 		t.Error("the freeform ENCODEDBY atom survived the rebuild")
 	}
 
-	enc := mp4Tagged(mp4Text("\xa9enc", "Jane"))
+	enc := testfile.MP4Tagged(testfile.MP4Text("\xa9enc", "Jane"))
 	plan2, err := mustParseBytes(t, enc).Edit().Set(tag.Title, "T2").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -323,7 +324,7 @@ func TestMP4EncodedBySpellingMigration(t *testing.T) {
 // MP3 carrying both TBPM and TXXX:BPM. Both project (lint flags the single-valued key), and a BPM
 // edit drops the stale TXXX and leaves exactly one TBPM.
 func TestID3BPMDualRepresentation(t *testing.T) {
-	data := append(id3v2(3, textFrame(3, "TBPM", "128"), txxxFrame(3, "BPM", "140")), mp3Audio(t)...)
+	data := append(testfile.ID3v2(3, testfile.TextFrame(3, "TBPM", "128"), txxxFrame(3, "BPM", "140")), mp3Audio(t)...)
 	doc := mustParseBytes(t, data)
 	if got, _ := doc.Tags().Get(tag.BPM); len(got) != 2 {
 		t.Fatalf("BPM = %v, want both frames to project", got)
@@ -352,7 +353,7 @@ func TestID3BPMDualRepresentation(t *testing.T) {
 // while a Title-only edit preserves the TXXX frame verbatim (ID3 preserves non-dirty frames, unlike
 // MP4's full rebuild).
 func TestID3BPMLegacyTXXXMigration(t *testing.T) {
-	data := append(id3v2(3, txxxFrame(3, "BPM", "140")), mp3Audio(t)...)
+	data := append(testfile.ID3v2(3, txxxFrame(3, "BPM", "140")), mp3Audio(t)...)
 	doc := mustParseBytes(t, data)
 	if v, _ := doc.Get(tag.BPM); !slices.Equal(v, []string{"140"}) {
 		t.Fatalf("TXXX:BPM = %v, want [140]", v)
@@ -392,7 +393,7 @@ func TestID3BPMLegacyTXXXMigration(t *testing.T) {
 // accepted MOVEMENT="3/12" edge round-tripping.
 func TestID3MovementPair(t *testing.T) {
 	// Read: an MVIN pair splits into the two canonical keys, MVNM reads beside it.
-	data := append(id3v2(3, textFrame(3, "MVIN", "3/12"), textFrame(3, "MVNM", "Allegro")), mp3Audio(t)...)
+	data := append(testfile.ID3v2(3, testfile.TextFrame(3, "MVIN", "3/12"), testfile.TextFrame(3, "MVNM", "Allegro")), mp3Audio(t)...)
 	doc := mustParseBytes(t, data)
 	if v, _ := doc.Get(tag.Movement); !slices.Equal(v, []string{"3"}) {
 		t.Errorf("MOVEMENT = %v, want [3]", v)
@@ -556,8 +557,8 @@ func TestITunesKeysCrossFormat(t *testing.T) {
 // its ASCII bytes must not be misread as a big-endian integer, so it projects nothing, and an
 // unrelated edit preserves it verbatim.
 func TestMP4TextTypedIntAtomPreserved(t *testing.T) {
-	textTmpo := mp4Atom("tmpo", mp4Data(1, []byte("50")))
-	data := mp4Tagged(mp4Text("\xa9nam", "T"), textTmpo)
+	textTmpo := testfile.MP4Atom("tmpo", testfile.MP4Data(1, []byte("50")))
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"), textTmpo)
 	doc := mustParseBytes(t, data)
 	if v, ok := doc.Get(tag.BPM); ok {
 		t.Fatalf("a text-typed tmpo projected BPM = %v, want nothing (ASCII \"50\" is not 13616)", v)
@@ -579,7 +580,7 @@ func TestMP4TextTypedIntAtomPreserved(t *testing.T) {
 // An MP3 already carrying an MVIN pair edited to a new MOVEMENT re-renders the one frame, not a
 // second beside the stale original.
 func TestID3MovementFrameManaged(t *testing.T) {
-	data := append(id3v2(3, textFrame(3, "MVIN", "3/12")), mp3Audio(t)...)
+	data := append(testfile.ID3v2(3, testfile.TextFrame(3, "MVIN", "3/12")), mp3Audio(t)...)
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Movement, "5").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -601,7 +602,7 @@ func TestID3MovementFrameManaged(t *testing.T) {
 // verbatim MOVEMENT value, with no total fabricated.
 func TestID3MovementMalformedPairVerbatim(t *testing.T) {
 	for _, body := range []string{"abc/1", "3/70000", "ab/cd/12"} {
-		data := append(id3v2(3, textFrame(3, "MVIN", body)), mp3Audio(t)...)
+		data := append(testfile.ID3v2(3, testfile.TextFrame(3, "MVIN", body)), mp3Audio(t)...)
 		doc := mustParseBytes(t, data)
 		if v, _ := doc.Get(tag.Movement); !slices.Equal(v, []string{body}) {
 			t.Errorf("MVIN %q: MOVEMENT = %v, want the whole value verbatim", body, v)

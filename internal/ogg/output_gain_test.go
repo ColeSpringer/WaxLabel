@@ -216,9 +216,8 @@ func TestPlanOpusOutputGainRewritesBOSPageOnly(t *testing.T) {
 		t.Errorf("comment padding = % x, want % x", got, want)
 	}
 
-	res := plan.Result.Native.(*doc)
-	if got := opusOutputGain(res.idPacket); got != -896 {
-		t.Errorf("result idPacket gain = %d, want -896", got)
+	if got := plan.Result.Properties.First().OutputGain; got != -896 {
+		t.Errorf("result OutputGain = %d, want -896", got)
 	}
 	shift := int64(outPage0 - srcPage0)
 	baseRanges, resRanges := base.EssenceRanges(), plan.Result.EssenceRanges()
@@ -310,10 +309,14 @@ func TestPlanVorbisIgnoresOutputGain(t *testing.T) {
 // TestPlanOpusOutputGainKeepsEssenceConfig: the hashed configuration masks the gain, so a
 // gain edit leaves the essence digest inputs identical.
 func TestPlanOpusOutputGainKeepsEssenceConfig(t *testing.T) {
-	_, base, plan := planOpusGain(t, -896, nil)
+	src, base, plan := planOpusGain(t, -896, nil)
+	written, err := parse(context.Background(), core.BytesSource(renderPlan(t, src, plan)), core.DefaultParseOptions())
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
 	c := Codec{format: core.FormatOggOpus}
 	nameBefore, cfgBefore := c.EssenceExtent(base)
-	nameAfter, cfgAfter := c.EssenceExtent(plan.Result)
+	nameAfter, cfgAfter := c.EssenceExtent(written)
 	if nameBefore != nameAfter || !bytes.Equal(cfgBefore, cfgAfter) {
 		t.Errorf("essence config changed: %s/% x -> %s/% x", nameBefore, cfgBefore, nameAfter, cfgAfter)
 	}

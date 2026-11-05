@@ -50,7 +50,6 @@ func resolveChapters(src core.ReaderAtSized, moov, chpl node, haveChpl bool, d *
 	qt, qtSaturated, haveQT := decodeQTChapters(src, moov, limit)
 	d.hasQTChapters = haveQT
 	d.chapters, conflict = mergeChapters(chplChapters, haveChpl, qt, haveQT, qtSaturated)
-	d.chapterConflict = conflict
 	return conflict
 }
 

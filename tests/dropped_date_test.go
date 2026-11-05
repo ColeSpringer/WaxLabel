@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -34,7 +35,7 @@ func hasKeyedValueReduced(ws []wl.Warning, key tag.Key) bool {
 // projection.
 func TestID3v23MonthOnlyDateReduced(t *testing.T) {
 	// Pure v2.3 MP3, no other container: the authoritative value reduces to "2021", so warn.
-	mp3 := append(id3v2(3, textFrame(3, "TYER", "2021")), mp3Audio(t)...)
+	mp3 := append(testfile.ID3v2(3, testfile.TextFrame(3, "TYER", "2021")), mp3Audio(t)...)
 	mplan := prepareWith(t, mp3, func(e *wl.Editor) { e.Set(tag.RecordingDate, "2021-03") })
 	if !hasKeyedValueReduced(mplan.Report().Warnings, tag.RecordingDate) {
 		t.Errorf("v2.3 YYYY-MM RECORDINGDATE must warn value-reduced; got %v", mplan.Report().Warnings)
@@ -46,7 +47,7 @@ func TestID3v23MonthOnlyDateReduced(t *testing.T) {
 	// WAV carrying a preserved v2.3 id3 chunk: id3 wins the read precedence, so the authoritative
 	// projection is the reduced "2021" even though INFO ICRD holds "2021-03", and it must warn (dump
 	// would show "2021").
-	wavID3Preserved := wavFile(wavFmtPCM(), wavID3(id3v2(3, textFrame(3, "TYER", "2021"))), wavData(400))
+	wavID3Preserved := testfile.WAV(testfile.WAVFmtPCM(), wavID3(testfile.ID3v2(3, testfile.TextFrame(3, "TYER", "2021"))), testfile.WAVData(400))
 	wplan := prepareWith(t, wavID3Preserved, func(e *wl.Editor) { e.Set(tag.RecordingDate, "2021-03") })
 	if !hasKeyedValueReduced(wplan.Report().Warnings, tag.RecordingDate) {
 		t.Errorf("WAV with a preserved v2.3 id3 chunk reduces to the year authoritatively; must warn; got %v", wplan.Report().Warnings)
@@ -54,7 +55,7 @@ func TestID3v23MonthOnlyDateReduced(t *testing.T) {
 
 	// WAV with no id3 chunk: RECORDINGDATE writes only the native INFO ICRD verbatim, so the full
 	// "2021-03" is the authoritative projection and nothing warns.
-	wavInfoOnly := wavFile(wavFmtPCM(), wavData(400))
+	wavInfoOnly := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVData(400))
 	wiplan := prepareWith(t, wavInfoOnly, func(e *wl.Editor) { e.Set(tag.RecordingDate, "2021-03") })
 	if hasKeyedValueReduced(wiplan.Report().Warnings, tag.RecordingDate) {
 		t.Errorf("INFO-only WAV keeps the full 2021-03, so it must not warn value-reduced; got %v", wiplan.Report().Warnings)
@@ -82,10 +83,10 @@ func TestID3v23OriginalDateReduced(t *testing.T) {
 		name string
 		data []byte
 	}{
-		{"mp3", append(id3v2(3, textFrame(3, "TIT2", "T")), mp3Audio(t)...)},
-		{"aac", append(id3v2(3, textFrame(3, "TIT2", "T")), adtsStream(2, 20, 200)...)},
-		{"aiff", aiffFile("AIFF", stdCOMM(), stdSSND(), aiffID3(id3v2(3, textFrame(3, "TIT2", "T"))))},
-		{"wav", wavFile(wavFmtPCM(), wavID3(id3v2(3, textFrame(3, "TIT2", "T"))), wavData(400))},
+		{"mp3", append(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T")), mp3Audio(t)...)},
+		{"aac", append(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T")), adtsStream(2, 20, 200)...)},
+		{"aiff", testfile.AIFF("AIFF", stdCOMM(), stdSSND(), aiffID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T"))))},
+		{"wav", testfile.WAV(testfile.WAVFmtPCM(), wavID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T"))), testfile.WAVData(400))},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -114,7 +115,7 @@ func TestID3v23OriginalDateReduced(t *testing.T) {
 // drops its month/day to the year as the canonical "2021-03" does. The tool stores values verbatim,
 // so these forms are reachable and must warn value-reduced too.
 func TestID3v23NonCanonicalDateReduced(t *testing.T) {
-	mp3 := append(id3v2(3, textFrame(3, "TIT2", "T")), mp3Audio(t)...)
+	mp3 := append(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T")), mp3Audio(t)...)
 	for _, v := range []string{"2021-3", "2021-03-1"} {
 		plan := prepareWith(t, mp3, func(e *wl.Editor) { e.Set(tag.RecordingDate, v) })
 		if !hasKeyedValueReduced(plan.Report().Warnings, tag.RecordingDate) {
@@ -134,7 +135,7 @@ func TestID3v23NonCanonicalDateReduced(t *testing.T) {
 // An hour with no minute ("2021-03-15T10") has a full date (TYER+TDAT render) but TIME needs a full
 // HH:MM, so the hour is dropped on a v2.3 write and must warn value-reduced.
 func TestID3v23SubDayDateReduced(t *testing.T) {
-	mp3 := append(id3v2(3, textFrame(3, "TIT2", "T")), mp3Audio(t)...)
+	mp3 := append(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T")), mp3Audio(t)...)
 
 	plan := prepareWith(t, mp3, func(e *wl.Editor) { e.Set(tag.RecordingDate, "2021-03-15T10") })
 	if !hasKeyedValueReduced(plan.Report().Warnings, tag.RecordingDate) {
@@ -155,15 +156,15 @@ func TestID3v23SubDayDateReduced(t *testing.T) {
 // not a free string), and the writer must raise a value-dropped warning naming the key.
 func TestID3v23DroppedDateWarns(t *testing.T) {
 	// The shared piece under test is the v2.3 ID3 tag carrying RECORDINGDATE=2021; a single TYER frame
-	// (id3v2/textFrame take the major version, so id3v2(3, ...) pins v2.3).
+	// (ID3v2 and TextFrame take the major version, so ID3v2(3, ...) pins v2.3).
 	cases := []struct {
 		name string
 		data []byte
 	}{
-		{"mp3", append(id3v2(3, textFrame(3, "TYER", "2021")), mp3Audio(t)...)},
-		{"aac", append(id3v2(3, textFrame(3, "TYER", "2021")), adtsStream(2, 20, 200)...)},
-		{"aiff", aiffFile("AIFF", stdCOMM(), stdSSND(), aiffID3(id3v2(3, textFrame(3, "TYER", "2021"))))},
-		{"wav", wavFile(wavFmtPCM(), wavID3(id3v2(3, textFrame(3, "TYER", "2021"))), wavData(400))},
+		{"mp3", append(testfile.ID3v2(3, testfile.TextFrame(3, "TYER", "2021")), mp3Audio(t)...)},
+		{"aac", append(testfile.ID3v2(3, testfile.TextFrame(3, "TYER", "2021")), adtsStream(2, 20, 200)...)},
+		{"aiff", testfile.AIFF("AIFF", stdCOMM(), stdSSND(), aiffID3(testfile.ID3v2(3, testfile.TextFrame(3, "TYER", "2021"))))},
+		{"wav", testfile.WAV(testfile.WAVFmtPCM(), wavID3(testfile.ID3v2(3, testfile.TextFrame(3, "TYER", "2021"))), testfile.WAVData(400))},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -187,10 +188,10 @@ func TestID3v23DroppedDateWarns(t *testing.T) {
 // a v2.3 id3 chunk. The id3 TYER drops a no-year date, but ICRD keeps it verbatim, so the value
 // round-trips and must not raise a value-dropped warning, which --strict would escalate to exit 2.
 func TestWavDateRetainedInInfoNoWarning(t *testing.T) {
-	data := wavFile(wavFmtPCM(),
-		wavInfo([2]string{"ICRD", "2020"}),             // native INFO date slot
-		wavID3(id3v2(3, textFrame(3, "TYER", "2021"))), // preserved v2.3 id3 chunk
-		wavData(400))
+	data := testfile.WAV(testfile.WAVFmtPCM(),
+		testfile.WAVInfo([2]string{"ICRD", "2020"}),                      // native INFO date slot
+		wavID3(testfile.ID3v2(3, testfile.TextFrame(3, "TYER", "2021"))), // preserved v2.3 id3 chunk
+		testfile.WAVData(400))
 	doc := mustParseBytes(t, data)
 	plan, err := doc.Edit().Set(tag.RecordingDate, "Unknown Date").Prepare()
 	if err != nil {

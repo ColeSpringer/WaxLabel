@@ -6,12 +6,14 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // TestCLIWebMCoverDropped: WebM drops cover with warning; mixed tag still applies; --strict fails.
 func TestCLIWebMCoverDropped(t *testing.T) {
 	const code = "picture-unsupported"
-	cover := writeTempImage(t, "cover.png", minimalPNG())
+	cover := writeTempImage(t, "cover.png", testfile.PNG())
 
 	// ARTIST applies; cover drops.
 	file := copyFixture(t, "../../testdata/sample.webm")

@@ -2,13 +2,15 @@ package main
 
 import (
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // TestTwoFileIconsIsARefusedWrite: second type-1 picture is exit 3 (unsupported-tag), not 4.
 // Exit 4 outranks 3 in batch aggregate and would mask corruption.
 func TestTwoFileIconsIsARefusedWrite(t *testing.T) {
 	t.Parallel()
-	png := writeTempImage(t, "icon.png", minimalPNG())
+	png := writeTempImage(t, "icon.png", testfile.PNG())
 	f := copyFixture(t, sampleFLAC)
 
 	if _, errb, code := runCLI(t, "set", f, "--add-picture", "file-icon="+png); code != 0 {

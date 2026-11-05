@@ -4,31 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"slices"
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
-
-// le32 encodes a little-endian uint32 (RIFF is little-endian).
-func le32(v uint32) []byte {
-	b := make([]byte, 4)
-	binary.LittleEndian.PutUint32(b, v)
-	return b
-}
-
-// wavChunk renders one RIFF chunk: a 4-byte id, the little-endian body length, the
-// body, and a word-alignment pad byte when the body is odd (the pad is NOT counted in
-// the declared length).
-func wavChunk(id string, body []byte) []byte {
-	out := append([]byte(id), le32(uint32(len(body)))...)
-	out = append(out, body...)
-	if len(body)%2 == 1 {
-		out = append(out, 0)
-	}
-	return out
-}
 
 // wavFmtChunk renders a minimal 16-byte PCM "fmt " chunk.
 func wavFmtChunk() []byte {
@@ -37,17 +20,13 @@ func wavFmtChunk() []byte {
 	binary.LittleEndian.PutUint16(body[2:4], 2)     // channels
 	binary.LittleEndian.PutUint32(body[4:8], 44100) // sample rate
 	binary.LittleEndian.PutUint16(body[14:16], 16)  // bits per sample
-	return wavChunk("fmt ", body)
+	return testfile.WAVChunk("fmt ", body)
 }
 
 // riffWrap wraps inner chunks (without the "WAVE" tag) in a RIFF/WAVE header whose
 // declared size covers innerCounted bytes, then appends any outer bytes after it.
 func riffWrap(chunks, innerExtra, outer []byte) []byte {
-	inner := append([]byte("WAVE"), chunks...)
-	inner = append(inner, innerExtra...)
-	out := append([]byte("RIFF"), le32(uint32(len(inner)))...)
-	out = append(out, inner...)
-	return append(out, outer...)
+	return slices.Concat(testfile.WAV(chunks, innerExtra), outer)
 }
 
 func parseWAVDoc(t *testing.T, src []byte) *doc {
@@ -75,8 +54,8 @@ func TestWAVChunkPaddingAndOuterBoundary(t *testing.T) {
 	odd := []byte{1, 2, 3, 4, 5} // 5-byte body -> one pad byte
 	chunks := bytes.Join([][]byte{
 		wavFmtChunk(),
-		wavChunk("junk", odd),
-		wavChunk("data", bytes.Repeat([]byte{0x11, 0x22}, 8)),
+		testfile.WAVChunk("junk", odd),
+		testfile.WAVChunk("data", bytes.Repeat([]byte{0x11, 0x22}, 8)),
 	}, nil)
 	outer := bytes.Repeat([]byte{0xAB}, 10) // appended outside the RIFF size
 	src := riffWrap(chunks, nil, outer)
@@ -107,7 +86,7 @@ func TestWAVChunkPaddingAndOuterBoundary(t *testing.T) {
 // survives an unrelated edit byte-for-byte, whether a writer counted it inside the RIFF
 // size or appended it after the RIFF.
 func TestWAVTrailerSurvivesEditByteForByte(t *testing.T) {
-	chunks := bytes.Join([][]byte{wavFmtChunk(), wavChunk("data", bytes.Repeat([]byte{0x11, 0x22}, 16))}, nil)
+	chunks := bytes.Join([][]byte{wavFmtChunk(), testfile.WAVChunk("data", bytes.Repeat([]byte{0x11, 0x22}, 16))}, nil)
 	// inbounds is a 128-byte "TAG" region whose declared-length bytes encode a small odd
 	// value (1): it does not overrun the container, so the overrun proxy misses it.
 	inbounds := make([]byte, 128)

@@ -34,7 +34,7 @@ func pictureComment(p core.Picture) string {
 
 // TestPlanRejectsOversizedNewCover checks that a new cover whose base64 footprint exceeds
 // the write limit is refused with ErrPictureTooLarge (as MP4/FLAC/ID3 covers are), since
-// --verify's output-sized re-parse cannot catch a file a default-limit reader rejects.
+// a write's output-sized read-back cannot catch a file a default-limit reader rejects.
 func TestPlanRejectsOversizedNewCover(t *testing.T) {
 	base := parseOpusStreamWith(t) // no pictures in the source
 	cover := smallCover()

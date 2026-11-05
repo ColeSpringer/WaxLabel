@@ -235,9 +235,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// A chunk declared the size-unknown sentinel, so everything past it was read as its
 	// body. Not truncation, but the reader loses whatever followed.
 	warnings = core.WarnUnknownSize(warnings, d.unknownSizeChunks)
-	// The LIST/INFO read could not account for the whole chunk. These stay out of
-	// mediaWarnings: a rewrite writes a well-formed list, and the post-write document
-	// must not report a condition the rewrite removed.
+	// The LIST/INFO read could not account for the whole chunk.
 	if infoPadRescued {
 		warnings = core.Warn(warnings, core.WarnMalformedTagEntry,
 			"a LIST/INFO item is not followed by its word-alignment pad byte; the list was re-synchronized to read the items after it")
@@ -315,8 +313,8 @@ func markDup(d *doc, idxs []int) {
 	}
 }
 
-// mediaWarnings returns the content-derived warnings for a parsed or rewritten
-// document: a resolved numeric genre and inherited-encoder stamps.
+// mediaWarnings returns the content-derived warnings for a parsed document: a
+// resolved numeric genre and inherited-encoder stamps.
 func mediaWarnings(d *doc, numericGenre bool) []core.Warning {
 	var ws []core.Warning
 	if numericGenre {

@@ -6,13 +6,14 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// pngOfSize returns tinyPNG with its IHDR width and height rewritten, so a test can build a picture
+// pngOfSize returns testfile.PNG with its IHDR width and height rewritten, so a test can build a picture
 // of any declared shape without a real encoder.
 func pngOfSize(w, h uint32) []byte {
-	b := slices.Clone(tinyPNG())
+	b := slices.Clone(testfile.PNG())
 	binary.BigEndian.PutUint32(b[16:20], w)
 	binary.BigEndian.PutUint32(b[20:24], h)
 	return b
@@ -63,7 +64,7 @@ func containsSuffix(edit, lint string) bool {
 func TestFileIconMIMEWarns(t *testing.T) {
 	data := readFixture(t, notagsMP3)
 	plan, err := mustParseBytes(t, data).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFileIcon, Data: tinyJPEG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFileIcon, Data: testfile.JPEG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}

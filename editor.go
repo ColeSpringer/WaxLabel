@@ -199,6 +199,9 @@ func (e *Editor) Native() NativeEditor {
 	return NativeEditor{base: e.base}
 }
 
+// codecForFormat finds the codec Prepare plans with. Tests replace it.
+var codecForFormat = core.ForFormat
+
 // Prepare resolves mutations into a [Plan]. No I/O; Report matches Execute.
 func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	wo := resolveWriteOptions(opts)
@@ -270,16 +273,8 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		Pictures:     e.base.Pictures,
 		Chapters:     e.base.Chapters,
 		SyncedLyrics: e.base.SyncedLyrics,
-		Families:     e.base.Families,
-		// Codec result builders recompute this from the bytes they write, but a no-op
-		// path returns this Media directly, so it must carry the file's legacy state.
-		LegacyOpaqueContent: e.base.LegacyOpaqueContent,
-		Warnings:            e.base.Warnings,
-		Native:              e.base.Native,
-		Identity:            e.base.Identity,
-		AudioStart:          e.base.AudioStart,
-		AudioEnd:            e.base.AudioEnd,
-		AudioRanges:         e.base.AudioRanges,
+		Native:       e.base.Native,
+		Identity:     e.base.Identity,
 	}
 	if e.picsTouched {
 		edited.Pictures = e.pictures
@@ -310,7 +305,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		}
 	}
 
-	codec, ok := core.ForFormat(e.base.Format)
+	codec, ok := codecForFormat(e.base.Format)
 	if !ok {
 		return nil, fmt.Errorf("%w: no writer for %s", waxerr.ErrUnsupportedFormat, e.base.Format)
 	}
@@ -509,6 +504,9 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	}
 	wp, err := codec.Plan(context.Background(), e.base, edited, wo)
 	if err != nil {
+		return nil, err
+	}
+	if err := core.CheckPlanResult(edited, wp.Result, wp.Report); err != nil {
 		return nil, err
 	}
 	// Chapter sanity warnings (a start past the file end, two chapters sharing a

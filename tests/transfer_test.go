@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
@@ -83,12 +84,6 @@ func TestCopyTrimsMediaType(t *testing.T) {
 	if got, _ := result.Get(tag.ReplayGainTrackGain); len(got) != 0 {
 		t.Errorf("REPLAYGAIN_TRACK_GAIN should not be carried by copy (own-audio), got %v", got)
 	}
-}
-
-// tinyGIF returns a minimal recognized GIF89a header (3x5, 8-bit GCT), a cover format
-// MP4's covr atom cannot label.
-func tinyGIF() []byte {
-	return append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
 }
 
 // MP4 drops a literal 0 in a trkn/disk slot on read, so the transfer grading must report
@@ -254,7 +249,7 @@ func TestPrepareTransferOverlayKeepsDestKeys(t *testing.T) {
 
 // source front cover carries into a picture-capable destination and matches byte-for-byte.
 func TestPrepareTransferCarriesPictures(t *testing.T) {
-	png := tinyPNG()
+	png := testfile.PNG()
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set("TITLE", "Cover Test")
 		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: png})
@@ -321,7 +316,7 @@ func TestMP4RejectsUnstorableCover(t *testing.T) {
 	if !errors.Is(err, waxerr.ErrUnsupportedTag) {
 		t.Errorf("err = %v, want ErrUnsupportedTag for a WebP cover on MP4", err)
 	}
-	if _, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare(); err != nil {
+	if _, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare(); err != nil {
 		t.Errorf("a PNG cover should be accepted: %v", err)
 	}
 }
@@ -330,7 +325,7 @@ func TestMP4RejectsUnstorableCover(t *testing.T) {
 func TestPrepareTransferDropsUnrepresentableCover(t *testing.T) {
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set("TITLE", "GIF Cover")
-		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyGIF()})
+		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.GIF()})
 	})
 	src := mustParseBytes(t, srcBytes)
 	if pics := src.Pictures(); len(pics) != 1 || pics[0].MIME != "image/gif" {
@@ -373,13 +368,13 @@ func TestPrepareTransferDropsUnrepresentableCover(t *testing.T) {
 func TestPrepareTransferUnrepresentableCoverKeepsDestCover(t *testing.T) {
 	// Source carries only a GIF cover an MP4 covr atom cannot store.
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
-		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyGIF()})
+		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.GIF()})
 	})
 	src := mustParseBytes(t, srcBytes)
 
 	// Destination MP4 already holds a storable PNG cover.
 	dstBytes := writeBack(t, "../testdata/notags.m4a", func(e *wl.Editor) {
-		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()})
+		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()})
 	})
 	if n := len(mustParseBytes(t, dstBytes).Pictures()); n != 1 {
 		t.Fatalf("setup: dest cover count = %d, want 1", n)
@@ -463,12 +458,12 @@ func TestPlanTransferMatroskaToMP4ChapterLoss(t *testing.T) {
 func TestPrepareTransferToWebMWithExistingCover(t *testing.T) {
 	src := mustParseBytes(t, coverBearingFLAC(t, "WebM Cover Src"))
 
-	cover := mkEl(idAttachments, mkEl(idAttached, concat(
+	cover := testfile.El(idAttachments, testfile.El(idAttached, concat(
 		mkStr(idFileName, "cover.png"),
 		mkStr(idFileMime, "image/png"),
-		mkEl(idFileData, tinyPNG()),
+		testfile.El(idFileData, testfile.PNG()),
 	)))
-	dstBytes := buildMatroska("webm", "WebM Dst", cover)
+	dstBytes := testfile.Matroska("webm", "WebM Dst", cover)
 	if n := len(mustParseBytes(t, dstBytes).Pictures()); n != 1 {
 		t.Fatalf("setup: the WebM destination should surface its 1 cover attachment, got %d", n)
 	}
@@ -494,10 +489,10 @@ func TestPrepareTransferToWebMWithExistingCover(t *testing.T) {
 
 // mixed cover set carries the storable JPEG and drops only the GIF.
 func TestPrepareTransferMixedCoversSplit(t *testing.T) {
-	jpeg := tinyJPEG()
+	jpeg := testfile.JPEG()
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: jpeg})
-		e.AddPicture(wl.Picture{Type: wl.PicBackCover, Data: tinyGIF()})
+		e.AddPicture(wl.Picture{Type: wl.PicBackCover, Data: testfile.GIF()})
 	})
 	src := mustParseBytes(t, srcBytes)
 
@@ -567,7 +562,7 @@ func coverBearingFLAC(t *testing.T, title string) []byte {
 	t.Helper()
 	return writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set("TITLE", title)
-		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()})
+		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()})
 	})
 }
 
@@ -629,7 +624,7 @@ func TestPrepareTransferCoverToWebMDropsCover(t *testing.T) {
 
 // picture set can be lossy even when the image bytes carry losslessly.
 func TestTransferPictureDisposition(t *testing.T) {
-	png := tinyPNG()
+	png := testfile.PNG()
 	flacWith := func(p wl.Picture) []byte {
 		return writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 			e.Set("TITLE", "X")
@@ -681,7 +676,7 @@ func TestTransferPictureDisposition(t *testing.T) {
 // and re-read as its canonical name, so the destination mutates the value. The transfer report must
 // grade it Lossy, not Carried; without the option the genre carries verbatim.
 func TestPlanTransferNumericGenreLossy(t *testing.T) {
-	src := mustParseBytes(t, append(id3v2(3, textFrame(3, "TCON", "Rock"), textFrame(3, "TIT2", "T")), mp3Audio(t)...))
+	src := mustParseBytes(t, append(testfile.ID3v2(3, testfile.TextFrame(3, "TCON", "Rock"), testfile.TextFrame(3, "TIT2", "T")), mp3Audio(t)...))
 
 	genreDisp := func(dst wl.Format, opts ...wl.WriteOption) wl.Disposition {
 		report, err := src.PlanTransfer(dst, opts...)
@@ -711,7 +706,7 @@ func TestPlanTransferNumericGenreLossy(t *testing.T) {
 // AIFF has no native genre slot, so a --numeric-genre write stores the genre as a numeric ID3 TCON,
 // re-read as its canonical name; mutating "rock" -> "Rock".
 func TestAiffNumericGenreReducedWarns(t *testing.T) {
-	data := aiffFile("AIFF", stdCOMM(), aiffSSND(400), aiffID3(id3v2(4, textFrame(4, "TIT2", "T"))))
+	data := testfile.AIFF("AIFF", stdCOMM(), aiffSSND(400), aiffID3(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "T"))))
 
 	num, err := mustParseBytes(t, data).Edit().Set(tag.Genre, "rock").Prepare(wl.WithNumericGenre())
 	if err != nil {
@@ -738,7 +733,7 @@ func TestAiffNumericGenreReducedWarns(t *testing.T) {
 // becomes authoritative and mutates "rock" -> "Rock", so it must warn; a bare WAV keeps IGNR text
 // losslessly and must not warn.
 func TestWavNumericGenreReducedWithID3(t *testing.T) {
-	withID3 := wavFile(wavFmtPCM(), wavID3(id3v2(4, textFrame(4, "TIT2", "T"))), wavData(400))
+	withID3 := testfile.WAV(testfile.WAVFmtPCM(), wavID3(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "T"))), testfile.WAVData(400))
 	wplan, err := mustParseBytes(t, withID3).Edit().Set(tag.Genre, "rock").Prepare(wl.WithNumericGenre())
 	if err != nil {
 		t.Fatalf("prepare withID3: %v", err)
@@ -750,7 +745,7 @@ func TestWavNumericGenreReducedWithID3(t *testing.T) {
 		t.Errorf("WAV+id3 --numeric-genre GENRE round-trip = %q, want the mutated Rock", v)
 	}
 
-	bare := wavFile(wavFmtPCM(), wavData(400))
+	bare := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVData(400))
 	bplan, err := mustParseBytes(t, bare).Edit().Set(tag.Genre, "rock").Prepare(wl.WithNumericGenre())
 	if err != nil {
 		t.Fatalf("prepare bare: %v", err)
@@ -767,7 +762,7 @@ func TestWavNumericGenreReducedWithID3(t *testing.T) {
 // LIST/INFO cannot store) routes genre through that chunk too, so under --numeric-genre the
 // numeric TCON mutates "rock" -> "Rock" even though the base file had no id3 chunk.
 func TestWavForcedID3NumericGenreWarns(t *testing.T) {
-	bare := wavFile(wavFmtPCM(), wavData(400))
+	bare := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVData(400))
 	plan, err := mustParseBytes(t, bare).Edit().
 		Set(tag.Genre, "rock").
 		Set(tag.Key("PRIVATE_X"), "x"). // unmapped key -> not INFO-representable -> forces an id3 chunk

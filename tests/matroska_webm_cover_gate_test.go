@@ -6,18 +6,19 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // webmWithCover is a WebM file carrying a cover attachment, which WebM's subset cannot
 // write: the same read-but-not-written shape as Musepack's chapters.
 func webmWithCover() []byte {
-	cover := mkEl(idAttachments, mkEl(idAttached, concat(
+	cover := testfile.El(idAttachments, testfile.El(idAttached, concat(
 		mkStr(idFileName, "cover.png"),
 		mkStr(idFileMime, "image/png"),
-		mkEl(idFileData, tinyPNG()),
+		testfile.El(idFileData, testfile.PNG()),
 	)))
-	return buildMatroska("webm", "WebM Dst", cover)
+	return testfile.Matroska("webm", "WebM Dst", cover)
 }
 
 // Clearing the cover a WebM file carries is refused, or under the drop option dropped with a

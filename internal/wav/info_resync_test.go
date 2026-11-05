@@ -1,9 +1,10 @@
 package wav
 
 import (
-	"encoding/binary"
 	"slices"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // infoItemRaw renders one INFO item as a writer would; pad controls whether the
@@ -11,9 +12,7 @@ import (
 // malformation these tests cover.
 func infoItemRaw(id, value string, pad bool) []byte {
 	val := append([]byte(value), 0) // ZSTR terminator
-	sz := make([]byte, 4)
-	binary.LittleEndian.PutUint32(sz, uint32(len(val)))
-	out := slices.Concat([]byte(id), sz, val)
+	out := slices.Concat([]byte(id), testfile.LE32(len(val)), val)
 	if pad && len(val)&1 == 1 {
 		out = append(out, 0)
 	}

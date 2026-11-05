@@ -7,9 +7,11 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"slices"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -155,7 +157,7 @@ func TestWAVCoverRoundTrip(t *testing.T) {
 	before := essenceOf(t, src)
 
 	plan, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +229,7 @@ func TestWAVDifferentialFFmpegDecodes(t *testing.T) {
 	path := copyToTemp(t, sampleWAV)
 	plan, err := mustParseFile(t, path).Edit().
 		Set(tag.Title, "Valid WAV").
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}).
 		Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +265,7 @@ func TestWAVVerifyEssenceOnWrite(t *testing.T) {
 // fingerprint covers trailing metadata: a WAV whose id3 chunk sits after the data chunk, externally
 // edited in place (same size and mtime), is caught on save-back.
 func TestWAVTrailingMetadataChangeDetected(t *testing.T) {
-	data := wavFile(wavFmtPCM(), wavData(400), wavID3(id3v2(3, textFrame(3, "TIT2", "Original"))))
+	data := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVData(400), wavID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Original"))))
 	path := writeTempFile(t, "trail.wav", data)
 
 	doc := mustParseFile(t, path)
@@ -295,13 +297,13 @@ func TestWAVTrailingMetadataChangeDetected(t *testing.T) {
 	}
 }
 
-// document returned from a write recomputes its warnings instead of echoing the parse warnings: a
-// duplicate-tag-block the rewrite consolidated must not be reported.
-func TestWAVPostWriteWarningsMatchReparse(t *testing.T) {
-	data := wavFile(wavFmtPCM(),
-		wavInfo([2]string{"INAM", "First"}),
-		wavInfo([2]string{"INAM", "Second"}),
-		wavData(400))
+// A rewrite consolidates a duplicate LIST/INFO chunk, so the written file no longer warns
+// duplicate-tag-block.
+func TestWAVRewriteConsolidatesDuplicateInfo(t *testing.T) {
+	data := testfile.WAV(testfile.WAVFmtPCM(),
+		testfile.WAVInfo([2]string{"INAM", "First"}),
+		testfile.WAVInfo([2]string{"INAM", "Second"}),
+		testfile.WAVData(400))
 	doc := mustParseBytes(t, data)
 	if !hasWarning(doc, wl.WarnDuplicateTagBlock) {
 		t.Fatal("setup: expected a duplicate-tag-block warning at parse")
@@ -310,22 +312,13 @@ func TestWAVPostWriteWarningsMatchReparse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var w writerTo
-	outDoc, _, err := plan.Execute(context.Background(), wl.WriteTo(&w, wl.BytesSource(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if hasWarning(outDoc, wl.WarnDuplicateTagBlock) {
-		t.Error("post-write document still reports a duplicate-tag-block the rewrite resolved")
-	}
-	if hasWarning(mustParseBytes(t, w.b), wl.WarnDuplicateTagBlock) {
-		t.Error("a fresh parse of the output should not warn about duplicates")
+	if hasWarning(mustParseBytes(t, applyToBytes(t, data, plan)), wl.WarnDuplicateTagBlock) {
+		t.Error("the written file still warns about the duplicate the rewrite consolidated")
 	}
 }
 
-// document returned from a write surfaces the same family view as a fresh parse of the output; here
-// the secondary INFO container after an id3 chunk is added.
-func TestWAVPostWriteRetainsFamilies(t *testing.T) {
+// An edit that adds an id3 chunk keeps the LIST/INFO values as the secondary RIFF family.
+func TestWAVID3ChunkKeepsInfoFamily(t *testing.T) {
 	src := readFixture(t, sampleWAV)
 	plan, err := mustParseBytes(t, src).Edit().
 		Set(tag.Composer, "Promoted"). // forces an id3 chunk; INFO becomes secondary
@@ -333,23 +326,8 @@ func TestWAVPostWriteRetainsFamilies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var w writerTo
-	outDoc, _, err := plan.Execute(context.Background(), wl.WriteTo(&w, wl.BytesSource(src)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	hasRIFFFamily := func(d *wl.Document) bool {
-		for _, f := range d.Families() {
-			if f.Family == wl.FamilyRIFF {
-				return true
-			}
-		}
-		return false
-	}
-	if !hasRIFFFamily(outDoc) {
-		t.Error("post-write document dropped the secondary RIFF family view")
-	}
-	if !hasRIFFFamily(mustParseBytes(t, w.b)) {
-		t.Error("a fresh parse of the output should carry the RIFF family view")
+	if !slices.ContainsFunc(mustParseBytes(t, applyToBytes(t, src, plan)).Families(),
+		func(f wl.FamilyValue) bool { return f.Family == wl.FamilyRIFF }) {
+		t.Error("the written file lost the RIFF family view")
 	}
 }

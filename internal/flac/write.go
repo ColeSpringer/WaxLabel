@@ -50,7 +50,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		newComments, rebuildInfo = rebuildComments(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged, edited.SyncedLyrics, syncedLyricsChanged)
 	}
 
-	newBlocks, ops, commentsReRendered, dupDropped := rebuildBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged, vendorChanged, picturesChanged)
+	newBlocks, ops, dupDropped := rebuildBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged, vendorChanged, picturesChanged)
 	if vendorChanged {
 		ops = append(ops, "vendor stamp neutralized")
 	}
@@ -64,7 +64,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if err := checkBlockSizes(newBlocks); err != nil {
 		return nil, err
 	}
-	metaBytes, padSize, finalBlocks, padClamped := serializeMetadata(newBlocks, d, opts.Padding)
+	metaBytes, padSize, padClamped := serializeMetadata(newBlocks, d, opts.Padding)
 
 	origRegion := d.audioStart - (d.flacStart + 4)
 	regionDiffers := int64(len(metaBytes)) != origRegion
@@ -115,9 +115,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Clamp warnings before DowngradeNoOp; clamp keeps result != base so write proceeds.
 	report.Warnings = vorbis.RebuildWarnings(report.Warnings, rebuildInfo)
 
-	// Verbatim comment clone still holds comment-embedded covers for a chained edit.
-	keepCommentPics := !commentsReRendered && !picturesChanged
-	result := buildResult(edited, d, newVendor, finalBlocks, newComments, newLeadingLen, audioOutStart, audioLen, newTrailingLen, newSize, opts.Limits.MaxElements, keepCommentPics)
+	result := buildResult(edited, newComments, audioOutStart, audioLen)
 	if dupDropped {
 
 		report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "Vorbis comment block", result.Tags, d.dupContent)
@@ -157,9 +155,8 @@ func checkBlockSizes(blocks []block) error {
 
 // rebuildBlocks builds the new block list (no padding). Untouched blocks keep raw
 // bytes. commentsChanged covers tag or chapter edits; vendorChanged forces re-render
-// with newVendor. Third return: comment block re-rendered (vs cloned). Fourth: an
-// extra Vorbis comment block was dropped.
-func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []core.Picture, commentsChanged, vendorChanged, picturesChanged bool) ([]block, []string, bool, bool) {
+// with newVendor. Third return: an extra Vorbis comment block was dropped.
+func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []core.Picture, commentsChanged, vendorChanged, picturesChanged bool) ([]block, []string, bool) {
 	var out []block
 	var ops []string
 	vorbisHandled := false
@@ -242,7 +239,7 @@ func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []c
 	if picturesChanged {
 		ops = append(ops, fmt.Sprintf("pictures: %d block(s)", len(pictures)))
 	}
-	return out, ops, commentBlockReRendered, dupDropped
+	return out, ops, dupDropped
 }
 
 // paddingBlocks fills exactly budget bytes (4-byte header + body per block),
@@ -267,9 +264,8 @@ func insertAfterStreamInfo(blocks []block, b block) []block {
 }
 
 // serializeMetadata renders blocks plus trailing PADDING per policy. ReuseInPlace
-// fills the original region exactly when content fits. Returns final blocks
-// (with padding) for the post-write native view.
-func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []byte, padSize int, all []block, clamped bool) {
+// fills the original region exactly when content fits.
+func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []byte, padSize int, clamped bool) {
 	nonPad := 0
 	for _, b := range blocks {
 		nonPad += 4 + len(b.body)
@@ -297,60 +293,25 @@ func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []by
 		padSize += len(pb.body)
 	}
 
-	all = append(slices.Clone(blocks), padBlocks...)
+	all := append(slices.Clone(blocks), padBlocks...)
 	for i, b := range all {
 		out = append(out, renderBlock(b.code, i == len(all)-1, b.body)...)
 	}
-	return out, padSize, all, clamped
+	return out, padSize, clamped
 }
 
-// buildResult builds post-write Media without re-parsing (needed for io.Writer).
-func buildResult(edited *core.Media, orig *doc, newVendor string, newBlocks []block, newComments []comment,
-	newLeadingLen, audioStart, audioLen, trailingLen, newSize int64, maxElements int, keepCommentPics bool) *core.Media {
-
-	nd := &doc{
-		vendor:     newVendor,
-		comments:   newComments,
-		streamInfo: orig.streamInfo,
-		flacStart:  newLeadingLen,
-		audioStart: audioStart,
-		audioEnd:   audioStart + audioLen,
-
-		trailingJunk: orig.trailingJunk,
-		// Written output re-appended these; keep for chained picture edit without re-parse.
-		malformedPictureBlocks: cloneByteSlices(orig.malformedPictureBlocks),
-	}
-	if newLeadingLen > 0 {
-		nd.leadingID3 = slices.Clone(orig.leadingID3)
-	}
-	// Carry comment covers only while they still live in a verbatim-cloned block.
-	if keepCommentPics {
-		nd.commentPictures = core.ClonePictures(orig.commentPictures)
-	}
-	if trailingLen > 0 {
-		nd.trailingID3v1 = slices.Clone(orig.trailingID3v1)
-	}
-
-	nd.blocks = slices.Clone(newBlocks)
-
-	tags, families := projectComments(newComments)
-
-	legacyFams, legacyOpaque := flacLegacyFamilies(tags, nd.leadingID3, nd.trailingID3v1, maxElements)
-	families = append(families, legacyFams...)
+// buildResult builds the plan's result: the canonical view a fresh parse of the output reads, and
+// its audio extent.
+func buildResult(edited *core.Media, newComments []comment, audioStart, audioLen int64) *core.Media {
+	tags, _ := projectComments(newComments)
 	return &core.Media{
-		Format:              core.FormatFLAC,
-		Properties:          edited.Properties.Clone(),
-		Tags:                tags,
-		Families:            families,
-		LegacyOpaqueContent: legacyOpaque,
-		Pictures:            core.ClonePictures(edited.Pictures),
-		Chapters:            projectChapters(newComments),
-		SyncedLyrics:        projectSyncedLyrics(newComments),
-		// Encoder warnings from written vendor/comments; other warnings carry for now.
-		Warnings:   vorbis.CarryEncoderWarnings(edited.Warnings, newVendor, toVorbis(newComments)),
-		Native:     nd,
-		Identity:   core.Identity{Size: newSize},
-		AudioStart: nd.audioStart,
-		AudioEnd:   nd.audioEnd,
+		Format:       core.FormatFLAC,
+		Properties:   edited.Properties.Clone(),
+		Tags:         tags,
+		Pictures:     core.ClonePictures(edited.Pictures),
+		Chapters:     projectChapters(newComments),
+		SyncedLyrics: projectSyncedLyrics(newComments),
+		AudioStart:   audioStart,
+		AudioEnd:     audioStart + audioLen,
 	}
 }

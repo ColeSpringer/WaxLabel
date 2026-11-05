@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -19,7 +20,7 @@ func bigPictureFLAC(t *testing.T, payload int) []byte {
 	}
 	// Start with a complete JPEG header so the payload passes image sniffing; the rest
 	// is arbitrary bulk.
-	copy(data, tinyJPEG())
+	copy(data, testfile.JPEG())
 	return writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Data: data})
 	})
@@ -61,9 +62,9 @@ func TestPicturesDetachedAcrossCalls(t *testing.T) {
 
 func TestRemovePicturesByType(t *testing.T) {
 	// Start from a file with a front and a back cover (distinct bytes).
-	back := append(tinyPNG(), 0x00)
+	back := append(testfile.PNG(), 0x00)
 	withPics := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
-		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()})
+		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()})
 		e.AddPicture(wl.Picture{Type: wl.PicBackCover, Data: back})
 	})
 	doc := mustParseBytes(t, withPics)

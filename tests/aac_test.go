@@ -9,6 +9,7 @@ import (
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -159,7 +160,7 @@ func TestAACDifferentialFFmpegDecodes(t *testing.T) {
 		path := copyToTemp(t, f)
 		plan, err := mustParseFile(t, path).Edit().
 			Set(tag.Title, "Valid AAC").
-			AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}).
+			AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}).
 			Prepare()
 		if err != nil {
 			t.Fatal(err)

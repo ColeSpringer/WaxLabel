@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // mkStsdPayload builds a minimal stsd payload (the bytes after the stsd box header)
@@ -102,20 +103,6 @@ func mkFlacStsdPayload(entryRate uint32, dfla []byte) []byte {
 	return b
 }
 
-// mkEsds builds the esds box an AAC sample entry carries: the AudioSpecificConfig wrapped
-// in the ES / DecoderConfig / DecoderSpecificInfo descriptor nest, with one-byte lengths.
-func mkEsds(asc []byte) []byte {
-	descr := func(tag byte, body []byte) []byte {
-		return append([]byte{tag, byte(len(body))}, body...)
-	}
-	// objectTypeIndication 0x40 (MPEG-4 audio), streamType, bufferSizeDB, the two bitrates.
-	decoderCfg := descr(0x04, append(append([]byte{0x40, 0x15}, make([]byte, 11)...), descr(0x05, asc)...))
-	es := descr(0x03, append([]byte{0, 1, 0}, decoderCfg...))
-	b := append(append([]byte{0, 0, 0, 0, 'e', 's', 'd', 's'}, 0, 0, 0, 0), es...)
-	binary.BigEndian.PutUint32(b[0:4], uint32(len(b)))
-	return b
-}
-
 // mkMp4aStsdPayload builds an stsd payload with one v0 'mp4a' sample entry carrying the
 // given extension boxes. Like the FLAC and ALAC entries, its 16.16 rate field holds the
 // rate only when it fits, so a muxer writes 0 above 65535.
@@ -153,7 +140,7 @@ func mkFlacThenTail(dfla, tail []byte) []byte {
 // d.cfg is the essence-digest salt and must keep the raw sample-entry values, or every
 // stored digest for an AAC file would move.
 func TestParseStsdEsdsKeepsDigestSalt(t *testing.T) {
-	d := parseStsdPayload(t, mkMp4aStsdPayload(0, 2, mkEsds([]byte{0x10, 0x10})))
+	d := parseStsdPayload(t, mkMp4aStsdPayload(0, 2, testfile.MP4EsdsShort([]byte{0x10, 0x10})))
 	if d.track.SampleRate != 96000 {
 		t.Errorf("track rate = %d, want 96000 from the config", d.track.SampleRate)
 	}

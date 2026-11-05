@@ -80,7 +80,7 @@ func planChaptersQT(d *doc, edited *core.Media, needIlst, picturesChanged bool, 
 }
 
 // qtPlan is the resolved QuickTime-chapter rewrite: the edit list and the derived
-// facts both the segment writer and the result builder need.
+// facts the segment writer and the result builder need.
 type qtPlan struct {
 	edits []edit
 	// moovDelta is the moov-INTERNAL length change (the chapter trak, tref, mvhd
@@ -99,25 +99,11 @@ type qtPlan struct {
 
 	resultItems []item
 
-	// udta (re-rendered chpl/ilst); udtaNewOff is its output offset (0 if dropped).
-	udtaPayload []byte
-	udtaNewOff  int64
+	mdatPayloadOff int64 // absolute offset the new chapter track's stco points at
 
-	// The new chapter text track and its appended-mdat data.
-	chapTrakNewOff int64  // output offset of the new chapter trak (0 when clearing)
-	chapTrakLen    int64  // length of the new chapter trak
-	chapStcoOff    int64  // output offset of the new stco/co64 atom
-	chapStcoSize   int64  // size of that atom
-	chapStcoCo64   bool   // 64-bit chunk offsets
-	mdatPayloadOff int64  // absolute offset the chapter stco points at
-	newTrackID     uint32 // the chapter track's id
-
-	// The audio track's size change from a tref insert/remove.
-	audioTrakDelta int64
-
-	// For the post-write chapter view.
+	// For the result's chapter view.
 	mts          uint32
-	chplChapters []core.Chapter // chplRoundTrip(edited.Chapters), for the result's conflict check
+	chplChapters []core.Chapter // chplRoundTrip(edited.Chapters)
 
 	// sttsSaturated is set when any of the chapter track's clamped duration fields
 	// overflowed its 32-bit slot: a per-gap stts delta, the first-chapter start, or the
@@ -134,27 +120,21 @@ func assembleQT(d *doc, edited *core.Media, reg udtaRegion, clearing bool, mts u
 
 	var edits []edit
 	var stcoOffInTrak int
-	chapEditIdx := -1      // index of the edit whose lit holds the new chapter track
-	udtaPrefix := int64(0) // bytes before the udta within its (possibly combined) edit
+	chapEditIdx := -1 // index of the edit whose lit holds the new chapter track
 
 	if clearing {
 		if d.chapTrak != nil {
 			edits = append(edits, edit{off: d.chapTrak.offset, oldLen: d.chapTrak.size}) // delete
 		}
-		trefEdits, delta := audioTrefEdits(d, 0)
-		edits = append(edits, trefEdits...)
-		p.audioTrakDelta = delta
+		edits = append(edits, audioTrefEdits(d, 0)...)
 		edits = append(edits, udtaEdit)
 	} else {
-		switch {
-		case d.chapTrak != nil:
-			p.newTrackID = d.chapTrackID // reuse the id the audio tref already points at
-		default:
-			p.newTrackID = d.nextTrackID
+		newTrackID := d.nextTrackID
+		if d.chapTrak != nil {
+			newTrackID = d.chapTrackID // reuse the id the audio tref already points at
 		}
-		chapTrak, off, saturated := buildChapterTrak(p.newTrackID, mts, d.movieTimescale, d.movieDuration, edited.Chapters, co64)
+		chapTrak, off, saturated := buildChapterTrak(newTrackID, mts, d.movieTimescale, d.movieDuration, edited.Chapters, co64)
 		stcoOffInTrak = off
-		p.chapTrakLen = int64(len(chapTrak))
 		p.sttsSaturated = saturated
 
 		if d.chapTrak != nil {
@@ -170,13 +150,10 @@ func assembleQT(d *doc, edited *core.Media, reg udtaRegion, clearing bool, mts u
 			combined := slices.Concat(chapTrak, reg.regionBytes)
 			edits = append(edits, edit{off: reg.regionStart, oldLen: reg.regionEnd - reg.regionStart, lit: combined})
 			chapEditIdx = len(edits) - 1
-			udtaPrefix = int64(len(chapTrak))
 
-			trefEdits, delta := audioTrefEdits(d, p.newTrackID)
-			edits = append(edits, trefEdits...)
-			p.audioTrakDelta = delta
+			edits = append(edits, audioTrefEdits(d, newTrackID)...)
 			if d.nextTrackIDOff != 0 {
-				edits = append(edits, edit{off: d.nextTrackIDOff, oldLen: 4, lit: be32u(p.newTrackID + 1)})
+				edits = append(edits, edit{off: d.nextTrackIDOff, oldLen: 4, lit: be32u(newTrackID + 1)})
 			}
 		}
 		p.newMdat = renderAtom(atomName("mdat"), chapterSamples(edited.Chapters))
@@ -204,77 +181,21 @@ func assembleQT(d *doc, edited *core.Media, reg udtaRegion, clearing bool, mts u
 	p.fileDelta = sumDelta(edits)
 	p.edits = edits
 
-	// Derived output offsets (computed before backpatching, which preserves lengths).
 	// The chapter samples go in a fresh mdat at end-of-file, after the reclaimed mdat's
 	// deletion, so its offset uses the whole-file fileDelta.
 	if !clearing {
 		p.mdatPayloadOff = d.size + p.fileDelta + 8
 		backpatchStco(edits[chapEditIdx].lit, stcoOffInTrak, p.mdatPayloadOff, co64)
-		p.chapStcoCo64 = co64
-		// The new chapter track either replaces the old one or sits at the udta
-		// insertion point (computed before the udta in the combined edit).
-		insOff := reg.regionStart
-		if d.chapTrak != nil {
-			insOff = d.chapTrak.offset
-		}
-		p.chapTrakNewOff = insOff + netShift(edits, insOff)
-		// The offset table is the track's last atom, so its entry sits 16 bytes
-		// (header 8 + version/flags 4 + count 4) past the atom start.
-		stcoAtomRel := int64(stcoOffInTrak) - 16
-		p.chapStcoOff = p.chapTrakNewOff + stcoAtomRel
-		p.chapStcoSize = p.chapTrakLen - stcoAtomRel
-	}
-	if len(reg.udtaPayload) > 0 {
-		p.udtaPayload = reg.udtaPayload
-		p.udtaNewOff = reg.regionStart + netShift(edits, reg.regionStart) + udtaPrefix
 	}
 	return p, nil
 }
 
-// buildQTChapterResult constructs the post-write Media for a QuickTime-chapter rewrite
-// so the engine returns it without a reparse.
+// buildQTChapterResult constructs the plan's result for a QuickTime-chapter rewrite.
 func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan) *core.Media {
-	clearing := len(edited.Chapters) == 0
-	total := base.size + p.fileDelta + int64(len(p.newMdat))
-	nd := &doc{
-		size:        total,
-		cfg:         base.cfg,
-		track:       base.track,
-		majorBrand:  base.majorBrand,
-		items:       p.resultItems,
-		chplVersion: base.chplVersion,
-	}
-
-	// A fresh parse decodes both tables and merges them. They always agree for a
-	// WaxLabel-written file (the track carries the first chapter's start in a leading empty
-	// edit, so its starts are absolute), and the merge takes the chpl's exact starts and
-	// the QuickTime track's recovered last end.
-	if !clearing {
-		// qtWriteRoundTrip reports whether any stts delta clamped (the same MaxUint32 the
-		// reader detects), so the merge picks chpl over a lossy QuickTime track as the
-		// reparse would.
-		qt, qtSaturated := qtWriteRoundTrip(edited.Chapters, p.mts, base.movieTimescale, base.movieDuration)
-		nd.chapters, nd.chapterConflict = mergeChapters(p.chplChapters, true, qt, true, qtSaturated)
-		nd.hasQTChapters = true
-		nd.chplCount = len(p.chplChapters)
-	}
-
-	// moov grows by the moov-internal delta; everything else relocates by netShift.
-	moov := *base.moov
-	moov.size += p.moovDelta
-	nd.moov = &moov
-
-	// Both table groups relocate by the same edit list, and both drop the replaced
-	// chapter track's own table (its bytes are gone from the output).
+	nd := &doc{items: p.resultItems}
+	// The replaced chapter track's table is gone from the output and the new track's table
+	// points at chapter samples only, so the relocated tables are the ones that place essence.
 	nd.offTables = relocateTables(base.offTables, p.edits, func(t offsetTable) bool { return withinChapTrak(base, t) })
-	nd.auxTables = relocateTables(base.auxTables, p.edits, func(t offsetTable) bool { return withinChapTrak(base, t) })
-	if !clearing {
-		nd.offTables = append(nd.offTables, offsetTable{
-			offset: p.chapStcoOff, headerLen: 8, size: p.chapStcoSize, name: chapStcoName(p.chapStcoCo64),
-			co64: p.chapStcoCo64, entries: []uint64{uint64(p.mdatPayloadOff)},
-		})
-	}
-
 	for _, m := range base.mdats {
 		if p.reclaimed != nil && m[0] == p.reclaimed.payloadOff() {
 			continue // the reclaimed trailing chapter mdat is deleted from the output
@@ -284,164 +205,26 @@ func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan) *core.Media 
 	if p.newMdat != nil {
 		nd.mdats = append(nd.mdats, [2]int64{base.size + p.fileDelta + 8, int64(len(p.newMdat)) - 8})
 	}
-
-	for _, a := range base.topLevel {
-		if p.reclaimed != nil && a.offset == p.reclaimed.offset {
-			continue // the reclaimed trailing chapter mdat is deleted from the output
-		}
-		if a.offset == base.moov.offset {
-			a.size += p.moovDelta
-		} else {
-			a.offset += netShift(p.edits, a.offset)
-		}
-		nd.topLevel = append(nd.topLevel, a)
-	}
-	if p.newMdat != nil {
-		nd.topLevel = append(nd.topLevel, atomRef{
-			name: atomName("mdat"), offset: base.size + p.fileDelta, headerLen: 8, size: int64(len(p.newMdat)),
-		})
-	}
-
-	// Recover the udta children by re-walking the rendered payload, positioned at
-	// the udta's output offset (exactly what a fresh parse would find).
-	if len(p.udtaPayload) > 0 {
-		nd.udta = &atomRef{name: atomName("udta"), offset: p.udtaNewOff, headerLen: 8, size: 8 + int64(len(p.udtaPayload))}
-		nd.udtaRaw = p.udtaPayload
-		ups := p.udtaNewOff + 8
-		for _, k := range walkUdta(p.udtaPayload) {
-			switch k.id() {
-			case "meta":
-				m := atomRefAt(k, ups)
-				nd.meta = &m
-				for _, mk := range k.children {
-					switch mk.id() {
-					case "ilst":
-						r := atomRefAt(mk, ups)
-						nd.ilst = &r
-					case "free":
-						r := atomRefAt(mk, ups)
-						nd.free = &r
-					}
-				}
-			case "chpl":
-				r := atomRefAt(k, ups)
-				nd.chpl = &r
-			}
-		}
-	}
-
-	// Chapter-write refs for a follow-up edit (no reparse). These must equal what a
-	// fresh parse of the output would capture, or a chained chapter edit corrupts the
-	// moov; the audio tref in particular may have been inserted (create), replaced, or
-	// dropped (clear) by this rewrite.
-	nd.movieTimescale = base.movieTimescale
-	nd.movieDuration = base.movieDuration
-	nd.mvhd = shiftRef(base.mvhd, p.edits)
-	nd.audioMdiaOff = base.audioMdiaOff + netShift(p.edits, base.audioMdiaOff)
-	if base.audioTrak != nil {
-		at := *base.audioTrak
-		at.offset += netShift(p.edits, at.offset)
-		at.size += p.audioTrakDelta
-		nd.audioTrak = &at
-	}
-	if base.nextTrackIDOff != 0 {
-		nd.nextTrackIDOff = base.nextTrackIDOff + netShift(p.edits, base.nextTrackIDOff)
-	}
-	nd.nextTrackID = base.nextTrackID
-	if !clearing {
-		nd.chapTrak = &atomRef{name: atomName("trak"), offset: p.chapTrakNewOff, headerLen: 8, size: p.chapTrakLen}
-		nd.chapTrackID = p.newTrackID
-		if p.newTrackID >= nd.nextTrackID {
-			nd.nextTrackID = p.newTrackID + 1
-		}
-	}
-
-	// The audio tref after this rewrite: a replace leaves it untouched; a create or
-	// clear rebuilt it via the same audioTrefForChapter used for the byte edit, so
-	// the recorded ref matches the bytes exactly.
-	if !clearing && base.chapTrak != nil {
-		nd.audioTref = shiftRef(base.audioTref, p.edits)
-		nd.audioTrefRaw = slices.Clone(base.audioTrefRaw)
-		nd.audioHasChap = true
-	} else {
-		id := uint32(0)
-		if !clearing {
-			id = p.newTrackID
-		}
-		newTref := audioTrefForChapter(base.audioTrefRaw, id)
-		anchor, inserted := base.audioMdiaOff, base.audioTref == nil
-		if base.audioTref != nil {
-			anchor = base.audioTref.offset
-		}
-		if newTref == nil {
-			nd.audioTref, nd.audioTrefRaw = nil, nil
-		} else {
-			nd.audioTref = &atomRef{name: atomName("tref"), offset: anchor + netShift(p.edits, anchor),
-				headerLen: 8, size: int64(len(newTref))}
-			nd.audioTrefRaw = slices.Clone(newTref[8:])
-			if inserted {
-				nd.audioMdiaOff += int64(len(newTref)) // the inserted tref sits before mdia
-			}
-		}
-		nd.audioHasChap = !clearing
-	}
-
-	tags, pics, families, numericGenre := project(nd)
+	tags, pics, _, _ := project(nd)
 	out := &core.Media{
 		Format:     core.FormatMP4,
 		Properties: edited.Properties.Clone(),
 		Tags:       tags,
 		Pictures:   pics,
-		Chapters:   nd.chapters,
-		Families:   families,
-		Warnings:   chapterWarnings(mediaWarnings(tags, numericGenre), nd.chapterConflict),
-		Native:     nd,
-		Identity:   core.Identity{Size: total},
+	}
+	// A fresh parse decodes both tables and merges them. They always agree for a
+	// WaxLabel-written file (the track carries the first chapter's start in a leading empty
+	// edit, so its starts are absolute), and the merge takes the chpl's exact starts and
+	// the QuickTime track's recovered last end.
+	if len(edited.Chapters) > 0 {
+		// qtWriteRoundTrip reports whether any stts delta clamped (the same MaxUint32 the
+		// reader detects), so the merge picks chpl over a lossy QuickTime track as the
+		// reparse would.
+		qt, qtSaturated := qtWriteRoundTrip(edited.Chapters, p.mts, base.movieTimescale, base.movieDuration)
+		out.Chapters, _ = mergeChapters(p.chplChapters, true, qt, true, qtSaturated)
 	}
 	setEssence(nd, out)
 	return out
-}
-
-// shiftRef relocates an atom reference by the edit list's net shift at its offset.
-func shiftRef(r *atomRef, edits []edit) *atomRef {
-	if r == nil {
-		return nil
-	}
-	c := *r
-	c.offset += netShift(edits, c.offset)
-	return &c
-}
-
-// carryChapterRefs copies the QuickTime chapter-write references into a document
-// rewritten by a single-region edit (a tag edit or a chpl-only chapter edit), so a
-// chapter edit can follow it without a reparse and rebuild the QuickTime track.
-func carryChapterRefs(nd, base *doc, regionEnd, delta int64) {
-	shiftOff := func(o int64) int64 {
-		if o >= regionEnd {
-			return o + delta
-		}
-		return o
-	}
-	shift := func(r *atomRef) *atomRef {
-		if r == nil {
-			return nil
-		}
-		c := *r
-		c.offset = shiftOff(c.offset)
-		return &c
-	}
-	nd.audioTrak = shift(base.audioTrak)
-	nd.audioMdiaOff = shiftOff(base.audioMdiaOff)
-	nd.audioTref = shift(base.audioTref)
-	nd.audioTrefRaw = slices.Clone(base.audioTrefRaw)
-	nd.audioHasChap = base.audioHasChap
-	nd.chapTrak = shift(base.chapTrak)
-	nd.chapTrackID = base.chapTrackID
-	nd.mvhd = shift(base.mvhd)
-	nd.nextTrackIDOff = shiftOff(base.nextTrackIDOff)
-	nd.movieTimescale = base.movieTimescale
-	nd.movieDuration = base.movieDuration
-	nd.nextTrackID = base.nextTrackID
 }
 
 // audioTrefForChapter returns the audio track's tref atom after a chapter write: for id
@@ -477,12 +260,11 @@ func trefChapless(payload []byte) []byte {
 }
 
 // audioTrefEdits makes the audio track reference the chapter track id (or, when id is
-// 0, stop referencing it on a clear), returning the tref edit(s), the audio trak
-// size-field patch (via sizePatch, which handles a 64-bit header), and the resulting
-// size change.
-func audioTrefEdits(d *doc, id uint32) ([]edit, int64) {
+// 0, stop referencing it on a clear), returning the tref edit(s) and the audio trak
+// size-field patch (via sizePatch, which handles a 64-bit header).
+func audioTrefEdits(d *doc, id uint32) []edit {
 	if d.audioTrak == nil {
-		return nil, 0
+		return nil
 	}
 	newTref := audioTrefForChapter(d.audioTrefRaw, id) // d.audioTrefRaw is nil when there is no tref
 	var trefEdit edit
@@ -490,12 +272,11 @@ func audioTrefEdits(d *doc, id uint32) ([]edit, int64) {
 	case d.audioTref != nil: // replace the existing tref in place
 		trefEdit = edit{off: d.audioTref.offset, oldLen: d.audioTref.size, lit: newTref}
 	case newTref == nil: // clearing a track that had no tref: nothing to do
-		return nil, 0
+		return nil
 	default: // insert a fresh tref before the audio track's mdia
 		trefEdit = edit{off: d.audioMdiaOff, oldLen: 0, lit: newTref}
 	}
-	delta := int64(len(trefEdit.lit)) - trefEdit.oldLen
-	return []edit{trefEdit, sizePatch(*d.audioTrak, delta)}, delta
+	return []edit{trefEdit, sizePatch(*d.audioTrak, int64(len(trefEdit.lit))-trefEdit.oldLen)}
 }
 
 // backpatchStco writes the resolved chunk offset into a placeholder stco/co64
@@ -508,8 +289,8 @@ func backpatchStco(trak []byte, off int, value int64, co64 bool) {
 	binary.BigEndian.PutUint32(trak[off:off+4], uint32(value))
 }
 
-// relocateTables moves one group of offset tables into a QuickTime-chapter result
-// document, dropping any the skip predicate rejects.
+// relocateTables moves offset tables to where a QuickTime-chapter rewrite's output
+// places them, dropping any the skip predicate rejects.
 func relocateTables(src []offsetTable, edits []edit, skip func(offsetTable) bool) []offsetTable {
 	out := make([]offsetTable, 0, len(src))
 	for _, t := range src {
@@ -525,15 +306,6 @@ func relocateTables(src []offsetTable, edits []edit, skip func(offsetTable) bool
 		out = append(out, nt)
 	}
 	return out
-}
-
-// chapStcoName is the four-cc of the freshly written chapter track's offset table, so a
-// result document's table names its own box the way a parsed one does.
-func chapStcoName(co64 bool) [4]byte {
-	if co64 {
-		return atomName("co64")
-	}
-	return atomName("stco")
 }
 
 // withinChapTrak reports whether an offset table lives inside the chapter track being

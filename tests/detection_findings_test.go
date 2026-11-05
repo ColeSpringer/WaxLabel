@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -68,7 +69,7 @@ func TestID3PrefixedContainerIsUnsupported(t *testing.T) {
 func TestRF64SniffsAsWAV(t *testing.T) {
 	for _, magic := range []string{"RF64", "BW64"} {
 		t.Run(magic, func(t *testing.T) {
-			data := rf64File(magic, 16, wavFmtPCM(), wavData(64))
+			data := rf64File(magic, 16, testfile.WAVFmtPCM(), testfile.WAVData(64))
 			doc, err := wl.Parse(context.Background(), wl.BytesSource(data))
 			if err != nil {
 				t.Fatalf("%s parse: %v", magic, err)

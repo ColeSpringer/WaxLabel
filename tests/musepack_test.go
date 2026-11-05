@@ -12,6 +12,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -20,51 +21,17 @@ import (
 // built here; ffprobe's mpc7 and mpc8 decoders still read them back, which makes
 // the differential test possible.
 
-// mpcVarlen encodes Musepack's variable-length number: seven bits per byte,
-// big-endian, high bit set on every byte but the last.
-func mpcVarlen(n uint64) []byte {
-	if n == 0 {
-		return []byte{0}
-	}
-	var groups []byte
-	for n > 0 {
-		groups = append(groups, byte(n&0x7F))
-		n >>= 7
-	}
-	slices.Reverse(groups)
-	out := make([]byte, len(groups))
-	for i, g := range groups {
-		out[i] = g
-		if i < len(groups)-1 {
-			out[i] |= 0x80
-		}
-	}
-	return out
-}
-
-// mpcPacket frames an SV8 packet.
-func mpcPacket(key string, payload []byte) []byte {
-	total := 2 + 1 + len(payload)
-	for {
-		s := mpcVarlen(uint64(total))
-		if 2+len(s)+len(payload) == total {
-			return append(append([]byte(key), s...), payload...)
-		}
-		total = 2 + len(s) + len(payload)
-	}
-}
-
 // mpcSV8 builds an SV8 file: the MPCK magic, an SH stream header, a stub audio
 // packet, and a stream-end packet.
 func mpcSV8(samples, silence uint64, rateIndex, channels int) []byte {
 	sh := []byte{0, 0, 0, 0, 8} // CRC, then stream version
-	sh = append(sh, mpcVarlen(samples)...)
-	sh = append(sh, mpcVarlen(silence)...)
+	sh = append(sh, testfile.MPCVarlen(samples)...)
+	sh = append(sh, testfile.MPCVarlen(silence)...)
 	sh = append(sh, byte(rateIndex<<5)|20)       // rate index + max used bands
 	sh = append(sh, byte((channels-1)<<4), 0x00) // channels, mid/side, block frames
-	out := append([]byte("MPCK"), mpcPacket("SH", sh)...)
-	out = append(out, mpcPacket("AP", make([]byte, 64))...)
-	return append(out, mpcPacket("SE", nil)...)
+	out := append([]byte("MPCK"), testfile.MPCPacket("SH", sh)...)
+	out = append(out, testfile.MPCPacket("AP", make([]byte, 64))...)
+	return append(out, testfile.MPCPacket("SE", nil)...)
 }
 
 // mpcSV7 builds an SV7 file: the fixed 24-byte header plus stub frames.
@@ -154,7 +121,7 @@ func TestMusepackRoundTrip(t *testing.T) {
 // stray front tag some SV7 encoders wrote: it routes through detection, is preserved verbatim,
 // stays legacy (never authoritative), and a strip removes it.
 func TestMusepackLeadingID3Preserved(t *testing.T) {
-	front := id3v2(4, textFrame(4, "TIT2", "Legacy Title"))
+	front := testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Legacy Title"))
 	src := append(slices.Clone(front), mpcSV7(100, 0)...)
 
 	doc := mustParseBytes(t, src)
@@ -206,13 +173,13 @@ func TestMusepackLeadingID3Preserved(t *testing.T) {
 func TestMusepackCoverRoundTrip(t *testing.T) {
 	src := mpcSV8(44100, 0, 0, 2)
 	plan, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
 	out := applyToBytes(t, src, plan)
 	pics := mustParseBytes(t, out).Pictures()
-	if len(pics) != 1 || !bytes.Equal(pics[0].Data, tinyPNG()) {
+	if len(pics) != 1 || !bytes.Equal(pics[0].Data, testfile.PNG()) {
 		t.Fatalf("pictures = %+v, want one front cover with the original bytes", pics)
 	}
 }
@@ -223,7 +190,7 @@ func TestMusepackMalformedRejected(t *testing.T) {
 		data []byte
 	}{
 		{"SV7 truncated header", []byte("MP+\x07\x01\x00")},
-		{"SV8 with no SH packet", append([]byte("MPCK"), mpcPacket("AP", make([]byte, 8))...)},
+		{"SV8 with no SH packet", append([]byte("MPCK"), testfile.MPCPacket("AP", make([]byte, 8))...)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if _, err := wl.Parse(context.Background(), wl.BytesSource(c.data)); !errors.Is(err, waxerr.ErrInvalidData) {

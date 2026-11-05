@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -67,8 +68,7 @@ func TestAACBareDetectAndCreateTags(t *testing.T) {
 }
 
 func TestAACFrontID3Detection(t *testing.T) {
-	// id3v2/textFrame are defined in mp3_synth_test.go (same _test package).
-	data := append(id3v2(4, textFrame(4, "TIT2", "Tagged ADTS")), adtsStream(2, 20, 200)...)
+	data := append(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Tagged ADTS")), adtsStream(2, 20, 200)...)
 	doc := mustParseBytes(t, data)
 	if doc.Format() != wl.FormatAAC {
 		t.Fatalf("ID3-prefixed ADTS detected as %v, want AAC", doc.Format())
@@ -102,7 +102,7 @@ func TestAACMP3MutualExclusivity(t *testing.T) {
 // signature-only front-ID3 peek: a leading ID3 followed by non-ADTS bytes in a file named .aac
 // stays MP3. Only a signature behind the tag may override the sniffed ID3; the extension may not.
 func TestAACExtensionDoesNotOverrideSniff(t *testing.T) {
-	data := append(id3v2(4, textFrame(4, "TIT2", "x")), 0, 1, 2, 3, 4, 5, 6, 7) // no ADTS sync
+	data := append(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "x")), 0, 1, 2, 3, 4, 5, 6, 7) // no ADTS sync
 	path := writeTempFile(t, "garbage.aac", data)
 	doc, err := wl.ParseFile(context.Background(), path)
 	if err != nil {

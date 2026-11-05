@@ -1,17 +1,18 @@
 package main
 
 import (
-	"encoding/binary"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // TestStrictHintDoesNotPromiseAWrite: discard-family hint must not say "write anyway" when no bytes write.
 func TestStrictHintDoesNotPromiseAWrite(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, "../../testdata/sample.webm")
-	png := writeTempImage(t, "cover.png", minimalPNG())
+	png := writeTempImage(t, "cover.png", testfile.PNG())
 	_, errb, code := runCLI(t, "set", file, "--add-picture", "front-cover="+png, "--strict")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2: %s", code, errb)
@@ -24,46 +25,12 @@ func TestStrictHintDoesNotPromiseAWrite(t *testing.T) {
 	}
 }
 
-// wavLE32 renders a little-endian RIFF size field.
-func wavLE32(n int) []byte {
-	b := make([]byte, 4)
-	binary.LittleEndian.PutUint32(b, uint32(n))
-	return b
-}
-
-// wavChunk wraps a chunk body in its 8-byte header, word-aligning an odd body.
-func wavChunk(id string, body []byte) []byte {
-	out := slices.Concat([]byte(id), wavLE32(len(body)), body)
-	if len(body)&1 == 1 {
-		out = append(out, 0)
-	}
-	return out
-}
-
 // wavItem renders one LIST/INFO sub-chunk: a 4CC and a NUL-terminated value, padded.
-func wavItem(id, value string) []byte { return wavChunk(id, append([]byte(value), 0)) }
-
-// wavFmtChunk is a 16-byte PCM "fmt " chunk: 44100 Hz, stereo, 16-bit.
-func wavFmtChunk() []byte {
-	b := make([]byte, 16)
-	binary.LittleEndian.PutUint16(b[0:], 1)      // PCM
-	binary.LittleEndian.PutUint16(b[2:], 2)      // channels
-	binary.LittleEndian.PutUint32(b[4:], 44100)  // sample rate
-	binary.LittleEndian.PutUint32(b[8:], 176400) // byte rate
-	binary.LittleEndian.PutUint16(b[12:], 4)     // block align
-	binary.LittleEndian.PutUint16(b[14:], 16)    // bits per sample
-	return wavChunk("fmt ", b)
-}
-
-// wavWrap puts the RIFF/WAVE header around assembled chunk bytes.
-func wavWrap(chunks []byte) []byte {
-	inner := append([]byte("WAVE"), chunks...)
-	return slices.Concat([]byte("RIFF"), wavLE32(len(inner)), inner)
-}
+func wavItem(id, value string) []byte { return testfile.WAVChunk(id, append([]byte(value), 0)) }
 
 // wavWithListBody builds a WAV around a verbatim LIST chunk body (item walk may fail).
 func wavWithListBody(list []byte) []byte {
-	return wavWrap(slices.Concat(wavFmtChunk(), wavChunk("LIST", list), wavChunk("data", make([]byte, 4000))))
+	return testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVChunk("LIST", list), testfile.WAVData(4000))
 }
 
 // wavUnpaddedInfo: LIST/INFO items without word-align pad; unconditional pad step desyncs on rewrite.
@@ -71,7 +38,7 @@ func wavUnpaddedInfo(pairs ...[2]string) []byte {
 	info := []byte("INFO")
 	for _, p := range pairs {
 		val := append([]byte(p[1]), 0)
-		info = slices.Concat(info, []byte(p[0]), wavLE32(len(val)), val)
+		info = slices.Concat(info, []byte(p[0]), testfile.LE32(len(val)), val)
 	}
 	return wavWithListBody(info)
 }
@@ -152,7 +119,7 @@ func TestLintUnknownChunkSizeStaysClean(t *testing.T) {
 func TestStrictRefusesDroppedMalformedRegion(t *testing.T) {
 	t.Parallel()
 	// Well-formed item, then 3 bytes no item walk can read.
-	list := slices.Concat([]byte("INFO"), []byte("INAM"), wavLE32(5), []byte("Song\x00"), []byte{0},
+	list := slices.Concat([]byte("INFO"), []byte("INAM"), testfile.LE32(5), []byte("Song\x00"), []byte{0},
 		[]byte{0x01, 0x02, 0x03})
 	file := writeTempFile(t, "tail.wav", wavWithListBody(list))
 

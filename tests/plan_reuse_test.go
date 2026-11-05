@@ -490,8 +490,8 @@ func TestGuardBypassedForStableSources(t *testing.T) {
 	})
 }
 
-// The Document a save returns describes the file as renamed into place, so editing it again saves
-// without a re-parse, in place or through SaveAsFile onto the same path.
+// The Document a save returns describes the file as renamed into place, so an edit of it saves
+// again, in place or through SaveAsFile onto the same path.
 func TestChainedSavesFromReturnedDocument(t *testing.T) {
 	ctx := context.Background()
 	work := copyToTemp(t, sampleFLAC)

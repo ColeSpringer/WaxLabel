@@ -19,40 +19,16 @@ type outItem struct {
 	n         int64  // byte length (len(lit) when literal)
 	origStart int64
 	outOff    int64
-	kind      itemKind
 }
 
-type itemKind uint8
-
-const (
-	itemOther itemKind = iota
-	itemSeek
-	itemVoid
-	itemInfo
-	itemTags
-	itemAttach
-	itemChapters
-)
-
-// layout is the resolved output shape both write strategies produce: the segment list,
-// the new top-level child list, and the new file positions and bytes of the
-// re-derivable structures (SeekHead/Cues/Info/Attachments).
+// layout is the resolved output shape both write strategies produce: the segment list
+// and the new top-level child list.
 type layout struct {
 	segs         []bits.Segment
 	children     []l1elem
 	size         int64
 	clusterStart int64
 	delta        int64 // tail shift (0 for absorption)
-
-	seekRaw     []byte
-	seekStart   int64
-	cuesRaw     []byte
-	cuesStart   int64
-	infoRaw     []byte
-	infoStart   int64
-	chaptersRaw []byte // re-rendered Chapters bytes (nil with a chapter edit = dropped)
-	hasAttach   bool
-	attach      attachBlock
 }
 
 // planAbsorb realizes the edit by absorbing its size change into a reserved Void so the
@@ -104,36 +80,36 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ed *editDecisions,
 		switch {
 		case c.id == idSeekHead && wb.seek != nil:
 			seekIdx = len(items)
-			items = append(items, outItem{id: c.id, srcOff: c.start, n: c.total(), origStart: c.start, kind: itemSeek})
+			items = append(items, outItem{id: c.id, srcOff: c.start, n: c.total(), origStart: c.start})
 		case c.id == idVoid && flexIdx < 0:
 			flexIdx = len(items)
-			items = append(items, outItem{id: idVoid, origStart: c.start, kind: itemVoid})
+			items = append(items, outItem{id: idVoid, origStart: c.start})
 		case c.id == idCRC32 && wb.segVoidFromCRC != nil:
 			// Substitute the stale Segment-level CRC with the captured length-identical Void.
-			items = append(items, litItem(idVoid, wb.segVoidFromCRC, c.start, itemOther))
+			items = append(items, litItem(idVoid, wb.segVoidFromCRC, c.start))
 		case c.id == idTags && ch.simple:
 			if tagsPlaced {
 				absorbed[c.start] = true
 				continue // a second Tags master: the first already carries every group
 			}
 			tagsPlaced = true
-			items = append(items, litItem(idTags, r.tags, c.start, itemTags))
+			items = append(items, litItem(idTags, r.tags, c.start))
 		case c.id == idInfo && ch.title:
-			items = append(items, litItem(idInfo, r.info, c.start, itemInfo))
+			items = append(items, litItem(idInfo, r.info, c.start))
 		case c.id == idAttachments && ch.pictures:
 			if attachPlaced {
 				absorbed[c.start] = true
 				continue // a second Attachments master: the first already carries every file
 			}
 			attachPlaced = true
-			items = append(items, litItem(idAttachments, r.attach, c.start, itemAttach))
+			items = append(items, litItem(idAttachments, r.attach, c.start))
 		case c.id == idChapters && ch.chapters:
 			if chaptersPlaced {
 				absorbed[c.start] = true
 				continue
 			}
 			chaptersPlaced = true
-			items = append(items, litItem(idChapters, r.chapters, c.start, itemChapters))
+			items = append(items, litItem(idChapters, r.chapters, c.start))
 		default:
 			items = append(items, outItem{id: c.id, srcOff: c.start, n: c.total(), origStart: c.start})
 		}
@@ -145,13 +121,13 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ed *editDecisions,
 	// SeekHead, as in the shift path: the index is patched in place at a stable size, and
 	// readers scan level-1 elements for an unindexed Tags/Attachments/Chapters.
 	if ch.simple && !tagsPlaced && r.tags != nil {
-		items = append(items, litItem(idTags, r.tags, -1, itemTags))
+		items = append(items, litItem(idTags, r.tags, -1))
 	}
 	if ch.pictures && !attachPlaced && r.attach != nil {
-		items = append(items, litItem(idAttachments, r.attach, -1, itemAttach))
+		items = append(items, litItem(idAttachments, r.attach, -1))
 	}
 	if ch.chapters && !chaptersPlaced && r.chapters != nil {
-		items = append(items, litItem(idChapters, r.chapters, -1, itemChapters))
+		items = append(items, litItem(idChapters, r.chapters, -1))
 	}
 
 	// Size the flex Void so the header's total byte length is preserved.
@@ -211,7 +187,6 @@ type rendered struct {
 	title        string
 	titlePresent bool // the result carries an Info.Title (possibly empty), vs none
 	attach       []byte
-	atts         []attachment
 	chapters     []byte
 }
 
@@ -230,7 +205,7 @@ func renderChanged(d *doc, base, edited *core.Media, ch changes, ed *editDecisio
 		}
 	}
 	if ch.pictures {
-		r.attach, r.atts = renderAttachments(d, edited.Pictures)
+		r.attach = renderAttachments(d, edited.Pictures)
 	}
 	if ch.chapters {
 		r.chapters = renderChapters(d, edited.Chapters)
@@ -238,13 +213,13 @@ func renderChanged(d *doc, base, edited *core.Media, ch changes, ed *editDecisio
 	return r, nil
 }
 
-func litItem(id uint64, b []byte, origStart int64, kind itemKind) outItem {
-	return outItem{id: id, lit: b, n: int64(len(b)), origStart: origStart, kind: kind}
+func litItem(id uint64, b []byte, origStart int64) outItem {
+	return outItem{id: id, lit: b, n: int64(len(b)), origStart: origStart}
 }
 
 // assembleItems turns the header items into a segment list (EBML+Segment header
 // verbatim, each header item literal-or-copy, then the cluster tail verbatim) and
-// records the structures' new positions/bytes for buildResult.
+// records the top-level children's new positions for buildResult.
 func assembleItems(wb *writeBase, items []outItem, delta int64) layout {
 	lay := layout{size: wb.size + delta, clusterStart: wb.clusterStart, delta: delta}
 	lay.segs = []bits.Segment{bits.Copy(0, wb.segDataStart)}
@@ -256,17 +231,6 @@ func assembleItems(wb *writeBase, items []outItem, delta int64) layout {
 			lay.segs = append(lay.segs, bits.Copy(it.srcOff, it.n))
 		}
 		lay.children = append(lay.children, l1elem{id: it.id, start: it.outOff, dataEnd: it.outOff + it.n})
-		switch it.kind {
-		case itemSeek:
-			lay.seekRaw, lay.seekStart = it.lit, it.outOff
-		case itemInfo:
-			lay.infoRaw, lay.infoStart = it.lit, it.outOff
-		case itemAttach:
-			lay.hasAttach = true
-			lay.attach = attachBlock{start: it.outOff, end: it.outOff + it.n, hasCRC: wb.attach != nil && wb.attach.hasCRC}
-		case itemChapters:
-			lay.chaptersRaw = it.lit
-		}
 	}
 	if wb.size > wb.clusterStart {
 		lay.segs = append(lay.segs, bits.Copy(wb.clusterStart, wb.size-wb.clusterStart))
@@ -280,39 +244,8 @@ func assembleItems(wb *writeBase, items []outItem, delta int64) layout {
 		nc.dataStart += delta
 		nc.dataEnd += delta
 		lay.children = append(lay.children, nc)
-		if c.id == idCues && wb.cues != nil {
-			lay.cuesStart = nc.start
-		}
-	}
-	// Cues bytes for the result: absorption never moves clusters, so the base bytes
-	// apply at the (possibly shifted) start. The shift path overrides them.
-	if wb.cues != nil && lay.cuesRaw == nil {
-		lay.cuesRaw = wb.cues.raw
-		if lay.cuesStart == 0 {
-			lay.cuesStart = childStart(lay.children, idCues)
-		}
-	}
-	// SeekHead bytes for the result when it was copied unchanged (no entry moved).
-	if wb.seek != nil && lay.seekRaw == nil {
-		lay.seekRaw, lay.seekStart = wb.seek.raw, childStart(lay.children, idSeekHead)
-	}
-	// Info bytes for the result when it was copied unchanged.
-	if wb.info != nil && lay.infoRaw == nil {
-		lay.infoRaw, lay.infoStart = wb.info.raw, childStart(lay.children, idInfo)
 	}
 	return lay
-}
-
-// childStart returns the new file offset of the first output child with the given ID.
-// The result document's SeekHead/Cues/Info positions come from it because a copied
-// element does not necessarily shift by the total delta.
-func childStart(children []l1elem, id uint64) int64 {
-	for _, c := range children {
-		if c.id == id {
-			return c.start
-		}
-	}
-	return 0
 }
 
 // voidOfTotal renders a Void element whose total byte length is exactly total
@@ -396,92 +329,30 @@ func absorbOps(ch changes, pics int) []string {
 	return ops
 }
 
-// buildResult constructs the post-write Media so the engine returns a Document
-// without re-parsing. Its canonical view is re-projected from the written groups
-// (the same project Parse uses), so it equals a fresh parse of the output.
+// buildResult constructs the plan's result. Its tags are re-projected from the written groups
+// and title (the same project Parse uses), so they equal a fresh parse of the output.
 func buildResult(d *doc, edited *core.Media, r *rendered, ch changes, lay layout) *core.Media {
-	depth := bits.NewDepth(64)
-	limit := int64(maxElement)
-
-	nd := &doc{
-		docType:     d.docType,
-		segTitle:    r.title,
-		hasSegTitle: r.titlePresent,
-		groups:      d.groups,
-		attachments: d.attachments,
-		chapters:    d.chapters,
-		tracks:      d.tracks,
-		codecID:     d.codecID,
-		sampleRate:  d.sampleRate,
-		channels:    d.channels,
-		bitDepth:    d.bitDepth,
-	}
+	written := &doc{segTitle: r.title, hasSegTitle: r.titlePresent, groups: d.groups}
 	if ch.simple {
-		nd.groups = r.groups
-	}
-	if ch.pictures {
-		nd.attachments = r.atts
+		written.groups = r.groups
 	}
 
-	// Re-parse the chapter view from the rendered bytes (the seekFromRaw pattern) so
-	// the returned Document's chapters equal a fresh parse; a dropped Chapters element
-	// leaves none.
+	// Re-parse the chapter view from the rendered bytes so the plan's result chapters
+	// equal a fresh parse; a dropped Chapters element leaves none.
 	var resChapters []core.Chapter
 	if ch.chapters {
-		nd.chapters, resChapters = chaptersFromRaw(lay.chaptersRaw, depth, limit)
+		resChapters = chaptersFromRaw(r.chapters, bits.NewDepth(64), maxElement)
 	} else {
 		resChapters = core.CloneChapters(edited.Chapters)
 	}
 
-	// Derive Segment header geometry from the emitted layout, not from parse-time offsets.
-	segDataStart, segSizeLen := d.wb.segDataStart, d.wb.segSizeLen
-	if len(lay.children) > 0 {
-		segDataStart = lay.children[0].start
-		segSizeLen = lay.children[0].start - d.wb.segSizeOff
-	}
-	wb := &writeBase{
-		size:         lay.size,
-		segStart:     d.wb.segStart,
-		segSizeOff:   d.wb.segSizeOff,
-		segSizeLen:   segSizeLen,
-		segUnknown:   d.wb.segUnknown,
-		segDataStart: segDataStart,
-		segDataEnd:   d.wb.segDataEnd + lay.delta,
-		children:     lay.children,
-		clusterStart: lay.clusterStart,
-		tagsCRC:      d.wb.tagsCRC,
-	}
-	if lay.seekRaw != nil {
-		wb.seek = seekFromRaw(lay.seekRaw, lay.seekStart, depth, limit)
-	}
-	if lay.cuesRaw != nil {
-		wb.cues = cuesFromRaw(lay.cuesRaw, lay.cuesStart, depth, limit)
-	}
-	if lay.infoRaw != nil {
-		wb.info = infoFromRaw(lay.infoRaw, lay.infoStart, depth, limit)
-	}
-	if lay.hasAttach {
-		ab := lay.attach
-		wb.attach = &ab
-	} else if d.wb.attach != nil && !ch.pictures {
-		ab := *d.wb.attach
-		ab.start += lay.delta
-		ab.end += lay.delta
-		wb.attach = &ab
-	}
-	nd.wb = wb
-
-	tags, families := project(nd)
+	tags, _ := project(written)
 	res := &core.Media{
 		Format:     core.FormatMatroska,
 		Properties: edited.Properties.Clone(),
 		Tags:       tags,
 		Pictures:   resultPictures(edited.Pictures),
 		Chapters:   resChapters,
-		Families:   families,
-		Warnings:   mediaWarnings(tags, families),
-		Native:     nd,
-		Identity:   core.Identity{Size: lay.size},
 	}
 	// Mirror the parse side: essence digests hash only Cluster runs, so a segment with
 	// no clusters reports no audio extent. A clusterless segment with trailing bytes
@@ -516,8 +387,8 @@ func clusterRuns(children []l1elem) [][2]int64 {
 	return runs
 }
 
-// resultPictures returns the picture set the post-write Document reports: the
-// reprojected edited set, which equals a fresh parse of the written covers.
+// resultPictures returns the plan's result pictures: the reprojected edited set, which equals
+// a fresh parse of the written covers.
 func resultPictures(pics []core.Picture) []core.Picture {
 	return reprojectPictures(pics)
 }

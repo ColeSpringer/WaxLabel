@@ -7,6 +7,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // mp4QTFileSharedMdat builds a QuickTime-chapter MP4 whose chapter text track stores its single
@@ -14,12 +15,12 @@ import (
 // audio). This layout must not be mistaken for a standalone chapter mdat during a chapter rewrite.
 func mp4QTFileSharedMdat(startsMS []int, titles []string) []byte {
 	audioFiller := bytes.Repeat([]byte{0xA7}, 120)
-	samples := mp4SamplesBlob(titles)
+	samples := testfile.MP4SamplesBlob(titles)
 	build := func(audioStco, textStco uint32) []byte {
-		kids := slices.Concat(mp4AudioTrakChap(2, audioStco), mp4TextTrak(2, 1000, startsMS, titles, textStco))
-		moov := mp4Atom("moov", kids)
-		mdat := mp4Atom("mdat", slices.Concat(samples, audioFiller)) // chapter samples first
-		return slices.Concat(mp4Ftyp(), moov, mdat)
+		kids := slices.Concat(testfile.MP4AudioTrakChap(2, audioStco), testfile.MP4TextTrak(2, 1000, startsMS, titles, textStco))
+		moov := testfile.MP4Atom("moov", kids)
+		mdat := testfile.MP4Atom("mdat", slices.Concat(samples, audioFiller)) // chapter samples first
+		return slices.Concat(testfile.MP4Ftyp(), moov, mdat)
 	}
 	tmp := build(0, 0)
 	mdatIdx := bytes.Index(tmp, []byte("mdat"))
@@ -58,17 +59,17 @@ func TestMP4ChapterEditKeepsSharedAudioMdat(t *testing.T) {
 func mp4QTFileForeignTrackMdat(startsMS []int, titles []string) []byte {
 	audio1 := bytes.Repeat([]byte{0xA7}, 120) // first audio track -> its own (earlier) mdat
 	foreign := bytes.Repeat([]byte{0xBB}, 80) // a second audio track -> the trailing mdat
-	samples := mp4SamplesBlob(titles)
+	samples := testfile.MP4SamplesBlob(titles)
 	build := func(audio1Stco, foreignStco, textStco uint32) []byte {
 		kids := slices.Concat(
-			mp4AudioTrakChap(3, audio1Stco),                  // track 1: audio, tref chap -> track 3
-			mp4SounTrak(2, foreignStco),                      // track 2: a second, independent audio track
-			mp4TextTrak(3, 1000, startsMS, titles, textStco), // track 3: the chapter text track
+			testfile.MP4AudioTrakChap(3, audio1Stco),                  // track 1: audio, tref chap -> track 3
+			mp4AudioTrakTkhd(2, foreignStco),                          // track 2: a second, independent audio track
+			testfile.MP4TextTrak(3, 1000, startsMS, titles, textStco), // track 3: the chapter text track
 		)
-		moov := mp4Atom("moov", kids)
-		mdat1 := mp4Atom("mdat", audio1)
-		mdat2 := mp4Atom("mdat", slices.Concat(samples, foreign)) // chapter samples first, then track 2
-		return slices.Concat(mp4Ftyp(), moov, mdat1, mdat2)
+		moov := testfile.MP4Atom("moov", kids)
+		mdat1 := testfile.MP4Atom("mdat", audio1)
+		mdat2 := testfile.MP4Atom("mdat", slices.Concat(samples, foreign)) // chapter samples first, then track 2
+		return slices.Concat(testfile.MP4Ftyp(), moov, mdat1, mdat2)
 	}
 	tmp := build(0, 0, 0)
 	audio1Off := bytes.Index(tmp, []byte("mdat")) + 4

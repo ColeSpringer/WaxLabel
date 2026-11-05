@@ -35,10 +35,10 @@ type Tag struct {
 	writeVersion byte
 	revision     byte
 	frames       []Frame
-	// padding is the free bytes after the last frame inside the tag region: measured on
-	// read, and restamped by RenderFrontTag for the tag a rewrite produces. Measuring is
-	// right for every source shape (a v2.2 tag's 6-byte frame headers, an extended header,
-	// a footer), none of which RenderedSize models, since it sizes what the writer emits.
+	// padding is the free bytes after the last frame inside the tag region, measured on
+	// read. Measuring is right for every source shape (a v2.2 tag's 6-byte frame headers,
+	// an extended header, a footer), none of which RenderedSize models, since it sizes what
+	// the writer emits.
 	padding int64
 	// malformedID names the frame whose declared size ran past the end of the tag, and
 	// malformedTail counts the bytes from that frame's header to the end of the region.
@@ -118,13 +118,13 @@ func (t *Tag) Clone() *Tag {
 	return &c
 }
 
-// WithFrames returns a copy of the tag carrying frames and the padding the rewrite sized,
-// for building the post-write document. The source tag's measured padding describes the
-// on-disk region the rewrite replaces, so it is not inherited.
-func (t *Tag) WithFrames(frames []Frame, padding int64) *Tag {
+// WithFrames returns a copy of the tag carrying frames, for building the plan's result.
+// The source tag's measured padding describes the on-disk region the rewrite replaces,
+// so it is not inherited.
+func (t *Tag) WithFrames(frames []Frame) *Tag {
 	c := *t
 	c.frames = frames
-	c.padding = padding
+	c.padding = 0
 	c.malformedID, c.malformedTail = "", 0 // a rewritten tag has no unreadable tail
 	c.ignored = ""
 	return &c

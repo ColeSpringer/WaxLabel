@@ -104,7 +104,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		if err := id3.RebuildError(id3Info); err != nil {
 			return nil, err
 		}
-		newID3 = srcTag.WithFrames(frames, 0) // the embedded id3 chunk is rendered without padding
+		newID3 = srcTag.WithFrames(frames)
 	}
 
 	// An empty container is not emitted (no point writing a header-only chunk);
@@ -240,11 +240,8 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 				continue
 			}
 			role := roleOther
-			switch i {
-			case d.ssndIdx:
+			if i == d.ssndIdx {
 				role = roleSSND
-			case d.commIdx:
-				role = roleCOMM
 			}
 			outs = append(outs, outChunk{id: ch.id, role: role, srcOff: ch.bodyOff, bodyLen: ch.bodyLen})
 		}
@@ -288,15 +285,13 @@ func insertBeforeSSND(outs, created []outChunk) []outChunk {
 	return append(outs, created...)
 }
 
-// chunkRole tags an output chunk so the result document can re-find the
-// containers and the sound chunk without guessing from identifiers.
+// chunkRole tags an output chunk so the plan's result can re-find the
+// ID3 and sound chunks without guessing from identifiers.
 type chunkRole uint8
 
 const (
 	roleOther chunkRole = iota
-	roleText
 	roleID3
-	roleCOMM
 	roleSSND
 )
 
@@ -311,12 +306,10 @@ type outChunk struct {
 }
 
 // outLayout is the byte-level result of assembling the output chunks: the new
-// chunk list (with output offsets), the container/sound indices for the result
-// document, the sound extent, and the total output size.
+// chunk list (with output offsets), the ID3 and sound indices for the plan's
+// result, the sound extent, and the total output size.
 type outLayout struct {
 	chunks   []chunk
-	textIdx  []int
-	commIdx  int
 	ssndIdx  int
 	id3Idx   int
 	audioOff int64
@@ -325,10 +318,10 @@ type outLayout struct {
 }
 
 // assemble turns the output chunks into a rewrite segment list and recomputes the
-// FORM size, returning the layout needed to build the post-write document. All
+// FORM size, returning the layout needed to build the plan's result. All
 // sizes are big-endian, per IFF.
 func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err error) {
-	lay = outLayout{commIdx: -1, ssndIdx: -1, id3Idx: -1}
+	lay = outLayout{ssndIdx: -1, id3Idx: -1}
 	var chunksTotal int64
 	for _, oc := range outs {
 		if oc.bodyLen > math.MaxUint32 {
@@ -364,12 +357,8 @@ func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err 
 		idx := len(lay.chunks)
 		lay.chunks = append(lay.chunks, chunk{id: oc.id, bodyOff: running, bodyLen: oc.bodyLen})
 		switch oc.role {
-		case roleText:
-			lay.textIdx = append(lay.textIdx, idx)
 		case roleID3:
 			lay.id3Idx = idx
-		case roleCOMM:
-			lay.commIdx = idx
 		case roleSSND:
 			lay.ssndIdx = idx
 			lay.audioEnd = running + oc.bodyLen
@@ -400,45 +389,21 @@ func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err 
 	return segs, lay, nil
 }
 
-// buildResult constructs the post-write Media without re-parsing. Its canonical view
+// buildResult constructs the plan's result. Its canonical view
 // is re-projected from the written containers with the same project Parse uses, so it
 // equals a fresh parse of the output.
 func buildResult(edited *core.Media, base *doc, newText []outChunk, newID3 *id3.Tag, lay outLayout) *core.Media {
-	nd := &doc{
-		chunks:    lay.chunks,
-		formType:  base.formType,
-		commIdx:   lay.commIdx,
-		ssndIdx:   lay.ssndIdx,
-		id3Idx:    lay.id3Idx,
-		textIdx:   lay.textIdx,
-		audioOff:  lay.audioOff,
-		audioEnd:  lay.audioEnd,
-		ssndAlign: base.ssndAlign, // SSND copied verbatim; chained edits reuse the same alignment
-		comm:      base.comm,
-		size:      lay.total,
-	}
-	// Derive the track and the COMM-overstates warning from the written chunks, as Parse
-	// does: the written SSND declares the bytes it holds, so a truncated source becomes
-	// a file whose COMM merely overstates, and a fresh parse must read the same.
-	audioBytes := ssndAudioBytes(lay.chunks, lay.ssndIdx, base.ssndAlign)
-	nd.track = buildTrack(base.comm, audioBytes)
-	// Rebuild the native text items from the written chunks so a re-edit sees the same
-	// values. newText is the roleText set assemble recorded into lay.textIdx, in order.
+	// The track bounds the chapter ends, so derive it from the written chunks as Parse does:
+	// the written SSND declares the bytes it holds.
+	written := &doc{track: buildTrack(base.comm, ssndAudioBytes(lay.chunks, lay.ssndIdx, base.ssndAlign))}
+	// newText is the native text set the output holds, in order.
 	for _, oc := range newText {
-		nd.texts = append(nd.texts, textItem{id: oc.id, raw: oc.body})
+		written.texts = append(written.texts, textItem{id: oc.id, raw: oc.body})
 	}
 	if lay.id3Idx >= 0 {
-		nd.id3 = newID3
+		written.id3 = newID3
 	}
-	// The in-FORM trailing and outer regions were appended verbatim at the end of the
-	// output, in that order. Record their new offsets so a re-edit still preserves them.
-	nd.outerLen = base.outerLen
-	nd.outerOff = lay.total - base.outerLen
-	nd.trailingLen = base.trailingLen
-	nd.trailingID3v1 = base.trailingID3v1
-	nd.trailingOff = nd.outerOff - base.trailingLen
-
-	tags, pics, chapters, syncedLyrics, families, numericGenre, projWs := project(nd)
+	tags, pics, chapters, syncedLyrics, _, _, _ := project(written)
 	return &core.Media{
 		Format:       core.FormatAIFF,
 		Properties:   edited.Properties.Clone(),
@@ -446,23 +411,7 @@ func buildResult(edited *core.Media, base *doc, newText []outChunk, newID3 *id3.
 		Pictures:     pics,
 		Chapters:     chapters,
 		SyncedLyrics: syncedLyrics,
-		Families:     families,
-		// Recompute warnings from the written containers to match a fresh parse: a dropped
-		// duplicate and a resolved numeric genre no longer warn; a preserved stamp still does.
-		Warnings:   append(projWs, resultWarnings(nd, numericGenre, audioBytes)...),
-		Native:     nd,
-		Identity:   core.Identity{Size: lay.total},
-		AudioStart: lay.audioOff,
-		AudioEnd:   lay.audioEnd,
+		AudioStart:   lay.audioOff,
+		AudioEnd:     lay.audioEnd,
 	}
-}
-
-// resultWarnings is mediaWarnings plus the COMM-overstates warning Parse raises, so the
-// post-write document carries every warning a fresh parse of the output would.
-func resultWarnings(nd *doc, numericGenre bool, audioBytes int64) []core.Warning {
-	ws := mediaWarnings(nd, numericGenre)
-	if nd.comm.overstates(audioBytes) {
-		ws = core.Warn(ws, core.WarnTruncatedAudio, overstatedMessage)
-	}
-	return ws
 }

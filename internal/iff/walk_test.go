@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -15,16 +16,12 @@ var (
 	form = Dialect{Order: binary.BigEndian, AudioID: [4]byte{'S', 'S', 'N', 'D'}, Noun: "IFF chunks"}
 )
 
-// chunkBytes builds one chunk with optional pad (pad not in declared size).
+// chunkBytes builds one chunk in d's byte order.
 func chunkBytes(d Dialect, id string, body []byte) []byte {
-	hdr := make([]byte, 8)
-	copy(hdr, id)
-	d.Order.PutUint32(hdr[4:8], uint32(len(body)))
-	out := append(hdr, body...)
-	if len(body)%2 == 1 {
-		out = append(out, 0)
+	if d.Order == binary.BigEndian {
+		return testfile.AIFFChunk(id, body)
 	}
-	return out
+	return testfile.WAVChunk(id, body)
 }
 
 func walk(t *testing.T, data []byte, end int64, d Dialect) Result {

@@ -3,7 +3,6 @@ package mp3
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
@@ -107,11 +106,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if stripLegacy {
 		if apeLen > 0 {
 			report.Operations = append(report.Operations, "APEv2 strip")
-			apeLen = 0
 		}
 		if id3v1Len > 0 {
 			report.Operations = append(report.Operations, "ID3v1 strip")
-			id3v1Len = 0
 		}
 	} else {
 		if apeLen > 0 {
@@ -129,7 +126,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	newSize := bits.OutputLen(segs)
 	report.BytesAfter = newSize
 
-	result := buildResult(edited, d, ft.Tag, ft.Bytes, audioLen, apeLen, id3v1Len, newSize)
+	result := buildResult(edited, d, ft.Tag, ft.Bytes, audioLen)
 	// Surface ID3 rebuild losses the bytes cannot show. MP3 has no other tag container, so
 	// an ID3 date drop or reduction is always a file-level loss.
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, info, result.Tags)
@@ -142,51 +139,19 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 
-// buildResult constructs the post-write Media without re-parsing. The written frames
+// buildResult constructs the plan's result. The written frames
 // are re-projected, so the canonical view equals a fresh parse of the bytes.
-func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte,
-	audioLen, apeLen, id3v1Len, newSize int64) *core.Media {
-
+func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte, audioLen int64) *core.Media {
 	id3Len := int64(len(tagBytes))
-	nd := &doc{
-		id3:         newTag,
-		id3Len:      id3Len,
-		audioStart:  id3Len,
-		audioEnd:    id3Len + audioLen,
-		firstHeader: base.firstHeader,
-		track:       base.track,
-		size:        newSize,
-	}
-	if apeLen > 0 {
-		nd.ape = slices.Clone(base.ape)
-		nd.apeOffset = nd.audioEnd
-		nd.apeTag = base.apeTag
-	}
-	if id3v1Len > 0 {
-		nd.id3v1 = slices.Clone(base.id3v1)
-	}
 	proj := id3.Project(newTag)
-	// Re-add the preserved legacy containers to the family view, with conflicts
-	// recomputed against the new ID3v2 values, to match a fresh parse.
-	families := append(proj.Families, legacyFamilies(proj.Tags, nd.id3v1, nd.apeTag)...)
-	// Carry source-parse warnings forward, but drop a stale chapter-flatten note when the
-	// written tag no longer flattens. AAC uses the same helper for the same front-tag path.
-	warnings := id3.CarryProjectionWarnings(edited.Warnings, proj.Warnings)
 	return &core.Media{
-		Format:     core.FormatMP3,
-		Properties: edited.Properties.Clone(),
-		Tags:       proj.Tags,
-		Families:   families,
-		// Recompute opaque legacy content from the preserved APEv2 to match a fresh parse;
-		// after a legacy strip nd.apeTag is nil, so this is false.
-		LegacyOpaqueContent: apeHasNonText(nd.apeTag),
-		Pictures:            core.ClonePictures(edited.Pictures),
-		Chapters:            core.ChaptersOpenedPastDuration(proj.Chapters, nd.track.Duration),
-		SyncedLyrics:        proj.SyncedLyrics,
-		Warnings:            warnings,
-		Native:              nd,
-		Identity:            core.Identity{Size: newSize},
-		AudioStart:          nd.audioStart,
-		AudioEnd:            nd.audioEnd,
+		Format:       core.FormatMP3,
+		Properties:   edited.Properties.Clone(),
+		Tags:         proj.Tags,
+		Pictures:     core.ClonePictures(edited.Pictures),
+		Chapters:     core.ChaptersOpenedPastDuration(proj.Chapters, base.track.Duration),
+		SyncedLyrics: proj.SyncedLyrics,
+		AudioStart:   id3Len,
+		AudioEnd:     id3Len + audioLen,
 	}
 }

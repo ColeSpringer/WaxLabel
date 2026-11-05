@@ -95,9 +95,6 @@ type doc struct {
 	chplVersion   uint8
 	chplCount     int // chapters in the chpl atom specifically (for the native view)
 	hasQTChapters bool
-	// chapterConflict records that the chpl and QuickTime track disagreed at parse;
-	// it is carried into a post-write document so its warnings match a fresh parse.
-	chapterConflict bool
 	// oversizedAtom names a final top-level atom whose declared size overran EOF and was
 	// clamped, which is also what bytes appended after the last atom look like. mdat and
 	// moov are excluded: they carry their own truncated-audio warnings.

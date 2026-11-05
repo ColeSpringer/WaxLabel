@@ -224,8 +224,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	return media, nil
 }
 
-// mediaWarnings returns the content-derived warnings for a parsed or rewritten
-// document: a resolved numeric genre and an inherited transcoder stamp (ffmpeg writes
+// mediaWarnings returns the content-derived warnings for a parsed document: a
+// resolved numeric genre and an inherited transcoder stamp (ffmpeg writes
 // "Lavf..." into the \xa9too / Encoder atom on acquired files).
 func mediaWarnings(tags tag.TagSet, numericGenre bool) []core.Warning {
 	var ws []core.Warning

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // fileState returns bytes and mtime for no-churn checks: identical bytes can still bump mtime.
@@ -339,15 +341,7 @@ func writeMP3WithTCON(t *testing.T, body string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	frame := append([]byte("TCON"), 0, 0, 0, byte(len(body)+1), 0, 0) // 4-cc, 32-bit size, 2 flag bytes
-	frame = append(frame, 0)                                          // Latin-1 text encoding
-	frame = append(frame, body...)
-
-	size := len(frame)
-	tag := append([]byte("ID3"), 3, 0, 0) // v2.3, no flags
-	tag = append(tag,
-		byte(size>>21)&0x7F, byte(size>>14)&0x7F, byte(size>>7)&0x7F, byte(size)&0x7F) // sync-safe size
-	tag = append(tag, frame...)
+	tag := testfile.ID3v2(3, testfile.TextFrame(3, "TCON", body))
 
 	p := filepath.Join(t.TempDir(), "tcon.mp3")
 	if err := os.WriteFile(p, append(tag, audio...), 0o644); err != nil {

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -100,7 +101,7 @@ func TestMP4MultiValueInteropNote(t *testing.T) {
 
 // checks the MP4-specific TRACKNUMBER=0 case.
 func TestMP4TrackNumberZeroWarns(t *testing.T) {
-	base := mp4Tagged(mp4Text("\xa9nam", "T"))
+	base := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 	msgFor := func(p *wl.Plan, key tag.Key) (string, bool) {
 		for _, w := range p.Report().Warnings {
 			if w.Code == wl.WarnValueDropped && slices.Contains(w.Keys, key) {
@@ -153,7 +154,7 @@ func TestMP4TrackNumberZeroWarns(t *testing.T) {
 // COMPILATION is a single boolean byte (cpil), so a non-boolean value is coerced to false and
 // written (0) rather than dropped.
 func TestMP4CompilationCoercionWarns(t *testing.T) {
-	base := mp4Tagged(mp4Text("\xa9nam", "T"))
+	base := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 
 	hasCoerced := func(p *wl.Plan) bool {
 		for _, w := range p.Report().Warnings {
@@ -186,7 +187,7 @@ func TestMP4CompilationCoercionWarns(t *testing.T) {
 	// On a file already cpil=0, COMPILATION=maybe coerces to the same 0, so the write is a
 	// byte-identical no-op, yet the coercion warning must still surface (the DowngradeNoOp
 	// preserve-list), or the normalization would vanish at exit 0.
-	cpil0 := mp4Tagged(mp4Text("\xa9nam", "T"), mp4Atom("cpil", mp4Data(21, []byte{0})))
+	cpil0 := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"), testfile.MP4Atom("cpil", testfile.MP4Data(21, []byte{0})))
 	p, err := mustParseBytes(t, cpil0).Edit().Set(tag.Compilation, "maybe").Prepare()
 	if err != nil {
 		t.Fatalf("COMPILATION=maybe on cpil=0: %v", err)
@@ -203,7 +204,7 @@ func TestMP4CompilationCoercionWarns(t *testing.T) {
 // That canonicalization is numerically lossless, so the write surfaces no value-coerced warning;
 // a copy grades it Carried and diff treats it as no change.
 func TestMP4NumberNormalizationNotCoerced(t *testing.T) {
-	base := mp4Tagged(mp4Text("\xa9nam", "T"))
+	base := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 
 	coercionMsg := func(p *wl.Plan, key tag.Key) (string, bool) {
 		for _, w := range p.Report().Warnings {
@@ -248,13 +249,13 @@ func TestMP4NumberNormalizationNotCoerced(t *testing.T) {
 // When a moov sits after such an mdat the parser never sees it, so the failure must be reported
 // as truncation rather than the misleading "no moov box".
 func TestMP4TruncatedMdatOverrunsTrailingMoov(t *testing.T) {
-	ftyp := mp4Ftyp()
+	ftyp := testfile.MP4Ftyp()
 	moov := mp4Moov(nil, 0) // valid, but it will be swallowed by the over-declared mdat
 	content := []byte{0xA7, 0xA7}
 	// Declare the mdat larger than the bytes that actually remain (content + moov),
 	// so it overruns EOF and the trailing moov falls inside its clamped extent.
 	declared := 8 + len(content) + len(moov) + 100
-	mdat := append(mp4be32(declared), []byte("mdat")...)
+	mdat := append(testfile.BE32(declared), []byte("mdat")...)
 	mdat = append(mdat, content...)
 	data := slices.Concat(ftyp, mdat, moov)
 
@@ -277,7 +278,7 @@ func TestMP4UnsupportedCoverFormatDropsAndContinues(t *testing.T) {
 	// picture-unsupported warning names the MIME like copy's dropped-cover report item.
 	plan, err := mustParseBytes(t, src).Edit().
 		Set(tag.Title, "Keep Me").
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyGIF()}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.GIF()}).
 		Prepare(wl.WithAllowUnsupportedDrop())
 	if err != nil {
 		t.Fatalf("set with a GIF cover under the drop option must not fail: %v", err)
@@ -304,8 +305,8 @@ func TestMP4UnsupportedCoverFormatDropsAndContinues(t *testing.T) {
 
 	// A PNG added alongside the GIF survives: only the unrepresentable cover drops.
 	planMix, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).
-		AddPicture(wl.Picture{Type: wl.PicBackCover, Data: tinyGIF()}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
+		AddPicture(wl.Picture{Type: wl.PicBackCover, Data: testfile.GIF()}).
 		Prepare(wl.WithAllowUnsupportedDrop())
 	if err != nil {
 		t.Fatalf("mixed PNG+GIF set under the drop option must not fail: %v", err)
@@ -319,7 +320,7 @@ func TestMP4UnsupportedCoverFormatDropsAndContinues(t *testing.T) {
 
 	// Without the drop option, a direct library AddPicture of a GIF still errors.
 	if _, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyGIF()}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.GIF()}).
 		Prepare(); !errors.Is(err, waxerr.ErrUnsupportedTag) {
 		t.Errorf("direct AddPicture of a GIF (no drop option) err = %v, want ErrUnsupportedTag", err)
 	}
@@ -334,8 +335,8 @@ func TestMP4DroppedCoverDrawsNoSanityNote(t *testing.T) {
 	// Two front covers, one a GIF MP4 cannot store: after the GIF drops, only one front cover
 	// remains, so multiple-front-covers must not fire.
 	plan, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyGIF()}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.GIF()}).
 		Prepare(wl.WithAllowUnsupportedDrop())
 	if err != nil {
 		t.Fatal(err)

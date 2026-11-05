@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -14,7 +15,7 @@ import (
 // element (id 0xEC) rather than a CRC-32 (id 0xBF).
 func segmentFirstChildIsVoid(t *testing.T, b []byte) bool {
 	t.Helper()
-	_, ds, _, ok := elemRange(b, 0, len(b), idSegment, nil)
+	_, ds, _, ok := elemRange(b, 0, len(b), testfile.IDSegment, nil)
 	if !ok {
 		t.Fatal("no Segment in output")
 	}
@@ -25,17 +26,17 @@ func segmentFirstChildIsVoid(t *testing.T, b []byte) bool {
 // stale. The writer neutralizes it to a Void; the CRC is spec-optional, so the output stays
 // valid without a whole-file recompute.
 func TestMatroskaSegmentCRCDroppedToVoid(t *testing.T) {
-	tags := mkEl(idTags, mkEl(idTag, concat(
-		mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"))))
+	tags := testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(
+		testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ARTIST", "AA"))))
 	// Segment children: Info(title), a padding Void (so a small edit can absorb in place), an audio
 	// Cluster, and Tags; wrapped in a leading CRC-32 covering the whole body.
 	seg := concat(
-		mkEl(idInfo, mkStr(idSegTitle, "Old")),
-		mkEl(0xEC, make([]byte, 64)), // Void padding (id 0xEC) enabling the in-place absorb path
-		mkAudioCluster(),
+		testfile.El(testfile.IDInfo, mkStr(testfile.IDSegTitle, "Old")),
+		testfile.El(0xEC, make([]byte, 64)), // Void padding (id 0xEC) enabling the in-place absorb path
+		testfile.AudioCluster(0),
 		tags,
 	)
-	data := concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkEl(idSegment, mkCRC(seg)))
+	data := concat(testfile.EBMLHeader("matroska"), testfile.El(testfile.IDSegment, mkCRC(seg)))
 
 	// The fixture carries a valid Segment CRC: the builder and the validator agree before any edit.
 	checkCRCs(t, data, 0, len(data), 0)
@@ -73,10 +74,10 @@ func TestMatroskaSegmentCRCDroppedToVoid(t *testing.T) {
 func TestMatroskaSegmentCRCUncapturableRefused(t *testing.T) {
 	// A non-conformant Segment CRC declaring far more content (2000 bytes) than the 1 KiB parse
 	// limit will read, so its capture fails and segVoidFromCRC stays nil.
-	bigCRC := mkEl(idCRC32, make([]byte, 2000))
-	seg := concat(bigCRC, mkEl(idInfo, mkStr(idSegTitle, "Old")), mkAudioCluster(),
-		mkEl(idTags, mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA")))))
-	data := concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkEl(idSegment, seg))
+	bigCRC := testfile.El(idCRC32, make([]byte, 2000))
+	seg := concat(bigCRC, testfile.El(testfile.IDInfo, mkStr(testfile.IDSegTitle, "Old")), testfile.AudioCluster(0),
+		testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ARTIST", "AA")))))
+	data := concat(testfile.EBMLHeader("matroska"), testfile.El(testfile.IDSegment, seg))
 
 	doc, err := wl.Parse(context.Background(), wl.BytesSource(data), wl.WithLimits(wl.Limits{MaxAllocBytes: 1024}))
 	if err != nil {

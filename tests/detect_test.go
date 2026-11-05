@@ -8,10 +8,11 @@ import (
 
 	_ "github.com/colespringer/waxlabel" // register the codecs (populates core's registry)
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
-// every valid testdata fixture is recognized from leading bytes alone. A failure names the fixture
-// that would become unsupported under content-only detection.
+// every valid testdata fixture is recognized from its leading bytes, as detection only sniffs the
+// content. A failure names the fixture that would read as unsupported.
 func TestContentDetectionCoversFixtures(t *testing.T) {
 	dir := "../testdata"
 	entries, err := os.ReadDir(dir)
@@ -33,8 +34,8 @@ func TestContentDetectionCoversFixtures(t *testing.T) {
 			defer f.Close()
 			header := make([]byte, 64)
 			n, _ := f.Read(header)
-			if _, ok := core.Detect("", header[:n]); !ok {
-				t.Errorf("content-only Detect failed: removing the extension fallback regresses %s to unsupported (exit 3)", name)
+			if _, ok := core.Detect(header[:n]); !ok {
+				t.Errorf("Detect does not recognize %s from its leading bytes, so it would read as unsupported (exit 3)", name)
 			}
 		})
 	}
@@ -66,10 +67,7 @@ func TestSkipsLeadingID3Set(t *testing.T) {
 // walkAtoms is generic over top-level atoms and only moov is required.
 func TestDetectsMP4BehindLeadingFreeBox(t *testing.T) {
 	ftyp := []byte("\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A mp42isom")
-	box := func(name string, n int) []byte {
-		h := []byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)}
-		return append(append(h, name...), make([]byte, n-8)...)
-	}
+	box := func(name string, n int) []byte { return testfile.MP4Atom(name, make([]byte, n-8)) }
 	header := func(b []byte) []byte {
 		h := make([]byte, 64)
 		return h[:copy(h, b)]
@@ -93,7 +91,7 @@ func TestDetectsMP4BehindLeadingFreeBox(t *testing.T) {
 		{"free with a to-EOF size", header(append([]byte("\x00\x00\x00\x00free"), ftyp...)), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c, ok := core.Detect("", tc.header)
+			c, ok := core.Detect(tc.header)
 			if ok != tc.want {
 				t.Fatalf("Detect ok = %v, want %v", ok, tc.want)
 			}

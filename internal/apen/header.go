@@ -3,7 +3,9 @@ package apen
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 
+	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -48,8 +50,6 @@ type header struct {
 	bitsPerSample    uint16
 	channels         uint16
 	sampleRate       uint32
-	// headerLen is the on-disk descriptor+header length (floor for a trailing tag).
-	headerLen int64
 }
 
 // totalSamples: full frames plus the final partial frame.
@@ -60,50 +60,62 @@ func (h header) totalSamples() uint64 {
 	return uint64(h.totalFrames-1)*uint64(h.blocksPerFrame) + uint64(h.finalFrameBlocks)
 }
 
-// parseHeader decodes the layout at the front of b. Short or overrunning declared
-// regions are refused.
-func parseHeader(b []byte) (header, error) {
-	var h header
+// parseVersion checks the marker and reads the version, refusing a layout older than the
+// documented one.
+func parseVersion(b []byte) (uint16, error) {
 	if len(b) < 6 {
-		return h, fmt.Errorf("%w: Monkey's Audio file shorter than its marker and version", waxerr.ErrInvalidData)
+		return 0, fmt.Errorf("%w: Monkey's Audio file shorter than its marker and version", waxerr.ErrInvalidData)
 	}
 	if string(b[0:4]) != fileMagic {
-		return h, fmt.Errorf("%w: missing MAC marker", waxerr.ErrInvalidData)
+		return 0, fmt.Errorf("%w: missing MAC marker", waxerr.ErrInvalidData)
 	}
-	h.version = binary.LittleEndian.Uint16(b[4:6])
-	if h.version < minVersion {
-		return h, fmt.Errorf("%w: Monkey's Audio version %d.%02d predates the documented header layout",
-			waxerr.ErrUnsupportedFormat, h.version/1000, h.version%1000/10)
+	v := binary.LittleEndian.Uint16(b[4:6])
+	if v < minVersion {
+		return 0, fmt.Errorf("%w: Monkey's Audio version %d.%02d predates the documented header layout",
+			waxerr.ErrUnsupportedFormat, v/1000, v%1000/10)
 	}
-	if h.version >= descriptorVersion {
-		return parseDescriptorHeader(b, h)
-	}
-	return parseLegacyHeader(b, h)
+	return v, nil
 }
 
-// parseDescriptorHeader: APE_DESCRIPTOR.nDescriptorBytes locates the APE_HEADER.
-func parseDescriptorHeader(b []byte, h header) (header, error) {
-	if len(b) < descriptorLen {
-		return h, fmt.Errorf("%w: APE_DESCRIPTOR is %d bytes, need %d", waxerr.ErrInvalidData, len(b), descriptorLen)
+// documentedHeaderLen is the header length of the version's layout, before any declared extension:
+// the least a trailing tag must follow.
+func documentedHeaderLen(version uint16) int64 {
+	if version >= descriptorVersion {
+		return descriptorLen + headerLen
 	}
-	descBytes := int64(binary.LittleEndian.Uint32(b[8:12]))
-	hdrBytes := int64(binary.LittleEndian.Uint32(b[12:16]))
-	// Trust the descriptor and header lengths when sane; else use the documented
-	// sizes. Clamp from above too: an absurd nHeaderBytes would push headerLen past
-	// EOF, peel would miss the APEv2, and rewrite would append a second tag. The
-	// descriptor bound also needs room for the header after it: a length ending
-	// exactly at the end of the read would otherwise pass here, fail below, and
-	// flip once a rewrite had appended a tag.
-	if descBytes < descriptorLen || descBytes+headerLen > int64(len(b)) {
-		descBytes = descriptorLen
+	return legacyLen
+}
+
+// readHeader decodes the version's header from head, the file's leading bytes, reading src for a
+// declared header past them. A declared header must end by tagStart, where the trailing tags
+// begin; the peel floor keeps the tags past the fixed-size parts.
+func readHeader(src io.ReaderAt, head []byte, version uint16, tagStart, size, limit int64) (header, error) {
+	h := header{version: version}
+	if version < descriptorVersion {
+		return parseLegacyHeader(head, h)
 	}
-	if hdrBytes < headerLen || descBytes+hdrBytes > int64(len(b)) {
-		hdrBytes = headerLen
+	if len(head) < descriptorLen {
+		return h, fmt.Errorf("%w: APE_DESCRIPTOR is %d bytes, need %d", waxerr.ErrInvalidData, len(head), descriptorLen)
 	}
-	if descBytes+headerLen > int64(len(b)) {
-		return h, fmt.Errorf("%w: Monkey's Audio header is truncated", waxerr.ErrInvalidData)
+	// APE_DESCRIPTOR.nDescriptorBytes locates the APE_HEADER.
+	at := max(int64(binary.LittleEndian.Uint32(head[8:12])), descriptorLen)
+	switch end := at + headerLen; {
+	case end > size:
+		return h, fmt.Errorf("%w: the Monkey's Audio header declared at %d runs past the end of the file", waxerr.ErrInvalidData, at)
+	case end > tagStart:
+		return h, fmt.Errorf("%w: the Monkey's Audio header declared at %d runs into the trailing tag at %d", waxerr.ErrInvalidData, at, tagStart)
+	case end <= int64(len(head)):
+		return parseDescriptorHeader(head[at:end], h), nil
 	}
-	hd := b[descBytes : descBytes+headerLen]
+	hd, err := bits.ReadSlice(src, at, headerLen, limit)
+	if err != nil {
+		return h, err
+	}
+	return parseDescriptorHeader(hd, h), nil
+}
+
+// parseDescriptorHeader decodes the 3.98+ APE_HEADER in hd.
+func parseDescriptorHeader(hd []byte, h header) header {
 	h.compressionLevel = binary.LittleEndian.Uint16(hd[0:2])
 	h.formatFlags = binary.LittleEndian.Uint16(hd[2:4])
 	h.blocksPerFrame = binary.LittleEndian.Uint32(hd[4:8])
@@ -112,8 +124,7 @@ func parseDescriptorHeader(b []byte, h header) (header, error) {
 	h.bitsPerSample = binary.LittleEndian.Uint16(hd[16:18])
 	h.channels = binary.LittleEndian.Uint16(hd[18:20])
 	h.sampleRate = binary.LittleEndian.Uint32(hd[20:24])
-	h.headerLen = descBytes + hdrBytes
-	return h, nil
+	return h
 }
 
 // parseLegacyHeader: pre-3.98 32-byte geometry; frame size is derived.
@@ -125,7 +136,6 @@ func parseLegacyHeader(b []byte, h header) (header, error) {
 	h.formatFlags = binary.LittleEndian.Uint16(b[8:10])
 	h.channels = binary.LittleEndian.Uint16(b[10:12])
 	h.sampleRate = binary.LittleEndian.Uint32(b[12:16])
-	wavHeaderBytes := int64(binary.LittleEndian.Uint32(b[16:20]))
 	h.totalFrames = binary.LittleEndian.Uint32(b[24:28])
 	h.finalFrameBlocks = binary.LittleEndian.Uint32(b[28:32])
 	h.blocksPerFrame = legacyBlocksPerFrame(h.version, h.compressionLevel)
@@ -137,12 +147,6 @@ func parseLegacyHeader(b []byte, h header) (header, error) {
 	default:
 		h.bitsPerSample = 16
 	}
-	// Embedded WAV header is between APE header and frames; clamp absurd lengths
-	// so the trailing-tag floor stays inside the file.
-	if wavHeaderBytes < 0 || legacyLen+wavHeaderBytes > int64(len(b)) {
-		wavHeaderBytes = 0
-	}
-	h.headerLen = legacyLen + wavHeaderBytes
 	return h, nil
 }
 

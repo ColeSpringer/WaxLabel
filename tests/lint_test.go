@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -76,7 +77,7 @@ func TestLintCalendarDates(t *testing.T) {
 }
 
 func TestLintDuplicatePicture(t *testing.T) {
-	png := tinyPNG()
+	png := testfile.PNG()
 	doc := mustParseBytes(t, writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: png})
 		e.AddPicture(wl.Picture{Type: wl.PicBackCover, Data: png}) // same bytes, different role
@@ -91,7 +92,7 @@ func TestLintDuplicatePicture(t *testing.T) {
 // duplicate-picture message when identical bytes appear under different roles (front + back).
 // Naming only one occurrence's role would make them differ by iteration order.
 func TestDuplicatePictureMessageAgrees(t *testing.T) {
-	png := tinyPNG()
+	png := testfile.PNG()
 	plan, err := mustParseBytes(t, readFixture(t, "../testdata/notags.flac")).Edit().
 		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: png}).
 		AddPicture(wl.Picture{Type: wl.PicBackCover, Data: png}). // same bytes, different role
@@ -249,7 +250,7 @@ func (w *writerTo) Write(p []byte) (int, error) { w.b = append(w.b, p...); retur
 // A numeric genre reference resolved on read is an info-level lint finding, as README promises:
 // dump and lint both report numeric-genre.
 func TestLintNumericGenre(t *testing.T) {
-	base := mp4Tagged(mp4Text("\xa9nam", "T"))
+	base := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 	plan, err := mustParseBytes(t, base).Edit().Set(tag.Genre, "Rock").Prepare(wl.WithNumericGenre())
 	if err != nil {
 		t.Fatal(err)
@@ -274,8 +275,8 @@ func TestLintNumericGenre(t *testing.T) {
 func TestLintTruncatedAudio(t *testing.T) {
 	// A WAV whose data chunk declares far more than the file holds surfaces the
 	// parse-time truncated-audio warning as a lint finding.
-	dataHdr := append([]byte("data"), wavLE32(100000)...)
-	data := wavFile(wavFmtPCM(), append(dataHdr, make([]byte, 200)...))
+	dataHdr := append([]byte("data"), testfile.LE32(100000)...)
+	data := testfile.WAV(testfile.WAVFmtPCM(), append(dataHdr, make([]byte, 200)...))
 	codes := findingCodes(mustParseBytes(t, data).Lint())
 	if !codes["truncated-audio"] {
 		t.Errorf("expected truncated-audio finding; got %v", codes)
@@ -283,7 +284,7 @@ func TestLintTruncatedAudio(t *testing.T) {
 }
 
 func TestLintFindingFixable(t *testing.T) {
-	stamped := mustParseBytes(t, flacWithVendor("Lavf61.7.100"))
+	stamped := mustParseBytes(t, testfile.TaggedFLAC("Lavf61.7.100"))
 	var sawEncoder bool
 	for _, f := range stamped.Lint() {
 		if f.Code == "inherited-encoder" {
@@ -313,7 +314,7 @@ func TestLintFindingFixable(t *testing.T) {
 // a stamp stored under ENCODEDBY (ID3's TENC frame), so that finding must not advertise a repair
 // that lint --fix would decline.
 func TestLintEncoderFixableOnlyWhereTheFixReaches(t *testing.T) {
-	tencOnly := mustParseBytes(t, mp3WithFrames(t, id3Frame(4, "TENC", append([]byte{0}, "Lavf61.7.100"...))))
+	tencOnly := mustParseBytes(t, mp3WithFrames(t, testfile.ID3Frame(4, "TENC", append([]byte{0}, "Lavf61.7.100"...))))
 	var saw bool
 	for _, f := range tencOnly.Lint() {
 		if f.Code != "inherited-encoder" {
@@ -331,7 +332,7 @@ func TestLintEncoderFixableOnlyWhereTheFixReaches(t *testing.T) {
 		t.Errorf("the fix has nothing to patch: %+v", fix.Patch)
 	}
 	// A stamp the fix does reach still reads fixable.
-	stamped := mustParseBytes(t, flacWithVendor("Lavf61.7.100"))
+	stamped := mustParseBytes(t, testfile.TaggedFLAC("Lavf61.7.100"))
 	for _, f := range stamped.Lint() {
 		if f.Code == "inherited-encoder" && !f.Fixable {
 			t.Error("a vendor-string stamp is reachable and should read fixable")

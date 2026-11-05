@@ -5,6 +5,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -17,10 +18,12 @@ func TestNumberPairReadPathAgreesAcrossFormats(t *testing.T) {
 		build func(string) []byte
 	}{
 		{"flac", func(v string) []byte { return flacWithComments("TRACKNUMBER=" + v) }},
-		{"mp3", func(v string) []byte { return append(id3v2(4, textFrame(4, "TRCK", v)), mp3Audio(t)...) }},
+		{"mp3", func(v string) []byte {
+			return append(testfile.ID3v2(4, testfile.TextFrame(4, "TRCK", v)), mp3Audio(t)...)
+		}},
 		{"matroska", func(v string) []byte {
-			tags := mkEl(idTags, mkEl(idTag, concat(mkEl(idTargets, nil), mkSimple("PART_NUMBER", v))))
-			return buildMatroska("matroska", "", tags)
+			tags := testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, nil), testfile.SimpleTag("PART_NUMBER", v))))
+			return testfile.Matroska("matroska", "", tags)
 		}},
 	}
 	for _, tc := range []struct {
@@ -201,7 +204,7 @@ func TestVorbisSlashPairEditRewritesComment(t *testing.T) {
 // single IPRT="4/9", which normalizes to TrackNumber=4 + TrackTotal=9, does not read back as a
 // family conflict.
 func TestWAVSlashTrackNumberNoFalseFamilyConflict(t *testing.T) {
-	data := wavFile(wavFmtPCM(), wavInfo([2]string{"IPRT", "4/9"}), wavData(400))
+	data := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"IPRT", "4/9"}), testfile.WAVData(400))
 	doc := mustParseBytes(t, data)
 	if got := doc.Fields().TrackNumber; got != 4 {
 		t.Fatalf("TrackNumber = %d, want 4", got)

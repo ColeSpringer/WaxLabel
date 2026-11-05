@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -145,7 +147,7 @@ func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
 		return p.doc, SaveResult{Committed: false, Dest: p.doc.media.Identity, Doc: p.doc}, nil
 	}
 
-	committed, destID, info, werr := p.writeFile(ctx, p.doc.path, src, before, fileWrite{inPlace: true})
+	committed, destID, resDoc, werr := p.writeFile(ctx, p.doc.path, src, before, fileWrite{inPlace: true})
 	if !committed {
 		// No post-write file to describe, so no Document.
 		return nil, SaveResult{Committed: false, Dest: destID}, werr
@@ -153,7 +155,6 @@ func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
 	// The rename succeeded, so the bytes are in place even if the directory fsync
 	// failed. Mark the plan so a second SaveBack is refused.
 	p.committed = true
-	resDoc := p.resultDocument(p.doc.path, destID, info)
 	return resDoc, SaveResult{Committed: true, Dest: destID, Doc: resDoc}, werr
 }
 
@@ -182,7 +183,7 @@ func (p *Plan) saveAsFile(ctx context.Context, path string) (*Document, SaveResu
 		}
 	}
 
-	committed, destID, info, werr := p.writeFile(ctx, path, src, before, fileWrite{inPlace: inPlace, noReplace: p.opts.NoReplace})
+	committed, destID, resDoc, werr := p.writeFile(ctx, path, src, before, fileWrite{inPlace: inPlace, noReplace: p.opts.NoReplace})
 	if !committed {
 		return nil, SaveResult{Committed: false, Dest: destID}, werr
 	}
@@ -191,7 +192,6 @@ func (p *Plan) saveAsFile(ctx context.Context, path string) (*Document, SaveResu
 		// by resolved path, not inode: a rename onto a hardlink alias leaves the source.
 		p.committed = true
 	}
-	resDoc := p.resultDocument(path, destID, info)
 	return resDoc, SaveResult{Committed: true, Dest: destID, Doc: resDoc}, werr
 }
 
@@ -236,9 +236,12 @@ func (p *Plan) writeTo(ctx context.Context, dst Destination) (*Document, SaveRes
 		}
 	}
 
-	atSaveStage("copy")
-	_, err = bits.Write(ctx, dst.w, src, p.plan.Segments, nil)
-	atSaveStage("copied")
+	written, err := p.verifyStream(ctx, src)
+	if err == nil {
+		atSaveStage("copy")
+		_, err = bits.Write(ctx, dst.w, src, p.plan.Segments, nil)
+		atSaveStage("copied")
+	}
 	if reopened {
 		if serr := held.checkStable(p.doc.path, before, false); serr != nil {
 			return nil, SaveResult{}, serr
@@ -248,8 +251,24 @@ func (p *Plan) writeTo(ctx context.Context, dst Destination) (*Document, SaveRes
 		return nil, SaveResult{}, err
 	}
 	id := core.Identity{Size: bits.OutputLen(p.plan.Segments)}
-	resDoc := p.resultDocument("", id, nil)
+	resDoc := resultDocument(written, "", id, nil)
 	return resDoc, SaveResult{Committed: true, Dest: id, Doc: resDoc}, nil
+}
+
+// verifyStream reads back the output WriteTo would stream, through the plan's segments, before a
+// byte of it is sent. Its source digest is hashed from the source's own essence.
+func (p *Plan) verifyStream(ctx context.Context, src core.ReaderAtSized) (*Document, error) {
+	var srcEssence []byte
+	if p.opts.VerifyEssence {
+		cfg, ranges, err := p.sourceEssence()
+		if err != nil {
+			return nil, err
+		}
+		if srcEssence, err = hashRanges(ctx, src, cfg, ranges); err != nil {
+			return nil, err
+		}
+	}
+	return p.verifyOutput(ctx, bits.NewSegmentsReader(src, p.plan.Segments), srcEssence)
 }
 
 // saveHook, when set, runs at each named stage of a write: "copy" before the source copy,
@@ -268,13 +287,12 @@ type fileWrite struct {
 	noReplace bool // refuse a file already at the destination
 }
 
-// writeFile atomically writes the plan to path and returns the written file's identity and stat.
-// A reopened source is checked again after the copy.
-func (p *Plan) writeFile(ctx context.Context, path string, src core.ReaderAtSized, before core.Identity, mode fileWrite) (bool, core.Identity, os.FileInfo, error) {
+// writeFile atomically writes the plan to path and returns the written file's identity and the
+// Document read back from the temp. A reopened source is checked again after the copy.
+func (p *Plan) writeFile(ctx context.Context, path string, src core.ReaderAtSized, before core.Identity, mode fileWrite) (bool, core.Identity, *Document, error) {
 	held, reopened := src.(*fileSource)
 	var srcEssence []byte
-	var fp [32]byte
-	var hasFinger bool
+	var written *Document
 	write := func(f *os.File) error {
 		atSaveStage("copy")
 		sum, err := p.streamCopy(ctx, f, src)
@@ -290,13 +308,9 @@ func (p *Plan) writeFile(ctx context.Context, path string, src core.ReaderAtSize
 		srcEssence = sum
 		return err
 	}
-	verify := func(f *os.File) error {
-		if err := p.verifyOutput(ctx, f, srcEssence); err != nil {
-			return err
-		}
-		out := sizedReaderAt{ReaderAt: f, size: bits.OutputLen(p.plan.Segments)}
-		fp, hasFinger = core.Fingerprint(out, p.resultMedia())
-		return nil
+	verify := func(f *os.File) (err error) {
+		written, err = p.verifyOutput(ctx, sizedReaderAt{ReaderAt: f, size: bits.OutputLen(p.plan.Segments)}, srcEssence)
+		return err
 	}
 	preCommit := func() error {
 		atSaveStage("commit")
@@ -310,14 +324,17 @@ func (p *Plan) writeFile(ctx context.Context, path string, src core.ReaderAtSize
 	}
 	opts := atomicfile.Options{Verify: verify, PreCommit: preCommit, ModTime: p.preserveModTime(), NoReplace: mode.noReplace, KeepOpen: true}
 	committed, info, err := atomicfile.Write(path, write, opts)
+	if !committed {
+		id, _ := fileIdentity(path)
+		return false, id, nil, err
+	}
+	// The temp's parse fingerprinted the written bytes; the stat is the file's after the rename.
 	var id core.Identity
 	if info != nil {
 		id = core.FileIdentity(path, info)
-		id.Fingerprint, id.HasFinger = fp, hasFinger
-	} else if !committed {
-		id, _ = fileIdentity(path)
+		id.Fingerprint, id.HasFinger = written.media.Identity.Fingerprint, written.media.Identity.HasFinger
 	}
-	return committed, id, info, err
+	return true, id, resultDocument(written, path, id, info), err
 }
 
 // preserveModTime is the mtime to stamp, or nil for write time.
@@ -333,11 +350,11 @@ func (p *Plan) streamCopy(ctx context.Context, dst io.Writer, source core.Reader
 	var tap bits.Tap
 	var hasher *bits.Hasher
 	if p.opts.VerifyEssence {
-		if hasNoAudioWarning(p.doc.media) {
-			return nil, fmt.Errorf("%w: cannot verify audio essence of a no-audio file", waxerr.ErrInvalidData)
+		cfg, ranges, err := p.sourceEssence()
+		if err != nil {
+			return nil, err
 		}
-		_, cfg := p.essenceExtent()
-		hasher = bits.NewHasher(p.doc.media.EssenceRanges())
+		hasher = bits.NewHasher(ranges)
 		hasher.Mix(cfg)
 		tap = hasher
 	}
@@ -354,50 +371,127 @@ func (p *Plan) streamCopy(ctx context.Context, dst io.Writer, source core.Reader
 	return nil, nil
 }
 
-// verifyOutput compares written essence to the copy tap and re-parses before commit.
-func (p *Plan) verifyOutput(ctx context.Context, out io.ReaderAt, srcEssence []byte) error {
-	if !p.opts.VerifyEssence {
-		return nil
+// sourceEssence is what the source digest hashes, the same for file saves and WriteTo: the decoder
+// config first, then the essence ranges. A no-audio source has none.
+func (p *Plan) sourceEssence() (cfg []byte, ranges [][2]int64, err error) {
+	if hasNoAudioWarning(p.doc.media) {
+		return nil, nil, fmt.Errorf("%w: cannot verify audio essence of a no-audio file", waxerr.ErrInvalidData)
 	}
-	_, cfg := p.essenceExtent()
-	res := p.plan.Result
-	outSum, err := hashRanges(ctx, out, cfg, res.EssenceRanges())
+	_, cfg = p.doc.essenceExtent()
+	return cfg, p.doc.media.EssenceRanges(), nil
+}
+
+// verifyOutput parses written bytes as ParseFile would, refusing output that does not read back as
+// the source's format with audio. Under VerifyEssence the essence that parse finds must also be
+// where the plan put it and hash to srcEssence. A failed read refuses with its own cause.
+func (p *Plan) verifyOutput(ctx context.Context, out core.ReaderAtSized, srcEssence []byte) (*Document, error) {
+	rb := &readErrors{ReaderAtSized: out}
+	written, err := p.checkOutput(ctx, rb, srcEssence)
+	if err != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if rb.err != nil {
+		// A parse can shrug a failed read off, so its result is not trusted either.
+		return nil, rb.err
+	}
+	return written, err
+}
+
+// readErrors records the first read error other than the end of the data.
+type readErrors struct {
+	core.ReaderAtSized
+	err error
+}
+
+func (r *readErrors) ReadAt(p []byte, off int64) (int, error) {
+	n, err := r.ReaderAtSized.ReadAt(p, off)
+	if err != nil && r.err == nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		r.err = err
+	}
+	return n, err
+}
+
+func (p *Plan) checkOutput(ctx context.Context, out core.ReaderAtSized, srcEssence []byte) (*Document, error) {
+	format := p.doc.media.Format
+	codec, ok := detectCodec(out)
+	if !ok {
+		return nil, fmt.Errorf("%w: the output would no longer be recognizable as %s", waxerr.ErrInvalidData, format)
+	}
+	// Floored at the defaults, so an edit that outgrows a tight caller limit still reads back. The
+	// returned Document keeps these limits.
+	def, lim := bits.DefaultLimits, p.doc.limits
+	limits := bits.Limits{
+		MaxAllocBytes: max(lim.MaxAllocBytes, def.MaxAllocBytes),
+		MaxDepth:      max(lim.MaxDepth, def.MaxDepth),
+		MaxElements:   max(lim.MaxElements, def.MaxElements),
+	}
+	written, err := parseWith(ctx, codec, out, core.ParseOptions{Limits: limits})
+	if err != nil {
+		return nil, fmt.Errorf("%w: the output would not parse back cleanly (%v)", waxerr.ErrInvalidData, err)
+	}
+	if got := written.media.Format; got != format {
+		return nil, fmt.Errorf("%w: the output would read as %s, not %s", waxerr.ErrInvalidData, got, format)
+	}
+	if hasNoAudioWarning(written.media) {
+		return nil, fmt.Errorf("%w: the output would have no audio", waxerr.ErrInvalidData)
+	}
+	// The plan's result already reflects every drop the edit meant. A source parsed under tighter
+	// limits can miss items past a cap that this read-back sees, so the counts compare only when no
+	// limit was raised.
+	if items, got, want, differ := core.ItemCountDiff(written.media, p.resultMedia()); differ && limits == lim {
+		return nil, fmt.Errorf("%w: the output would not hold the planned %s (%d read back, %d planned)",
+			waxerr.ErrInvalidData, items, got, want)
+	}
+	if p.opts.VerifyEssence {
+		if err := p.verifyEssence(ctx, out, written, srcEssence); err != nil {
+			return nil, err
+		}
+	}
+	return written, nil
+}
+
+// verifyEssence hashes the written essence once, over the ranges the read-back found, after checking
+// that the plan's own ranges cover the same bytes.
+func (p *Plan) verifyEssence(ctx context.Context, out core.ReaderAtSized, written *Document, srcEssence []byte) error {
+	ranges := written.media.EssenceRanges()
+	if !slices.Equal(coveredRanges(ranges), coveredRanges(p.resultMedia().EssenceRanges())) {
+		return fmt.Errorf("%w: the output's audio is not where the plan placed it", waxerr.ErrInvalidData)
+	}
+	_, cfg := written.essenceExtent()
+	sum, err := hashRanges(ctx, out, cfg, ranges)
 	if err != nil {
 		return err
 	}
-	if !bytes.Equal(outSum, srcEssence) {
+	if !bytes.Equal(sum, srcEssence) {
 		return fmt.Errorf("%w: written audio essence does not match the source", waxerr.ErrInvalidData)
-	}
-	if codec, ok := core.ForFormat(p.doc.media.Format); ok {
-		size := bits.OutputLen(p.plan.Segments)
-		def := bits.DefaultLimits
-		limits := bits.Limits{
-			MaxAllocBytes: max(p.doc.limits.MaxAllocBytes, def.MaxAllocBytes, size),
-			MaxDepth:      max(p.doc.limits.MaxDepth, def.MaxDepth),
-			MaxElements:   max(p.doc.limits.MaxElements, def.MaxElements),
-		}
-		sized := sizedReaderAt{ReaderAt: out, size: size}
-		if _, err := codec.Parse(ctx, sized, core.ParseOptions{Limits: limits}); err != nil {
-			return fmt.Errorf("%w: the written file did not parse back cleanly (%v)", waxerr.ErrInvalidData, err)
-		}
 	}
 	return nil
 }
 
-// sizedReaderAt is ReaderAt + Size for in-place verify re-parse.
+// coveredRanges drops empty ranges and merges adjacent ones, so two lists covering the same bytes
+// compare equal however they are split.
+func coveredRanges(ranges [][2]int64) [][2]int64 {
+	var out [][2]int64
+	for _, r := range ranges {
+		if r[0] == r[1] {
+			continue
+		}
+		if n := len(out); n > 0 && out[n-1][1] == r[0] {
+			out[n-1][1] = r[1]
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// sizedReaderAt is ReaderAt + Size, for reading back a temp file.
 type sizedReaderAt struct {
 	io.ReaderAt
 	size int64
 }
 
 func (s sizedReaderAt) Size() int64 { return s.size }
-
-func (p *Plan) essenceExtent() (string, []byte) {
-	if codec, ok := core.ForFormat(p.doc.media.Format); ok {
-		return codec.EssenceExtent(p.doc.media)
-	}
-	return "audio-extent-v1", nil
-}
 
 // NewTempCreateError matches the error a save returns when it cannot create its temp (CLI -o
 // probe).

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -14,7 +15,7 @@ import (
 func TestReservedNamespaceDropOnSet(t *testing.T) {
 	ctx := context.Background()
 	// A valid base64 METADATA_BLOCK_PICTURE value (the encoding an Ogg cover uses).
-	validCover := commentPictureValue(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()})
+	validCover := commentPictureValue(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()})
 
 	for _, fx := range []string{"../testdata/sample.flac", "../testdata/sample.ogg", "../testdata/sample.opus"} {
 		for _, tc := range []struct {

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // TestLintAndNoteAgree: set notes and Document.Lint share value validators; same malformed verdict.
@@ -155,7 +157,7 @@ func TestArgTextValidationIsUsageError(t *testing.T) {
 	badUTF8 := "x\xffy" // a lone 0xff is invalid UTF-8
 
 	// Valid cover so --picture-description fails on description, not missing-picture branch.
-	cover := writeTempImage(t, "cover.png", minimalPNG())
+	cover := writeTempImage(t, "cover.png", testfile.PNG())
 
 	argCases := map[string][]string{
 		"--set value":         {"plan", sampleFLAC, "--set", "K=" + badUTF8},

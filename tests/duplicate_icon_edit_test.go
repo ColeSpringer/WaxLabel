@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
@@ -15,7 +16,7 @@ import (
 
 // pngIcon is a type-1 (32x32 file-icon) picture backed by a real PNG.
 func pngIcon() wl.Picture {
-	return wl.Picture{Type: wl.PicFileIcon, MIME: "image/png", Data: tinyPNG()}
+	return wl.Picture{Type: wl.PicFileIcon, MIME: "image/png", Data: testfile.PNG()}
 }
 
 // flacTwoType1Icons builds a FLAC carrying two type-1 PICTURE blocks by
@@ -59,7 +60,7 @@ func TestDuplicateIconTransferSucceedsWhenPicturesUntouched(t *testing.T) {
 	// Transfer tags from a clean, pictureless source into a two-icon destination.
 	dstData := flacTwoType1Icons()
 	dst := mustParseBytes(t, dstData)
-	src := mustParseBytes(t, flacWithVendor("test", "TITLE=Copied"))
+	src := mustParseBytes(t, testfile.TaggedFLAC("test", "TITLE=Copied"))
 	plan, _, err := src.PrepareTransfer(dst)
 	if err != nil {
 		t.Fatalf("transfer onto a duplicate-icon destination was refused: %v", err)
@@ -132,7 +133,7 @@ func TestDuplicateIconDirectPictureEditStillRefused(t *testing.T) {
 func TestDuplicateIconTransferCarryingSecondIconSucceeds(t *testing.T) {
 	// A transfer carries the source picture set as is, so the source's own duplicate icons must not
 	// abort the copy; the carried flag suppresses the icon-count rule, as for the other carry checks.
-	dstData := flacWithVendor("test", "TITLE=Dst")
+	dstData := testfile.TaggedFLAC("test", "TITLE=Dst")
 	src := mustParseBytes(t, flacTwoType1Icons(vorbis.Comment{Name: "TITLE", Value: "Src"}))
 	plan, _, err := src.PrepareTransfer(mustParseBytes(t, dstData))
 	if err != nil {
@@ -157,7 +158,7 @@ func TestDuplicateIconTransferCarryingSecondIconSucceeds(t *testing.T) {
 func TestDuplicateFrontCoverTagEditUnaffected(t *testing.T) {
 	// Control: type-3 (front cover) duplicates are not covered by the icon-count rule, so a
 	// tags-only edit prepares.
-	cover := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}
+	cover := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}
 	data := flacWithCommentBlock(nil, cover, cover)
 	if _, err := mustParseBytes(t, data).Edit().Set(tag.Title, "X").Prepare(); err != nil {
 		t.Fatalf("a tags-only edit on duplicate front covers was refused: %v", err)

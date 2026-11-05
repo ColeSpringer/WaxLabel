@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"slices"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // mp4WithTrailingMdats builds a parseable MP4 (ftyp + audio-only moov + audio mdat) and appends
@@ -13,9 +15,9 @@ func mp4WithTrailingMdats(nLeaked int) []byte {
 	audio := bytes.Repeat([]byte{0xA7}, 120)
 	dead := bytes.Repeat([]byte{0xCC}, 48)
 	build := func(stcoOff uint32) []byte {
-		parts := [][]byte{mp4Ftyp(), mp4Moov(nil, stcoOff), mp4Atom("mdat", audio)}
+		parts := [][]byte{testfile.MP4Ftyp(), mp4Moov(nil, stcoOff), testfile.MP4Atom("mdat", audio)}
 		for range nLeaked {
-			parts = append(parts, mp4Atom("mdat", dead))
+			parts = append(parts, testfile.MP4Atom("mdat", dead))
 		}
 		return slices.Concat(parts...)
 	}
@@ -56,8 +58,8 @@ func TestMP4EssenceIgnoresLeakedChapterMdats(t *testing.T) {
 // multi-track shape whose second audio track the essence digest must still cover.
 func mp4TwoAudioTwoMdat(audio1, audio2 []byte) []byte {
 	build := func(stco1, stco2 uint32) []byte {
-		moov := mp4Atom("moov", slices.Concat(mp4SounTrak(1, stco1), mp4SounTrak(2, stco2)))
-		return slices.Concat(mp4Ftyp(), moov, mp4Atom("mdat", audio1), mp4Atom("mdat", audio2))
+		moov := testfile.MP4Atom("moov", slices.Concat(mp4AudioTrakTkhd(1, stco1), mp4AudioTrakTkhd(2, stco2)))
+		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", audio1), testfile.MP4Atom("mdat", audio2))
 	}
 	tmp := build(0, 0)
 	o1 := bytes.Index(tmp, []byte("mdat")) + 4           // payload of the first mdat

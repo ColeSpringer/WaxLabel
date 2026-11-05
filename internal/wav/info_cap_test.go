@@ -8,6 +8,7 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -47,10 +48,10 @@ func TestInfoElementCapDefaultLimit(t *testing.T) {
 // declares more bytes than are present stops at that item and keeps the well-formed
 // ones, with no error. Only a cap breach is fatal.
 func TestInfoTruncatedListStillParses(t *testing.T) {
-	body := append([]byte("INFO"), infoItemBytes("INAM", "hello")...)
+	body := append([]byte("INFO"), testfile.WAVChunk("INAM", []byte("hello"))...)
 	body = append(body, "IART"...)
-	body = append(body, le32(1000)...) // declares 1000 bytes with none present -> truncated
-	chunks := slices.Concat(wavFmtChunk(), wavChunk("data", []byte{0, 0, 0, 0}), wavChunk("LIST", body))
+	body = append(body, testfile.LE32(1000)...) // declares 1000 bytes with none present -> truncated
+	chunks := slices.Concat(wavFmtChunk(), testfile.WAVChunk("data", []byte{0, 0, 0, 0}), testfile.WAVChunk("LIST", body))
 	d := parseWAVDoc(t, riffWrap(chunks, nil, nil))
 	if len(d.info) != 1 {
 		t.Fatalf("truncated LIST/INFO: got %d items, want 1 (well-formed item kept, truncation tolerated)", len(d.info))

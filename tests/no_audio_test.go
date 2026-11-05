@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -15,7 +16,7 @@ import (
 // Editor.Prepare all fail with ErrInvalidData instead of treating those bytes as audio.
 func TestNoAudioMP3RefusesHashAndWrite(t *testing.T) {
 	ctx := context.Background()
-	data := append(id3v2(4, textFrame(4, "TIT2", "x")), []byte("this is not audio, just plain text\n")...)
+	data := append(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "x")), []byte("this is not audio, just plain text\n")...)
 	path := writeTempFile(t, "notaudio.mp3", data)
 	doc, err := wl.ParseFile(ctx, path)
 	if err != nil {

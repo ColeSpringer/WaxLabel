@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // Pins strictEscalatingCodes: edit-caused write losses escalate; pre-existing/read-path codes do not.
@@ -215,15 +215,8 @@ func TestDuplicateTagBlockDropWarnsWithoutStrict(t *testing.T) {
 
 // Two LIST/INFO chunks; only first survives rewrite.
 func wavTwoInfoLists(dup [][2]string) []byte {
-	info := func(pairs [][2]string) []byte {
-		body := []byte("INFO")
-		for _, p := range pairs {
-			body = append(body, wavItem(p[0], p[1])...)
-		}
-		return wavChunk("LIST", body)
-	}
-	return wavWrap(slices.Concat(wavFmtChunk(),
-		info([][2]string{{"INAM", "First"}}), info(dup), wavChunk("data", make([]byte, 4000))))
+	return testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"INAM", "First"}), testfile.WAVInfo(dup...),
+		testfile.WAVData(4000))
 }
 
 func writeTempFile(t *testing.T, name string, data []byte) string {
@@ -273,7 +266,7 @@ func TestDiscardSetIsStrictSubset(t *testing.T) {
 func TestDiscardedEditNotReportedAsUpToDate(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, "../../testdata/sample.webm")
-	png := writeTempImage(t, "cover.png", minimalPNG())
+	png := writeTempImage(t, "cover.png", testfile.PNG())
 
 	out, errb, code := runCLI(t, "set", file, "--add-picture", "front-cover="+png)
 	if code != 0 {

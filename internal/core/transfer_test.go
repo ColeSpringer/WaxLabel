@@ -5,30 +5,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// tinyGIF: minimal GIF89a (3x5); not on MP4 covr allowlist.
-func tinyGIF() []byte {
-	return append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
-}
-
-// tinyWebP: minimal WebP header; also outside MP4 allowlist.
+// tinyWebP: minimal WebP header, outside the MP4 allowlist.
 func tinyWebP() []byte { return []byte("RIFF\x00\x00\x00\x00WEBP") }
-
-// tinyPNG/tinyJPEG: allowlisted formats. Pictures need real bytes so sniff sets MIME.
-func tinyPNG() []byte {
-	return []byte{
-		0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A,
-		0x00, 0x00, 0x00, 0x0D, 'I', 'H', 'D', 'R',
-		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
-	}
-}
-
-func tinyJPEG() []byte {
-	return []byte{0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x05, 0x00, 0x03, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01}
-}
 
 // TestProjectTransferDispositions: Carried, Lossy, and Dropped in one pass. Synthetic caps for partial write.
 func TestProjectTransferDispositions(t *testing.T) {
@@ -132,8 +114,8 @@ func TestProjectTransferSplitsUnrepresentableCovers(t *testing.T) {
 		Capability{Write: AccessNone}, AccessNone, nil)
 
 	m := &Media{Format: FormatFLAC, Pictures: []Picture{
-		{Type: PicFrontCover, MIME: "image/jpeg", Data: tinyJPEG()},
-		{Type: PicFrontCover, MIME: "image/gif", Data: tinyGIF()},
+		{Type: PicFrontCover, MIME: "image/jpeg", Data: testfile.JPEG()},
+		{Type: PicFrontCover, MIME: "image/gif", Data: testfile.GIF()},
 		{Type: PicFrontCover, MIME: "image/webp", Data: tinyWebP()},
 	}}
 	items := ProjectTransfer(m, caps)
@@ -163,8 +145,8 @@ func TestProjectTransferSplitsUnrepresentableCovers(t *testing.T) {
 
 	// All unrepresentable: one Dropped item; reason lists each MIME once.
 	allGIF := &Media{Format: FormatFLAC, Pictures: []Picture{
-		{Type: PicFrontCover, MIME: "image/gif", Data: tinyGIF()},
-		{Type: PicBackCover, MIME: "image/gif", Data: tinyGIF()},
+		{Type: PicFrontCover, MIME: "image/gif", Data: testfile.GIF()},
+		{Type: PicBackCover, MIME: "image/gif", Data: testfile.GIF()},
 	}}
 	got := ProjectTransfer(allGIF, caps)
 	if len(got) != 1 || got[0].Disposition != Dropped || got[0].Count != 2 {
@@ -203,8 +185,8 @@ func TestProjectTransferSplitsPicturesByMetadataLoss(t *testing.T) {
 	}
 
 	m := &Media{Format: FormatFLAC, Pictures: []Picture{
-		{Type: PicFrontCover, MIME: "image/jpeg", Data: tinyJPEG()},
-		{Type: PicBackCover, MIME: "image/jpeg", Data: tinyJPEG()},
+		{Type: PicFrontCover, MIME: "image/jpeg", Data: testfile.JPEG()},
+		{Type: PicBackCover, MIME: "image/jpeg", Data: testfile.JPEG()},
 	}}
 	items := ProjectTransfer(m, caps)
 	disps := pictureDisps(items)
@@ -226,9 +208,9 @@ func TestProjectTransferSplitsPicturesByMetadataLoss(t *testing.T) {
 	}
 
 	m2 := &Media{Format: FormatFLAC, Pictures: []Picture{
-		{Type: PicFrontCover, MIME: "image/jpeg", Data: tinyJPEG()},
-		{Type: PicBackCover, MIME: "image/png", Data: tinyPNG()},
-		{Type: PicFrontCover, MIME: "image/gif", Data: tinyGIF()},
+		{Type: PicFrontCover, MIME: "image/jpeg", Data: testfile.JPEG()},
+		{Type: PicBackCover, MIME: "image/png", Data: testfile.PNG()},
+		{Type: PicFrontCover, MIME: "image/gif", Data: testfile.GIF()},
 	}}
 	got := pictureDisps(ProjectTransfer(m2, caps))
 	if len(got) != 3 || got[0] != Carried || got[1] != Lossy || got[2] != Dropped {
@@ -301,7 +283,7 @@ func TestProjectTransferSplitsChaptersByMetadataLoss(t *testing.T) {
 
 // TestProjectTransferReasonUsesSniffedMIME: drop reason uses sniffed MIME, not stored label.
 func TestProjectTransferReasonUsesSniffedMIME(t *testing.T) {
-	gif := tinyGIF()
+	gif := testfile.GIF()
 	pics := Capability{Write: AccessFull, PictureMIMEs: []string{"image/jpeg", "image/png", "image/bmp"}}
 	caps := NewCapabilities(FormatMP4, false, Capability{Write: AccessFull}, pics,
 		Capability{Write: AccessNone}, AccessNone, nil)
@@ -326,8 +308,8 @@ func TestProjectTransferReasonUsesSniffedMIME(t *testing.T) {
 
 // TestRepresentableUsesSniffedMIME: Representable uses sniffed MIME. Bytes beat label; empty payload is not representable.
 func TestRepresentableUsesSniffedMIME(t *testing.T) {
-	jpeg := tinyJPEG()
-	gif := tinyGIF()
+	jpeg := testfile.JPEG()
+	gif := testfile.GIF()
 	mp4 := Capability{Write: AccessFull, PictureMIMEs: []string{"image/jpeg", "image/png", "image/bmp"}}
 
 	if !Representable(mp4, Picture{MIME: "image/jpg", Data: jpeg}) {

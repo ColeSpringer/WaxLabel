@@ -248,10 +248,8 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 			}
 			// Picture edits replace the original APIC frames with the edited set. An APIC with
 			// a malformed header cannot be projected or carried forward, so surface the loss
-			// via HasDroppedMalformedPicture (CarryProjectionWarnings reconciles it onto the
-			// returned document). The Vorbis-comment codecs (FLAC/Ogg) instead re-append an
-			// undecodable PICTURE block verbatim; each family matches a fresh re-parse of its
-			// own output.
+			// via HasDroppedMalformedPicture. The Vorbis-comment codecs (FLAC/Ogg) instead
+			// re-append an undecodable PICTURE block verbatim.
 			if !validAPIC(f.Body) {
 				info.HasDroppedMalformedPicture = true
 			}
@@ -396,7 +394,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 // caller writes no tag segment and passes a nil tag to its result builder.
 type FrontTag struct {
 	Bytes      []byte         // rendered tag (header + frames + padding); nil to drop the tag
-	Tag        *Tag           // the new tag for the result document; nil when dropped
+	Tag        *Tag           // the new tag for the plan's result; nil when dropped
 	Padding    int64          // padding bytes written (0 when dropped)
 	Operations []string       // report operation lines this emission adds, in order
 	Warnings   []core.Warning // report warnings this emission adds
@@ -449,7 +447,7 @@ func RenderFrontTag(srcTag *Tag, version byte, newFrames []Frame, info RebuildIn
 	padSize, clamped := clampPadding(nonPad, padSize)
 	ft := FrontTag{
 		Bytes:   Render(version, newFrames, int(padSize)),
-		Tag:     srcTag.WithFrames(newFrames, padSize),
+		Tag:     srcTag.WithFrames(newFrames),
 		Padding: padSize,
 	}
 	if clamped {
@@ -1412,23 +1410,6 @@ func RebuildError(info RebuildInfo) error {
 		return fmt.Errorf("%w: synced-lyrics line contains a NUL byte", waxerr.ErrInvalidData)
 	}
 	return nil
-}
-
-// CarryProjectionWarnings returns the warnings for a post-write MP3/AAC document.
-// Front-tag codecs carry source parse warnings forward because buildResult cannot
-// recompute the audio and container warnings (trailing-id3v1, legacy-ape, ...). An edit
-// can resolve a warning the ID3 projection produced, so a reconciled code
-// (chapters-flattened, invalid-picture, malformed-tag-entry) is dropped when
-// newTagWarnings, Project(newTag).Warnings, lacks it; otherwise the returned document
-// would disagree with a fresh parse. The remaining order is preserved.
-func CarryProjectionWarnings(sourceWarnings, newTagWarnings []core.Warning) []core.Warning {
-	out := core.CloneWarnings(sourceWarnings)
-	for _, code := range []core.WarningCode{core.WarnChaptersFlattened, core.WarnInvalidPicture, core.WarnMalformedTagEntry} {
-		if len(core.WarningsWithCode(newTagWarnings, code)) == 0 {
-			out = core.WarningsWithoutCode(out, code)
-		}
-	}
-	return out
 }
 
 // PerFieldCapabilities builds the per-key capability overrides shared by MP3, AAC, AIFF,

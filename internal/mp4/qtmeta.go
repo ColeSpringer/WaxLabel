@@ -23,12 +23,9 @@ import (
 // "udta.\xa9nam"). BuildFamilies marks a key unselected when two sources disagree, so a
 // disagreement between stores surfaces in lint's conflicting-families rule.
 
-// mdtaHandler is the meta hdlr handler_type for a keys-indexed metadata store; mdirHandler
-// is the iTunes one. A meta with any other handler is decoded as iTunes.
-const (
-	mdtaHandler = "mdta"
-	mdirHandler = "mdir"
-)
+// mdtaHandler is the meta hdlr handler_type for a keys-indexed metadata store. A meta with
+// any other handler is decoded as iTunes.
+const mdtaHandler = "mdta"
 
 // maxKeysEntries caps the keys index and maxQTTextEntries the per-atom language list, so a
 // crafted count or a long run of 4-byte entries cannot drive an unbounded allocation. Both

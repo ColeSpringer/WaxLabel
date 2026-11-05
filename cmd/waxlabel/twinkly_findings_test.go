@@ -1,30 +1,23 @@
 package main
 
 import (
-	"encoding/binary"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-)
 
-// mp4Atom renders one MP4 box: a 32-bit big-endian total size, the 4-byte name, then body.
-func mp4Atom(name string, body []byte) []byte {
-	sz := 8 + len(body)
-	b := []byte{byte(sz >> 24), byte(sz >> 16), byte(sz >> 8), byte(sz)}
-	b = append(b, name...)
-	return append(b, body...)
-}
+	"github.com/colespringer/waxlabel/internal/testfile"
+)
 
 // TestMP4MetaZeroTailExit4: meta with zero tail is exit 4 on dump/set, not silent success.
 func TestMP4MetaZeroTailExit4(t *testing.T) {
-	free := mp4Atom("free", nil)                     // an 8-byte leaf child that tiles cleanly
+	free := testfile.MP4Atom("free", nil)            // an 8-byte leaf child that tiles cleanly
 	metaBody := append([]byte{0, 0, 0, 0}, free...)  // FullBox version/flags + the child
 	metaBody = append(metaBody, make([]byte, 16)...) // then >=8 trailing zeros, no ilst
-	moov := mp4Atom("moov", mp4Atom("udta", mp4Atom("meta", metaBody)))
-	ftyp := mp4Atom("ftyp", []byte("M4A \x00\x00\x00\x00M4A mp42"))
-	mdat := mp4Atom("mdat", []byte("audiodata"))
+	moov := testfile.MP4Atom("moov", testfile.MP4Atom("udta", testfile.MP4Atom("meta", metaBody)))
+	ftyp := testfile.MP4Atom("ftyp", []byte("M4A \x00\x00\x00\x00M4A mp42"))
+	mdat := testfile.MP4Atom("mdat", []byte("audiodata"))
 	raw := slices.Concat(ftyp, moov, mdat)
 
 	path := filepath.Join(t.TempDir(), "zerotail.m4a")
@@ -66,15 +59,8 @@ func TestMP3MalformedAPICSurfaced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ss := func(n int) []byte { // 28-bit sync-safe size
-		return []byte{byte(n>>21) & 0x7f, byte(n>>14) & 0x7f, byte(n>>7) & 0x7f, byte(n) & 0x7f}
-	}
 	apicBody := []byte("\x00image/png") // text-encoding byte + a MIME with no NUL terminator
-	frame := append([]byte("APIC"), ss(len(apicBody))...)
-	frame = append(frame, 0x00, 0x00) // frame flags
-	frame = append(frame, apicBody...)
-	tagBytes := append([]byte("ID3\x04\x00\x00"), ss(len(frame))...)
-	tagBytes = append(tagBytes, frame...)
+	tagBytes := testfile.ID3v2(4, testfile.ID3Frame(4, "APIC", apicBody))
 	path := filepath.Join(t.TempDir(), "badapic.mp3")
 	if err := os.WriteFile(path, append(tagBytes, frames...), 0o644); err != nil {
 		t.Fatal(err)
@@ -109,22 +95,7 @@ func TestEmptyWAVJSONNoBitrate(t *testing.T) {
 
 // TestSubMillisecondWAVJSONConsistent: sub-ms WAV drops durationMs and bitrateBps together.
 func TestSubMillisecondWAVJSONConsistent(t *testing.T) {
-	fmtBody := make([]byte, 16)
-	binary.LittleEndian.PutUint16(fmtBody[0:], 1)      // PCM
-	binary.LittleEndian.PutUint16(fmtBody[2:], 2)      // channels
-	binary.LittleEndian.PutUint32(fmtBody[4:], 44100)  // sample rate
-	binary.LittleEndian.PutUint32(fmtBody[8:], 176400) // byte rate
-	binary.LittleEndian.PutUint16(fmtBody[12:], 4)     // block align
-	binary.LittleEndian.PutUint16(fmtBody[14:], 16)    // bits per sample
-	chunk := func(id string, body []byte) []byte {
-		h := make([]byte, 4)
-		binary.LittleEndian.PutUint32(h, uint32(len(body)))
-		return slices.Concat([]byte(id), h, body)
-	}
-	inner := slices.Concat([]byte("WAVE"), chunk("fmt ", fmtBody), chunk("data", make([]byte, 40))) // 10 frames ~ 0.23 ms
-	sz := make([]byte, 4)
-	binary.LittleEndian.PutUint32(sz, uint32(len(inner)))
-	wav := slices.Concat([]byte("RIFF"), sz, inner)
+	wav := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVData(40)) // 10 frames ~ 0.23 ms
 
 	path := filepath.Join(t.TempDir(), "subms.wav")
 	if err := os.WriteFile(path, wav, 0o644); err != nil {

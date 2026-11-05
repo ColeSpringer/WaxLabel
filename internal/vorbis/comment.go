@@ -447,16 +447,6 @@ func NeutralizeVendor(vendor string, strip bool) (string, bool) {
 	return vendor, false
 }
 
-// CarryEncoderWarnings recomputes inherited-encoder warnings from the vendor and comments
-// that were written, preserving every other warning in prior. Post-write documents use this
-// to match a fresh parse of the output.
-func CarryEncoderWarnings(prior []core.Warning, vendor string, comments []Comment) []core.Warning {
-	// Filter first, then deep-clone only the survivors. WarningsWithoutCode already returns a
-	// fresh slice, but its structs still share Keys with prior.
-	out := core.CloneWarnings(core.WarningsWithoutCode(prior, core.WarnInheritedEncoder))
-	return append(out, EncoderNoise(vendor, comments)...)
-}
-
 // distinctValues counts the distinct case- and space-insensitive values using
 // the same fold rule as dump duplicate markers.
 func distinctValues(vals []string) int { return tag.DistinctValues(vals) }

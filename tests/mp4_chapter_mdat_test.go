@@ -6,6 +6,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // chaptersFromTitles builds chapters at one-second spacing from titles (none of which
@@ -22,7 +23,7 @@ func chaptersFromTitles(titles ...string) []wl.Chapter {
 // must reclaim the prior one rather than leak it, so the mdat count stays flat from the second edit
 // onward and a clear returns it to baseline.
 func TestMP4ChapterMdatFlatAndEssenceStable(t *testing.T) {
-	base := mp4AssembleUdta() // ftyp + audio moov + audio mdat, no chapters
+	base := testfile.MP4AssembleUdta() // ftyp + audio moov + audio mdat, no chapters
 	baseline := bytes.Count(base, []byte("mdat"))
 	if baseline != 1 {
 		t.Fatalf("baseline mdat count = %d, want 1 (the audio mdat)", baseline)

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -63,7 +64,7 @@ func TestReleaseDetailRoundTrip(t *testing.T) {
 // atoms Picard writes. decodeFreeform must own the mixed-case names; an unowned item is preserved
 // on write but invisible to Get, Fields, dump, diff, and copy.
 func TestReleaseDetailMP4PicardAtoms(t *testing.T) {
-	data := mp4Tagged(
+	data := testfile.MP4Tagged(
 		mp4Freeform("com.apple.iTunes", picardCountry, "GB"),
 		mp4Freeform("com.apple.iTunes", picardStatus, "official"),
 		mp4Freeform("com.apple.iTunes", picardType, "album"),
@@ -111,7 +112,7 @@ func TestReleaseDetailPicardWriteSpelling(t *testing.T) {
 // pre-existing TXXX:RELEASECOUNTRY frame. It reads onto the canonical key, and an edit that touches
 // the key drops it as a stale representation while writing the Picard-spelled frame.
 func TestReleaseDetailID3LegacyMigration(t *testing.T) {
-	data := append(id3v2(3, txxxFrame(3, "RELEASECOUNTRY", "US")), mp3Audio(t)...)
+	data := append(testfile.ID3v2(3, txxxFrame(3, "RELEASECOUNTRY", "US")), mp3Audio(t)...)
 
 	doc := mustParseBytes(t, data)
 	if got := doc.Fields().ReleaseCountry; got != "US" {
@@ -141,7 +142,7 @@ func TestReleaseDetailID3LegacyMigration(t *testing.T) {
 // uppercase RELEASECOUNTRY atom, owned through decodeFreeform's valid-key fallback. It must keep
 // reading and rebuild under the Picard name.
 func TestReleaseDetailMP4LegacyMigration(t *testing.T) {
-	data := mp4Tagged(mp4Text("\xa9nam", "T"), mp4Freeform("com.apple.iTunes", "RELEASECOUNTRY", "US"))
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"), mp4Freeform("com.apple.iTunes", "RELEASECOUNTRY", "US"))
 
 	doc := mustParseBytes(t, data)
 	if got := doc.Fields().ReleaseCountry; got != "US" {
@@ -168,7 +169,7 @@ func TestReleaseDetailMP4LegacyMigration(t *testing.T) {
 // file holding both TXXX:RELEASECOUNTRY and the Picard spelling.
 func TestReleaseDetailDualRepresentationID3(t *testing.T) {
 	build := func(canonVal, picardVal string) []byte {
-		return append(id3v2(3,
+		return append(testfile.ID3v2(3,
 			txxxFrame(3, "RELEASECOUNTRY", canonVal),
 			txxxFrame(3, picardCountry, picardVal),
 		), mp3Audio(t)...)
@@ -223,8 +224,8 @@ func TestReleaseDetailDualRepresentationID3(t *testing.T) {
 // MP4 arm: buildItems rebuilds every owned item from the tag set, so any write coalesces the two
 // atoms into one that carries both values.
 func TestReleaseDetailDualRepresentationMP4(t *testing.T) {
-	data := mp4Tagged(
-		mp4Text("\xa9nam", "T"),
+	data := testfile.MP4Tagged(
+		testfile.MP4Text("\xa9nam", "T"),
 		mp4Freeform("com.apple.iTunes", "RELEASECOUNTRY", "US"),
 		mp4Freeform("com.apple.iTunes", picardCountry, "GB"),
 	)
@@ -307,7 +308,7 @@ func TestReleaseDetailMatroskaRoundTrip(t *testing.T) {
 // that a slash-joined RELEASETYPE stays one value. Picard's v2.3 writer joins values with a
 // separator, so a v2.3 file presents one value where v2.4 or FLAC presents two.
 func TestReleaseDetailTypeNeverSlashSplit(t *testing.T) {
-	data := append(id3v2(3, txxxFrame(3, picardType, "album/compilation")), mp3Audio(t)...)
+	data := append(testfile.ID3v2(3, txxxFrame(3, picardType, "album/compilation")), mp3Audio(t)...)
 	got := mustParseBytes(t, data).Fields().ReleaseTypes
 	if want := []string{"album/compilation"}; !slices.Equal(got, want) {
 		t.Errorf("ReleaseTypes = %v, want %v (the slash must not be split)", got, want)
@@ -317,7 +318,7 @@ func TestReleaseDetailTypeNeverSlashSplit(t *testing.T) {
 // MP3 carrying an ID3v2 tag and a trailing APEv2 one.
 func TestReleaseDetailDualTaggedMP3Families(t *testing.T) {
 	build := func(apeVal string) []byte {
-		data := append(id3v2(3, txxxFrame(3, picardStatus, "official")), mp3Audio(t)...)
+		data := append(testfile.ID3v2(3, txxxFrame(3, picardStatus, "official")), mp3Audio(t)...)
 		return append(data, apeTag(map[string]string{"MUSICBRAINZ_ALBUMSTATUS": apeVal})...)
 	}
 

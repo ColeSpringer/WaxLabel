@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -14,8 +15,8 @@ import (
 // rather than truncate to a partial, unreadable cover.
 func TestMP4OversizedCoverFailsLoudNotTruncated(t *testing.T) {
 	bigData := bytes.Repeat([]byte{0x7F}, 8192)
-	covr := mp4Atom("covr", mp4Data(14, bigData)) // type 14 = PNG cover
-	data := mp4Tagged(mp4Text("\xa9nam", "T"), covr)
+	covr := testfile.MP4Atom("covr", testfile.MP4Data(14, bigData)) // type 14 = PNG cover
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"), covr)
 
 	// Too-small limit: the covr read must fail, not return a truncated cover.
 	_, err := wl.Parse(context.Background(), wl.BytesSource(data), wl.WithLimits(wl.Limits{MaxAllocBytes: 4096}))

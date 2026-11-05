@@ -6,26 +6,16 @@ import (
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
-
-// infoItemBytes renders one LIST/INFO item as parseInfo reads it: a 4-byte id, a
-// little-endian length, the value, and a word-alignment pad byte for an odd length.
-func infoItemBytes(id, val string) []byte {
-	b := append([]byte(id), le32(uint32(len(val)))...)
-	b = append(b, val...)
-	if len(val)%2 == 1 {
-		b = append(b, 0)
-	}
-	return b
-}
 
 func wavWithInfo(items ...[2]string) []byte {
 	body := []byte("INFO")
 	for _, it := range items {
-		body = append(body, infoItemBytes(it[0], it[1])...)
+		body = append(body, testfile.WAVChunk(it[0], []byte(it[1]))...)
 	}
-	chunks := slices.Concat(wavFmtChunk(), wavChunk("data", []byte{0, 0, 0, 0}), wavChunk("LIST", body))
+	chunks := slices.Concat(wavFmtChunk(), testfile.WAVChunk("data", []byte{0, 0, 0, 0}), testfile.WAVChunk("LIST", body))
 	return riffWrap(chunks, nil, nil)
 }
 

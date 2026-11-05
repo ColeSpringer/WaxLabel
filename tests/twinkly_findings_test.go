@@ -3,11 +3,13 @@ package waxlabel_test
 import (
 	"context"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 )
@@ -68,7 +70,7 @@ func TestInvalidVorbisKeyWarnsPreservesAndCopiesClean(t *testing.T) {
 // A WAV with two INAM (Title) items must carry both through an unrelated edit: the write forces
 // an ID3 chunk whose v2.4 TIT2 preserves both, so a re-parse still sees both.
 func TestDuplicateWAVTextValuePreservedOnSave(t *testing.T) {
-	src := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Title A"}, [2]string{"INAM", "Title B"}), wavData(400))
+	src := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"INAM", "Title A"}, [2]string{"INAM", "Title B"}), testfile.WAVData(400))
 	doc := mustParseBytes(t, src)
 	if got, _ := doc.Tags().Get(tag.Title); len(got) != 2 {
 		t.Fatalf("parse should keep both duplicate INAM titles, got %v", got)
@@ -171,11 +173,7 @@ func TestVorbisSyncedLyricOverflowClampsAndWarns(t *testing.T) {
 // flacWithMalformedPicture builds a FLAC carrying one valid VORBIS_COMMENT block and one
 // PICTURE block whose body is too short to decode (warned + skipped at parse).
 func flacWithMalformedPicture() []byte {
-	out := []byte("fLaC")
-	out = append(out, flacBlock(0, false, validStreamInfo())...)       // STREAMINFO
-	out = append(out, flacBlock(4, false, renderVC("TITLE=x"))...)     // VORBIS_COMMENT
-	out = append(out, flacBlock(6, true, []byte{0, 0, 0, 3, 1, 2})...) // PICTURE, truncated body, last
-	return append(out, 0xFF, 0xF8)                                     // audio
+	return testfile.FLAC(testfile.CommentBlock("test", "TITLE=x"), testfile.FLACBlock(6, []byte{0, 0, 0, 3, 1, 2}))
 }
 
 func TestFLACMalformedPicturePreservedAcrossPictureEdit(t *testing.T) {
@@ -191,7 +189,7 @@ func TestFLACMalformedPicturePreservedAcrossPictureEdit(t *testing.T) {
 
 	// A picture edit re-emits the decoded set; the undecodable block must be preserved, not
 	// dropped, so a fresh re-parse still warns invalid-picture.
-	plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}).Prepare()
+	plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,13 +203,12 @@ func TestFLACMalformedPicturePreservedAcrossPictureEdit(t *testing.T) {
 	}
 }
 
-// buildResult must carry the malformed-block field into the in-memory result doc: a second picture
-// edit on the returned Document (chained, no re-parse between edits) must still preserve the
+// A second picture edit on the Document the first write returned must still preserve the
 // undecodable block, so a fresh parse of the twice-edited output still warns invalid-picture.
 func TestFLACMalformedPictureSurvivesChainedEdit(t *testing.T) {
 	src := flacWithMalformedPicture()
 	plan, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,8 +217,8 @@ func TestFLACMalformedPictureSurvivesChainedEdit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute first edit: %v", err)
 	}
-	// Second picture edit on the returned Document, which is reused without re-parsing.
-	plan2, err := result.Edit().AddPicture(wl.Picture{Type: wl.PicBackCover, MIME: "image/png", Data: tinyPNG()}).Prepare()
+	// Second picture edit on the returned Document.
+	plan2, err := result.Edit().AddPicture(wl.Picture{Type: wl.PicBackCover, MIME: "image/png", Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatalf("prepare chained edit: %v", err)
 	}
@@ -238,38 +235,22 @@ func mp3WithMalformedAPIC(t *testing.T) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ss := func(n int) []byte {
-		return []byte{byte(n>>21) & 0x7f, byte(n>>14) & 0x7f, byte(n>>7) & 0x7f, byte(n) & 0x7f}
-	}
-	apicBody := []byte("\x00image/png")
-	frame := append([]byte("APIC"), ss(len(apicBody))...)
-	frame = append(frame, 0x00, 0x00)
-	frame = append(frame, apicBody...)
-	tagBytes := append([]byte("ID3\x04\x00\x00"), ss(len(frame))...)
-	return append(append(tagBytes, frame...), frames...)
+	return append(testfile.ID3v2(4, testfile.ID3Frame(4, "APIC", []byte("\x00image/png"))), frames...)
 }
 
-// a picture edit on an MP3 with a malformed APIC must not leave a stale invalid-picture warning
-// on the returned Document.
-func TestMP3MalformedAPICWarningNotStaleAfterPictureEdit(t *testing.T) {
+// A picture edit on an MP3 drops its malformed APIC, so the written file no longer warns
+// invalid-picture.
+func TestMP3PictureEditDropsMalformedAPIC(t *testing.T) {
 	src := mp3WithMalformedAPIC(t)
 	doc := mustParseBytes(t, src)
 	if !hasWarn(doc.Warnings(), wl.WarnInvalidPicture) {
 		t.Fatalf("parse should warn invalid-picture, got %v", doc.Warnings())
 	}
-	plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}).Prepare()
+	plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var w writerTo
-	result, _, err := plan.Execute(context.Background(), wl.WriteTo(&w, wl.BytesSource(src)))
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	reparse := mustParseBytes(t, w.b)
-	if a, b := countWarning(result.Warnings(), wl.WarnInvalidPicture), countWarning(reparse.Warnings(), wl.WarnInvalidPicture); a != b {
-		t.Errorf("invalid-picture stale: result doc has %d, fresh re-parse has %d", a, b)
-	}
+	reparse := mustParseBytes(t, applyToBytes(t, src, plan))
 	if hasWarn(reparse.Warnings(), wl.WarnInvalidPicture) {
 		t.Errorf("a picture edit dropped the malformed APIC, so the output must not warn invalid-picture: %v", reparse.Warnings())
 	}
@@ -280,10 +261,7 @@ func TestMP3MalformedAPICWarningNotStaleAfterPictureEdit(t *testing.T) {
 // flacWithTrailer builds a FLAC whose final 128 bytes are the given trailer, so the
 // trailing-ID3v1 detector inspects exactly that block.
 func flacWithTrailer(trailer []byte) []byte {
-	out := []byte("fLaC")
-	out = append(out, flacBlock(0, true, validStreamInfo())...) // STREAMINFO, last
-	out = append(out, 0xFF, 0xF8, 0x00, 0x00)                   // a little audio
-	return append(out, trailer...)
+	return slices.Concat(testfile.FLAC(), []byte{0, 0}, trailer) // a little audio, then the trailer
 }
 
 func TestTrailingID3v1StrictDetection(t *testing.T) {
@@ -298,10 +276,7 @@ func TestTrailingID3v1StrictDetection(t *testing.T) {
 	}
 
 	// A well-formed ID3v1 tag is still detected.
-	real := make([]byte, 128)
-	copy(real, "TAG")
-	copy(real[3:33], "A Title")
-	copy(real[93:97], "2020")
+	real := testfile.ID3v1("A Title", "", "", "2020", "", 0)
 	realDoc := mustParseBytes(t, flacWithTrailer(real))
 	if !hasWarn(realDoc.Warnings(), wl.WarnTrailingID3v1) {
 		t.Errorf("a genuine trailing ID3v1 tag should still be detected: %v", realDoc.Warnings())

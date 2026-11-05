@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 )
@@ -13,82 +14,6 @@ import (
 // The Ogg FLAC mapping is the one Ogg codec whose cover art is a native FLAC PICTURE block rather
 // than a METADATA_BLOCK_PICTURE comment, and the one whose identification packet carries a count of
 // the header packets that follow.
-
-// oggCRC is the Ogg page checksum: CRC-32 with polynomial 0x04c11db7, no input or output
-// reflection, zero init, and no final XOR.
-func oggCRC(b []byte) uint32 {
-	var crc uint32
-	for _, c := range b {
-		crc ^= uint32(c) << 24
-		for range 8 {
-			if crc&0x80000000 != 0 {
-				crc = crc<<1 ^ 0x04c11db7
-			} else {
-				crc <<= 1
-			}
-		}
-	}
-	return crc
-}
-
-// oggPage lays one packet out as a single Ogg page. Every packet these tests build
-// is short enough for one page, so no continuation handling is needed.
-func oggPage(flags byte, granule uint64, serial, seq uint32, pkt []byte) []byte {
-	var lacing []byte
-	n := len(pkt)
-	for n >= 255 {
-		lacing = append(lacing, 255)
-		n -= 255
-	}
-	lacing = append(lacing, byte(n))
-
-	page := make([]byte, 27+len(lacing)+len(pkt))
-	copy(page, "OggS")
-	page[5] = flags
-	binary.LittleEndian.PutUint64(page[6:14], granule)
-	binary.LittleEndian.PutUint32(page[14:18], serial)
-	binary.LittleEndian.PutUint32(page[18:22], seq)
-	page[26] = byte(len(lacing))
-	copy(page[27:], lacing)
-	copy(page[27+len(lacing):], pkt)
-	binary.LittleEndian.PutUint32(page[22:26], oggCRC(page))
-	return page
-}
-
-// flacBlockPacket frames one FLAC metadata block as an Ogg FLAC header packet.
-func flacBlockPacket(code byte, last bool, body []byte) []byte {
-	h := []byte{code, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}
-	if last {
-		h[0] |= 0x80
-	}
-	return append(h, body...)
-}
-
-// synthOggFLAC builds a minimal Ogg FLAC stream: the identification packet (the mapping prologue
-// plus STREAMINFO), one header packet per supplied block, and a single audio page.
-func synthOggFLAC(blocks ...[]byte) []byte {
-	const serial = 0x57ac7557
-	streamInfo := make([]byte, 34)
-	streamInfo[0], streamInfo[1] = 0x10, 0x00 // min block 4096
-	streamInfo[2], streamInfo[3] = 0x10, 0x00 // max block 4096
-	streamInfo[10] = 0x0A                     // sample rate 44100, ...
-	streamInfo[11] = 0xC4
-	streamInfo[12] = 0x40 | (1 << 1) // rate low nibble | (channels-1)<<1
-	streamInfo[13] = 15 << 4         // (bps-1)&0xf << 4
-
-	id := []byte("\x7FFLAC\x01\x00")
-	id = binary.BigEndian.AppendUint16(id, uint16(len(blocks)))
-	id = append(id, "fLaC"...)
-	id = append(id, flacBlockPacket(0, false, streamInfo)...)
-
-	out := oggPage(0x02, 0, serial, 0, id) // BOS
-	seq := uint32(1)
-	for i, b := range blocks {
-		out = append(out, oggPage(0, 0, serial, seq, flacBlockPacket(b[0], i == len(blocks)-1, b[1:]))...)
-		seq++
-	}
-	return append(out, oggPage(0, 4096, serial, seq, []byte("AUDIO-FRAME-BYTES"))...)
-}
 
 // declaredHeaderPackets reads the identification packet's count of header packets following it.
 func declaredHeaderPackets(t *testing.T, data []byte) int {
@@ -105,9 +30,9 @@ func declaredHeaderPackets(t *testing.T, data []byte) int {
 
 func TestOggFLACPreservesUnknownBlocks(t *testing.T) {
 	marker := []byte("APPLICATION-PRESERVE-ME-0xABCDEF")
-	app := append(append([]byte{2}, "WAXX"...), marker...)
-	comment := append([]byte{4}, vorbis.RenderCommentList("test", []vorbis.Comment{{Name: "TITLE", Value: "Keep"}})...)
-	data := synthOggFLAC(app, comment)
+	app := testfile.FLACBlock(2, append([]byte("WAXX"), marker...))
+	comment := testfile.FLACBlock(4, vorbis.RenderCommentList("test", []vorbis.Comment{{Name: "TITLE", Value: "Keep"}}))
+	data := testfile.OggFLAC(app, comment)
 
 	doc := mustParseBytes(t, data)
 	if doc.Format() != wl.FormatOggFLAC {
@@ -151,7 +76,7 @@ func TestOggFLACPictureIsNativeBlock(t *testing.T) {
 	before := declaredHeaderPackets(t, src)
 
 	plan, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +89,7 @@ func TestOggFLACPictureIsNativeBlock(t *testing.T) {
 		t.Errorf("declared header packets = %d, want %d", got, before+1)
 	}
 	re := mustParseBytes(t, out)
-	if pics := re.Pictures(); len(pics) != 1 || pics[0].Type != wl.PicFrontCover || !bytes.Equal(pics[0].Data, tinyPNG()) {
+	if pics := re.Pictures(); len(pics) != 1 || pics[0].Type != wl.PicFrontCover || !bytes.Equal(pics[0].Data, testfile.PNG()) {
 		t.Fatalf("expected one front cover with the stored bytes, got %+v", pics)
 	}
 	seenPicture := false
@@ -195,12 +120,12 @@ func TestOggFLACPictureIsNativeBlock(t *testing.T) {
 // must read as a cover, and a tag-only edit (which re-renders the comment block and so strips the
 // entry) must materialize it as a native PICTURE block.
 func TestOggFLACCommentPictureMaterialized(t *testing.T) {
-	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}
-	comment := append([]byte{4}, vorbis.RenderCommentList("test", []vorbis.Comment{
+	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}
+	comment := testfile.FLACBlock(4, vorbis.RenderCommentList("test", []vorbis.Comment{
 		{Name: "TITLE", Value: "Keep"},
 		{Name: vorbis.PictureComment, Value: commentPictureValue(pic)},
-	})...)
-	data := synthOggFLAC(comment)
+	}))
+	data := testfile.OggFLAC(comment)
 
 	doc := mustParseBytes(t, data)
 	if len(doc.Pictures()) != 1 {
@@ -227,8 +152,7 @@ func TestOggFLACCommentPictureMaterialized(t *testing.T) {
 // create-a-comment-block path: the mapping requires one, but a stream missing it is read rather
 // than refused.
 func TestOggFLACWithoutCommentBlock(t *testing.T) {
-	padding := append([]byte{1}, make([]byte, 8)...)
-	data := synthOggFLAC(padding)
+	data := testfile.OggFLAC(testfile.FLACBlock(1, make([]byte, 8)))
 
 	doc := mustParseBytes(t, data)
 	if doc.Tags().Len() != 0 {

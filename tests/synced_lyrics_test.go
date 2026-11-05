@@ -2,7 +2,6 @@ package waxlabel_test
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"testing"
 	"time"
@@ -33,40 +32,27 @@ var sampleSyncedLines = []wl.SyncedLine{
 }
 
 // assertSyncedLines checks a synced-lyrics slice carries exactly one set whose lines match
-// want by time and text, the cross-format common subset. path names the source checked.
-func assertSyncedLines(t *testing.T, path string, got []wl.SyncedLyrics, want []wl.SyncedLine) {
+// want by time and text, the cross-format common subset. step names the write checked.
+func assertSyncedLines(t *testing.T, step string, got []wl.SyncedLyrics, want []wl.SyncedLine) {
 	t.Helper()
 	if len(got) != 1 {
-		t.Fatalf("%s: synced-lyrics set count = %d, want 1: %+v", path, len(got), got)
+		t.Fatalf("%s: synced-lyrics set count = %d, want 1: %+v", step, len(got), got)
 	}
 	lines := got[0].Lines
 	if len(lines) != len(want) {
-		t.Fatalf("%s: line count = %d, want %d: %+v", path, len(lines), len(want), lines)
+		t.Fatalf("%s: line count = %d, want %d: %+v", step, len(lines), len(want), lines)
 	}
 	for i := range want {
 		if lines[i].Time != want[i].Time || lines[i].Text != want[i].Text {
 			t.Errorf("%s: line %d = {%v %q}, want {%v %q}",
-				path, i, lines[i].Time, lines[i].Text, want[i].Time, want[i].Text)
+				step, i, lines[i].Time, lines[i].Text, want[i].Time, want[i].Text)
 		}
 	}
 }
 
-// executeSynced applies the plan and returns the synced lyrics from both the in-memory
-// Document and a fresh re-parse of the written bytes, catching a buildResult that writes
-// correct bytes but forgets to set Media.SyncedLyrics.
-func executeSynced(t *testing.T, src []byte, plan *wl.Plan) (inMemory, reparsed []wl.SyncedLyrics) {
-	t.Helper()
-	var buf bytes.Buffer
-	doc, _, err := plan.Execute(context.Background(), wl.WriteTo(&buf, wl.BytesSource(src)))
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	return doc.SyncedLyrics(), mustParseBytes(t, buf.Bytes()).SyncedLyrics()
-}
-
-// every synced-lyrics-writable format gets the same structured edit: the codec's change-detection
+// Every synced-lyrics-writable format gets the same structured edit: the codec's change-detection
 // gate must include synced lyrics (a missing term no-ops a SetSyncedLyrics), and the writer must
-// persist the timed lines so the projected result equals a fresh parse.
+// persist the timed lines.
 func TestSyncedLyricsWriteInvariant(t *testing.T) {
 	want := wl.SyncedLyrics{Language: "eng", Description: "Main", Lines: sampleSyncedLines}
 	for _, f := range wl.Formats() {
@@ -90,12 +76,10 @@ func TestSyncedLyricsWriteInvariant(t *testing.T) {
 			if plan.IsNoOp() {
 				t.Fatal("structured-only synced-lyrics edit produced a no-op plan; the codec's change-detection gate omits synced lyrics")
 			}
-			inMem, reparsed := executeSynced(t, src, plan)
-			assertSyncedLines(t, "in-memory result", inMem, sampleSyncedLines)
-			assertSyncedLines(t, "reparsed bytes", reparsed, sampleSyncedLines)
-
-			// Clearing must round-trip to none on both paths, exercising the clear branch.
 			lyriced := applyToBytes(t, src, plan)
+			assertSyncedLines(t, "after set", mustParseBytes(t, lyriced).SyncedLyrics(), sampleSyncedLines)
+
+			// Clearing must round-trip to none, exercising the clear branch.
 			clearPlan, err := mustParseBytes(t, lyriced).Edit().ClearSyncedLyrics().Prepare()
 			if err != nil {
 				t.Fatalf("clear Prepare: %v", err)
@@ -103,12 +87,8 @@ func TestSyncedLyricsWriteInvariant(t *testing.T) {
 			if clearPlan.IsNoOp() {
 				t.Fatal("ClearSyncedLyrics on a lyriced file produced a no-op plan")
 			}
-			clearedMem, clearedReparsed := executeSynced(t, lyriced, clearPlan)
-			if len(clearedMem) != 0 {
-				t.Errorf("in-memory after clear: %d sets, want 0", len(clearedMem))
-			}
-			if len(clearedReparsed) != 0 {
-				t.Errorf("reparsed after clear: %d sets, want 0", len(clearedReparsed))
+			if sls := mustParseBytes(t, applyToBytes(t, lyriced, clearPlan)).SyncedLyrics(); len(sls) != 0 {
+				t.Errorf("after clear: %d sets, want 0", len(sls))
 			}
 		})
 	}

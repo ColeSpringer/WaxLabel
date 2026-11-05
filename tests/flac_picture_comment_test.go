@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 )
@@ -23,14 +24,12 @@ func flacWithCommentBlock(comments []vorbis.Comment, nativePics ...wl.Picture) [
 // flacWithCommentBlockVendor is flacWithCommentBlock with a caller-chosen Vorbis vendor string,
 // so a test can plant a transcoder stamp (e.g. "Lavf...") and exercise --strip-encoder.
 func flacWithCommentBlockVendor(vendor string, comments []vorbis.Comment, nativePics ...wl.Picture) []byte {
-	out := []byte("fLaC")
-	out = append(out, flacBlock(0, false, validStreamInfo())...) // STREAMINFO (first)
+	var blocks [][]byte
 	for _, np := range nativePics {
-		out = append(out, flacBlock(6, false, vorbis.RenderPicture(np))...) // PICTURE (block type 6)
+		blocks = append(blocks, testfile.FLACBlock(6, vorbis.RenderPicture(np)))
 	}
-	out = append(out, flacBlock(4, false, vorbis.RenderCommentList(vendor, comments))...) // VORBIS_COMMENT
-	out = append(out, flacBlock(1, true, make([]byte, 4))...)                             // PADDING (last)
-	return append(out, 0xFF, 0xF8)                                                        // frame sync
+	return testfile.FLAC(append(blocks, testfile.FLACBlock(4, vorbis.RenderCommentList(vendor, comments)),
+		testfile.FLACBlock(1, make([]byte, 4)))...)
 }
 
 // commentPictureValue renders p as the base64 METADATA_BLOCK_PICTURE comment value (the Ogg
@@ -43,7 +42,7 @@ func commentPictureValue(p wl.Picture) string {
 // used as a FuzzParse regression seed for the comment-cover decode/materialize path.
 func flacCommentPictureSeed() []byte {
 	return flacWithCommentBlock([]vorbis.Comment{
-		{Name: vorbis.PictureComment, Value: commentPictureValue(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()})},
+		{Name: vorbis.PictureComment, Value: commentPictureValue(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()})},
 		{Name: "TITLE", Value: "x"},
 	})
 }
@@ -52,7 +51,7 @@ func flacCommentPictureSeed() []byte {
 // tag edit (pictures untouched) must keep it, canonicalized into exactly one native PICTURE block
 // with the stale picture comment dropped.
 func TestFLACCommentPictureVisibleAndMaterializes(t *testing.T) {
-	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}
+	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}
 	src := flacWithCommentBlock([]vorbis.Comment{
 		{Name: vorbis.PictureComment, Value: commentPictureValue(pic)},
 		{Name: "TITLE", Value: "Old"},
@@ -62,7 +61,7 @@ func TestFLACCommentPictureVisibleAndMaterializes(t *testing.T) {
 	if len(pics) != 1 {
 		t.Fatalf("comment-embedded cover not decoded: got %d pictures, want 1", len(pics))
 	}
-	if !bytes.Equal(pics[0].Data, tinyPNG()) {
+	if !bytes.Equal(pics[0].Data, testfile.PNG()) {
 		t.Error("decoded comment cover data differs from the original")
 	}
 
@@ -80,7 +79,7 @@ func TestFLACCommentPictureVisibleAndMaterializes(t *testing.T) {
 	if len(rp) != 1 {
 		t.Fatalf("after tag edit: got %d pictures, want exactly 1 (cover dropped or duplicated)", len(rp))
 	}
-	if !bytes.Equal(rp[0].Data, tinyPNG()) {
+	if !bytes.Equal(rp[0].Data, testfile.PNG()) {
 		t.Error("materialized cover data differs from the original")
 	}
 	if re.Fields().Title != "New" {
@@ -92,8 +91,8 @@ func TestFLACCommentPictureVisibleAndMaterializes(t *testing.T) {
 // pictures, and a tag edit must yield exactly two (the native block kept verbatim, the comment
 // cover materialized once) with no leftover METADATA_BLOCK_PICTURE comment.
 func TestFLACMixedNativeAndCommentPictures(t *testing.T) {
-	commentPic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}
-	nativePic := wl.Picture{Type: wl.PicBackCover, MIME: "image/jpeg", Data: tinyJPEG()}
+	commentPic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}
+	nativePic := wl.Picture{Type: wl.PicBackCover, MIME: "image/jpeg", Data: testfile.JPEG()}
 	src := flacWithCommentBlock([]vorbis.Comment{
 		{Name: vorbis.PictureComment, Value: commentPictureValue(commentPic)},
 		{Name: "TITLE", Value: "Old"},
@@ -118,8 +117,8 @@ func TestFLACMixedNativeAndCommentPictures(t *testing.T) {
 	}
 	var haveNative, haveComment bool
 	for _, p := range pics {
-		haveNative = haveNative || bytes.Equal(p.Data, tinyJPEG())
-		haveComment = haveComment || bytes.Equal(p.Data, tinyPNG())
+		haveNative = haveNative || bytes.Equal(p.Data, testfile.JPEG())
+		haveComment = haveComment || bytes.Equal(p.Data, testfile.PNG())
 	}
 	if !haveNative || !haveComment {
 		t.Errorf("mixed pictures not both preserved: native(jpeg)=%v comment(png)=%v", haveNative, haveComment)
@@ -129,12 +128,12 @@ func TestFLACMixedNativeAndCommentPictures(t *testing.T) {
 // Adding a cover to a file whose original cover is a METADATA_BLOCK_PICTURE comment must drop that
 // stale comment (it is re-emitted as a native block), or it duplicates the original.
 func TestFLACCommentPicturePictureEditNoDuplicate(t *testing.T) {
-	commentPic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}
+	commentPic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}
 	src := flacWithCommentBlock([]vorbis.Comment{
 		{Name: vorbis.PictureComment, Value: commentPictureValue(commentPic)},
 		{Name: "TITLE", Value: "Keep"},
 	})
-	added := wl.Picture{Type: wl.PicBackCover, MIME: "image/jpeg", Data: tinyJPEG()}
+	added := wl.Picture{Type: wl.PicBackCover, MIME: "image/jpeg", Data: testfile.JPEG()}
 
 	plan, err := mustParseBytes(t, src).Edit().AddPicture(added).Prepare()
 	if err != nil {
@@ -151,7 +150,7 @@ func TestFLACCommentPicturePictureEditNoDuplicate(t *testing.T) {
 	}
 	pngCount := 0
 	for _, p := range pics {
-		if bytes.Equal(p.Data, tinyPNG()) {
+		if bytes.Equal(p.Data, testfile.PNG()) {
 			pngCount++
 		}
 	}
@@ -167,7 +166,7 @@ func TestFLACCommentPicturePictureEditNoDuplicate(t *testing.T) {
 // though no tag/chapter/picture changed, so the comment-sourced cover must still be materialized
 // into a native block.
 func TestFLACCommentPictureSurvivesVendorStrip(t *testing.T) {
-	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}
+	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}
 	src := flacWithCommentBlockVendor("Lavf58.76.100", []vorbis.Comment{
 		{Name: vorbis.PictureComment, Value: commentPictureValue(pic)},
 		{Name: "TITLE", Value: "Song"},
@@ -193,7 +192,7 @@ func TestFLACCommentPictureSurvivesVendorStrip(t *testing.T) {
 	if len(pics) != 1 {
 		t.Fatalf("comment cover lost on a vendor-only edit: got %d pictures, want exactly 1", len(pics))
 	}
-	if !bytes.Equal(pics[0].Data, tinyPNG()) {
+	if !bytes.Equal(pics[0].Data, testfile.PNG()) {
 		t.Error("materialized cover data differs from the original")
 	}
 }
@@ -202,7 +201,7 @@ func TestFLACCommentPictureSurvivesVendorStrip(t *testing.T) {
 // read, and materializing it re-renders from the parsed struct, so the round-trip asserts the
 // cover's presence and image data, not byte-identity.
 func TestFLACCommentPictureOutOfRangeTypeMaterializes(t *testing.T) {
-	body := vorbis.RenderPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()})
+	body := vorbis.RenderPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()})
 	binary.BigEndian.PutUint32(body[0:4], 259) // type past the single-byte ID3/FLAC range
 	src := flacWithCommentBlock([]vorbis.Comment{
 		{Name: vorbis.PictureComment, Value: base64.StdEncoding.EncodeToString(body)},
@@ -216,7 +215,7 @@ func TestFLACCommentPictureOutOfRangeTypeMaterializes(t *testing.T) {
 	if pics[0].Type != wl.PicOther {
 		t.Errorf("out-of-range type read as %v, want PicOther (clamped)", pics[0].Type)
 	}
-	if !bytes.Equal(pics[0].Data, tinyPNG()) {
+	if !bytes.Equal(pics[0].Data, testfile.PNG()) {
 		t.Error("comment cover image data corrupted by the clamp")
 	}
 
@@ -225,9 +224,9 @@ func TestFLACCommentPictureOutOfRangeTypeMaterializes(t *testing.T) {
 		t.Fatal(err)
 	}
 	rp := mustParseBytes(t, applyToBytes(t, src, plan)).Pictures()
-	if len(rp) != 1 || !bytes.Equal(rp[0].Data, tinyPNG()) {
+	if len(rp) != 1 || !bytes.Equal(rp[0].Data, testfile.PNG()) {
 		t.Errorf("materialized out-of-range cover: got %d pictures, data intact = %v (presence/identity, not byte-identity)",
-			len(rp), len(rp) == 1 && bytes.Equal(rp[0].Data, tinyPNG()))
+			len(rp), len(rp) == 1 && bytes.Equal(rp[0].Data, testfile.PNG()))
 	}
 }
 
@@ -236,7 +235,7 @@ func TestFLACCommentPictureOutOfRangeTypeMaterializes(t *testing.T) {
 // materializes it.
 func TestFLACCommentPictureSurvivesChainedEdits(t *testing.T) {
 	ctx := context.Background()
-	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}
+	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}
 	src := flacWithCommentBlock([]vorbis.Comment{
 		{Name: vorbis.PictureComment, Value: commentPictureValue(pic)},
 		{Name: "TITLE", Value: "Old"},
@@ -264,7 +263,7 @@ func TestFLACCommentPictureSurvivesChainedEdits(t *testing.T) {
 		t.Fatal(err)
 	}
 	re := mustParseBytes(t, w2.b)
-	if got := re.Pictures(); len(got) != 1 || !bytes.Equal(got[0].Data, tinyPNG()) {
+	if got := re.Pictures(); len(got) != 1 || !bytes.Equal(got[0].Data, testfile.PNG()) {
 		t.Fatalf("chained tag edit dropped or altered the comment cover: %d pictures", len(got))
 	}
 	if bytes.Contains(w2.b, []byte(vorbis.PictureComment)) {

@@ -60,8 +60,7 @@ func captureSeekHead(src core.ReaderAtSized, el element, depth *bits.Depth, limi
 }
 
 // seekFromRaw parses a SeekHead from its own bytes, recording the element's file
-// position (fileStart) and the in-raw position-slot offsets. buildResult reuses
-// it on the patched bytes so the result equals a fresh parse.
+// position (fileStart) and the in-raw position-slot offsets.
 func seekFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *seekHead {
 	rs := core.BytesSource(raw)
 	root, ok := readElement(rs, 0, int64(len(raw)), limit)

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -159,7 +160,7 @@ func TestOggCoverSmall(t *testing.T) {
 		before := essenceOf(t, src)
 
 		plan, err := mustParseBytes(t, src).Edit().
-			AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
+			AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
 		if err != nil {
 			t.Fatal(err)
 		}

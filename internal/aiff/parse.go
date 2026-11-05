@@ -161,7 +161,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			}
 		}
 		d.audioOff = min(d.audioOff+ssndAlign, d.audioEnd)
-		d.ssndAlign = ssndAlign // reused when building the post-write document
+		d.ssndAlign = ssndAlign // reused when building the plan's result
 	}
 	// The SSND chunk declared more bytes than the file holds: a truncated AIFF.
 	if d.ssndTruncated {
@@ -244,8 +244,8 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chap
 	return tags, pics, chapters, syncedLyrics, families, numericGenre, projWarnings
 }
 
-// mediaWarnings returns the content-derived warnings for a parsed or rewritten
-// document: a resolved numeric genre and an inherited-encoder stamp in the ID3 chunk's
+// mediaWarnings returns the content-derived warnings for a parsed document: a
+// resolved numeric genre and an inherited-encoder stamp in the ID3 chunk's
 // TSSE/TENC frame (ffmpeg writes "Lavf..." into ID3, not the native chunks).
 func mediaWarnings(d *doc, numericGenre bool) []core.Warning {
 	var ws []core.Warning
@@ -293,7 +293,7 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, formEnd, li
 
 // ssndAudioBytes is the count of SSND sample bytes a chunk list holds: the body past the
 // 8-byte sub-header and the declared alignment bytes, never negative, and 0 with no SSND.
-// Parse and the post-write document derive the track from it the same way.
+// Parse and the plan's result derive the track from it the same way.
 func ssndAudioBytes(chunks []chunk, ssndIdx int, ssndAlign int64) int64 {
 	if ssndIdx < 0 {
 		return 0

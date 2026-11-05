@@ -6,13 +6,14 @@ import (
 	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // Codec parses to [Media], plans rewrites, and reports capabilities from one implementation.
 type Codec interface {
 	Format() Format
-	// Extensions are the lowercase file extensions (with dot) this codec
-	// claims, used for detection alongside Sniff.
+	// Extensions are the lowercase file extensions (with dot) this codec claims, for ExtensionsFor:
+	// the CLI's directory walk, format names and -o extension warning. Detection only sniffs.
 	Extensions() []string
 	// Sniff reports whether the leading bytes look like this format.
 	Sniff(header []byte) bool
@@ -71,7 +72,10 @@ type WritePlan struct {
 	Segments []bits.Segment
 	NoOp     bool
 	Report   WriteReport
-	Result   *Media
+	// Result holds what a parse of the written file reads for its tags, pictures, chapters,
+	// synced lyrics, first-track output gain and essence ranges. Nothing reads its other
+	// fields, which a codec may leave unset.
+	Result *Media
 }
 
 // NoOpPlan builds unchanged write plan (SaveBack skips; SaveAsFile still writes file).
@@ -112,6 +116,38 @@ func DowngradeNoOp(format Format, size int64, base, result *Media, tagsEqual, st
 	return np
 }
 
+// CheckPlanResult refuses a plan whose result holds a different number of chapters, pictures or
+// synced lyric sets than edited asks for, unless the report names a discard ([IsDiscardWarning]):
+// the write would otherwise lose a requested item silently. A nil result is not checked.
+func CheckPlanResult(edited, result *Media, report WriteReport) error {
+	if result == nil || HasDiscardWarning(report.Warnings) {
+		return nil
+	}
+	if items, planned, requested, differ := ItemCountDiff(result, edited); differ {
+		return fmt.Errorf("%w: the planned write does not hold the requested %s (%d planned, %d requested)",
+			waxerr.ErrInvalidData, items, planned, requested)
+	}
+	return nil
+}
+
+// ItemCountDiff names the first of chapters, pictures and synced lyric sets whose count differs
+// between a and b, with both counts; differ is false when all three agree.
+func ItemCountDiff(a, b *Media) (items string, na, nb int, differ bool) {
+	for _, c := range []struct {
+		items  string
+		na, nb int
+	}{
+		{"chapters", len(a.Chapters), len(b.Chapters)},
+		{"pictures", len(a.Pictures), len(b.Pictures)},
+		{"synced lyrics", len(a.SyncedLyrics), len(b.SyncedLyrics)},
+	} {
+		if c.na != c.nb {
+			return c.items, c.na, c.nb, true
+		}
+	}
+	return "", 0, 0, false
+}
+
 // Codec registry (init registration; not user-extensible).
 var registry []Codec
 
@@ -131,8 +167,8 @@ func ForFormat(f Format) (Codec, bool) {
 	return nil, false
 }
 
-// Detect picks codec by header sniff only (path ignored). header may be short.
-func Detect(path string, header []byte) (Codec, bool) {
+// Detect picks codec by header sniff. header may be short.
+func Detect(header []byte) (Codec, bool) {
 	for _, c := range registry {
 		if c.Sniff(header) {
 			return c, true
@@ -142,13 +178,13 @@ func Detect(path string, header []byte) (Codec, bool) {
 }
 
 // DetectLeading sniffs past skippable leading region (ID3). Inner format wins if SkipsLeadingID3.
-func DetectLeading(src ReaderAtSized, path string, leadingLen func(header []byte) (int64, bool)) (Codec, bool) {
+func DetectLeading(src ReaderAtSized, leadingLen func(header []byte) (int64, bool)) (Codec, bool) {
 	// 64 bytes covers Ogg BOS id header and shorter signatures.
 	header := make([]byte, 64)
 	n, _ := src.ReadAt(header, 0)
 	header = header[:n]
 
-	codec, ok := Detect(path, header)
+	codec, ok := Detect(header)
 	if !ok {
 		return nil, false
 	}
@@ -161,7 +197,7 @@ func DetectLeading(src ReaderAtSized, path string, leadingLen func(header []byte
 	if pn <= 0 {
 		return codec, true
 	}
-	if inner, ok := Detect("", peek[:pn]); ok && inner.Format() != codec.Format() {
+	if inner, ok := Detect(peek[:pn]); ok && inner.Format() != codec.Format() {
 		// Inner format only when SkipsLeadingID3; else unsupported input.
 		if inner.SkipsLeadingID3() {
 			return inner, true

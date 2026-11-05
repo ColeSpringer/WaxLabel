@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -127,7 +128,7 @@ func TestWavPackDSDBlock(t *testing.T) {
 // date spelling, so MP3's legacy family view shows it under the same key the canonical set uses.
 func TestMP3LegacyAPEDateSurfacesAsRecordingDate(t *testing.T) {
 	ape := apeTagText(map[string]string{"Year": "1999"})
-	data := append(append(id3v2(4, textFrame(4, "TDRC", "2020")), mp3Audio(t)...), ape...)
+	data := append(append(testfile.ID3v2(4, testfile.TextFrame(4, "TDRC", "2020")), mp3Audio(t)...), ape...)
 
 	doc := mustParseBytes(t, data)
 	if got := doc.Fields().RecordingDate; got != "2020" {

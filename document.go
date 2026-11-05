@@ -17,7 +17,8 @@ type Document struct {
 	path string
 	src  core.ReaderAtSized
 
-	// Parse limits, reused for WithVerifyEssence re-parse. Zero = defaults.
+	// Limits it was parsed under; a write's read-back uses them floored at the defaults, and the
+	// Document the write returns carries those. Zero = defaults.
 	limits Limits
 
 	// modTime is the file's modification time as stat'ed, for WithPreserveModTime; hasModTime is

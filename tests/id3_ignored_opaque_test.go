@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"slices"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // A stray leading ID3v2.2 tag ignored for its compression flag projects no values, which must not
 // read as "provably redundant" and invite lint --fix to strip it.
 func TestIgnoredV22TagIsOpaqueToLintFix(t *testing.T) {
-	tagBytes := id3v2(2, frame22("TT2", []byte("\x00Compressed")))
+	tagBytes := testfile.ID3v2(2, frame22("TT2", []byte("\x00Compressed")))
 	tagBytes[5] = 0x40
 	file := slices.Concat(tagBytes, readFixture(t, notagsFLAC))
 	doc := mustParseBytes(t, file)

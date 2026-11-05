@@ -108,7 +108,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		if err := id3.RebuildError(id3Info); err != nil {
 			return nil, err
 		}
-		newID3 = srcTag.WithFrames(frames, 0) // the embedded id3 chunk is rendered without padding
+		newID3 = srcTag.WithFrames(frames)
 	}
 
 	// An empty container is not emitted (no point writing a header-only INFO or
@@ -325,7 +325,7 @@ func insertBeforeData(outs, created []outChunk) []outChunk {
 	return append(outs, created...)
 }
 
-// chunkRole tags an output chunk so the result document can re-find the
+// chunkRole tags an output chunk so the plan's result can re-find the
 // containers without guessing from identifiers.
 type chunkRole uint8
 
@@ -346,22 +346,19 @@ type outChunk struct {
 	bodyLen int64
 }
 
-// outLayout is the byte-level result of assembling the output chunks: the new
-// chunk list (with output offsets), the container indices for the result
-// document, the data chunk's new body offset, and the total output size.
+// outLayout is the byte-level result of assembling the output chunks: the tag
+// containers the output holds, the data chunk's new body offset, and the total
+// output size.
 type outLayout struct {
-	chunks  []chunk
 	dataOff int64
 	total   int64
-	infoIdx int
-	id3Idx  int
-	dataIdx int
+	hasINFO bool
+	hasID3  bool
 }
 
 // assemble turns the output chunks into a rewrite segment list and recomputes the
-// container size, returning the layout needed to build the post-write document.
+// container size, returning the layout needed to build the plan's result.
 func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err error) {
-	lay = outLayout{infoIdx: -1, id3Idx: -1, dataIdx: -1}
 	rf64 := d.isRF64()
 	if rf64 {
 		outs = stripDS64(outs)
@@ -404,7 +401,6 @@ func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err 
 	segs = append(segs, bits.Lit(head[:]))
 
 	running := int64(12)
-	lay.chunks = make([]chunk, 0, len(outs))
 	for _, oc := range outs {
 		var ch [8]byte
 		copy(ch[0:4], oc.id[:])
@@ -413,15 +409,12 @@ func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err 
 		binary.LittleEndian.PutUint32(ch[4:8], sizeField(oc.bodyLen, rf64 && (oc.role == roleData || oc.bodyLen > math.MaxUint32)))
 		segs = append(segs, bits.Lit(ch[:]))
 		running += 8
-		idx := len(lay.chunks)
-		lay.chunks = append(lay.chunks, chunk{id: oc.id, bodyOff: running, bodyLen: oc.bodyLen})
 		switch oc.role {
 		case roleINFO:
-			lay.infoIdx = idx
+			lay.hasINFO = true
 		case roleID3:
-			lay.id3Idx = idx
+			lay.hasID3 = true
 		case roleData:
-			lay.dataIdx = idx
 			lay.dataOff = running
 		}
 		if oc.body != nil {
@@ -492,47 +485,19 @@ func ds64Overrides(outs []outChunk) (table []ds64Size, dataSize uint64) {
 	return table, dataSize
 }
 
-// buildResult constructs the post-write Media without re-parsing. Its canonical view
+// buildResult constructs the plan's result. Its canonical view
 // is re-projected from the written containers with the same project Parse uses, so it
 // equals a fresh parse of the output.
 func buildResult(edited *core.Media, base *doc, newInfo []infoItem, newID3 *id3.Tag, lay outLayout) *core.Media {
-	nd := &doc{
-		chunks:  lay.chunks,
-		infoIdx: lay.infoIdx,
-		id3Idx:  lay.id3Idx,
-		dataIdx: lay.dataIdx,
-		dataOff: lay.dataOff,
-		dataLen: base.dataLen,
-		fmtCfg:  base.fmtCfg,
-		// The audio and its fact chunk are copied verbatim, so the declared sample
-		// count still describes the output.
-		factSamples: base.factSamples,
-		hasFact:     base.hasFact,
-		track:       base.track,
-		size:        lay.total,
-		form:        base.form,
-		ds64:        base.ds64.clone(),
+	// The data and fmt chunks are copied verbatim, so the track holds.
+	written := &doc{track: base.track}
+	if lay.hasINFO {
+		written.info = newInfo
 	}
-	if nd.ds64 != nil {
-		// Update the carried ds64 to the bytes just written.
-		nd.ds64.riffSize = uint64(lay.total - 8 - base.outerLen)
-		nd.ds64.dataSize = uint64(base.dataLen)
+	if lay.hasID3 {
+		written.id3 = newID3
 	}
-	if lay.infoIdx >= 0 {
-		nd.info = newInfo
-	}
-	if lay.id3Idx >= 0 {
-		nd.id3 = newID3
-	}
-	// The in-RIFF trailing and outer regions were appended verbatim at the end of the
-	// output, in that order. Record their new offsets so a re-edit still preserves them.
-	nd.outerLen = base.outerLen
-	nd.outerOff = lay.total - base.outerLen
-	nd.trailingLen = base.trailingLen
-	nd.trailingID3v1 = base.trailingID3v1
-	nd.trailingOff = nd.outerOff - base.trailingLen
-
-	tags, pics, chapters, syncedLyrics, families, numericGenre, projWs := project(nd)
+	tags, pics, chapters, syncedLyrics, _, _, _ := project(written)
 	return &core.Media{
 		Format:       core.FormatWAV,
 		Properties:   edited.Properties.Clone(),
@@ -540,13 +505,7 @@ func buildResult(edited *core.Media, base *doc, newInfo []infoItem, newID3 *id3.
 		Pictures:     pics,
 		Chapters:     chapters,
 		SyncedLyrics: syncedLyrics,
-		Families:     families,
-		// Recompute warnings from the written containers to match a fresh parse: a dropped
-		// duplicate and a resolved numeric genre no longer warn; a preserved ISFT stamp does.
-		Warnings:   append(projWs, mediaWarnings(nd, numericGenre)...),
-		Native:     nd,
-		Identity:   core.Identity{Size: lay.total},
-		AudioStart: lay.dataOff,
-		AudioEnd:   lay.dataOff + base.dataLen,
+		AudioStart:   lay.dataOff,
+		AudioEnd:     lay.dataOff + base.dataLen,
 	}
 }

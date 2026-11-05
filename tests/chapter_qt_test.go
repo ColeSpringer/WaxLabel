@@ -3,105 +3,22 @@ package waxlabel_test
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"slices"
 	"testing"
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// Synthetic QuickTime chapter text track. ffmpeg writes such a track alongside the chpl when it
-// adds chapters; these builders exercise the reader without ffmpeg.
-
-func mp4be16(n int) []byte {
-	b := make([]byte, 2)
-	binary.BigEndian.PutUint16(b, uint16(n))
-	return b
-}
-
-// mp4AudioTrakChap builds an audio trak (track_id 1) that references the chapter text track via a
-// tref "chap", with its single stco entry at audioStco.
-func mp4AudioTrakChap(chapTrackID int, audioStco uint32, stblExtra ...[]byte) []byte {
-	tkhd := mp4Atom("tkhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), mp4be32(1), make([]byte, 4)))
-	tref := mp4Atom("tref", mp4Atom("chap", mp4be32(chapTrackID)))
-	stbl := mp4Atom("stbl", slices.Concat(mp4StsdAudio(), mp4Stco(audioStco), slices.Concat(stblExtra...)))
-	minf := mp4Atom("minf", stbl)
-	mdia := mp4Atom("mdia", slices.Concat(mp4HdlrSoun(), mp4Mdhd(44100), minf))
-	return mp4Atom("trak", slices.Concat(tkhd, tref, mdia))
-}
-
-// mp4TextTrak builds a chapter text trak: one sample per title at the given media timescale, with
-// the chunk offset at textStco.
-func mp4TextTrak(trackID, timescale int, startsMS []int, titles []string, textStco uint32, stblExtra ...[]byte) []byte {
-	var stts []byte
-	for i := range titles {
-		delta := 1000
-		if i+1 < len(startsMS) {
-			delta = startsMS[i+1] - startsMS[i]
-		}
-		stts = append(stts, slices.Concat(mp4be32(1), mp4be32(delta))...)
-	}
-	sttsAtom := mp4Atom("stts", slices.Concat([]byte{0, 0, 0, 0}, mp4be32(len(titles)), stts))
-	stscAtom := mp4Atom("stsc", slices.Concat([]byte{0, 0, 0, 0}, mp4be32(1), mp4be32(1), mp4be32(len(titles)), mp4be32(1)))
-	var sizes []byte
-	for _, t := range titles {
-		sizes = append(sizes, mp4be32(2+len(t))...)
-	}
-	stszAtom := mp4Atom("stsz", slices.Concat([]byte{0, 0, 0, 0}, mp4be32(0), mp4be32(len(titles)), sizes))
-	stcoAtom := mp4Atom("stco", slices.Concat([]byte{0, 0, 0, 0}, mp4be32(1), mp4be32(int(textStco))))
-	stbl := mp4Atom("stbl", slices.Concat(sttsAtom, stscAtom, stszAtom, stcoAtom, slices.Concat(stblExtra...)))
-	minf := mp4Atom("minf", stbl)
-	mdhd := mp4Atom("mdhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), mp4be32(timescale), mp4be32(0)))
-	hdlr := mp4Atom("hdlr", slices.Concat(make([]byte, 8), []byte("text"), make([]byte, 12)))
-	mdia := mp4Atom("mdia", slices.Concat(hdlr, mdhd, minf))
-	tkhd := mp4Atom("tkhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), mp4be32(trackID), make([]byte, 4)))
-	return mp4Atom("trak", slices.Concat(tkhd, mdia))
-}
-
-// mp4SamplesBlob renders the text samples (length-prefixed UTF-8) that the text
-// track's stco points at.
-func mp4SamplesBlob(titles []string) []byte {
-	var blob []byte
-	for _, t := range titles {
-		blob = append(blob, slices.Concat(mp4be16(len(t)), []byte(t))...)
-	}
-	return blob
-}
-
-// mp4QTFile assembles a file with a QuickTime chapter track (and optional extra
-// udta children, e.g. a chpl), patching both the audio and text stco offsets to
-// point at their data in the trailing mdat.
-func mp4QTFile(startsMS []int, titles []string, udtaKids ...[]byte) []byte {
-	return mp4QTFileTS(1000, startsMS, titles, udtaKids...)
-}
-
-// mp4QTFileTS is mp4QTFile with an explicit media timescale (to exercise edge
-// cases such as a zero timescale).
-func mp4QTFileTS(timescale int, startsMS []int, titles []string, udtaKids ...[]byte) []byte {
-	audioFiller := bytes.Repeat([]byte{0xA7}, 120)
-	samples := mp4SamplesBlob(titles)
-	build := func(audioStco, textStco uint32) []byte {
-		kids := slices.Concat(mp4AudioTrakChap(2, audioStco), mp4TextTrak(2, timescale, startsMS, titles, textStco))
-		if len(udtaKids) > 0 {
-			kids = append(kids, mp4Atom("udta", slices.Concat(udtaKids...))...)
-		}
-		moov := mp4Atom("moov", kids)
-		mdat := mp4Atom("mdat", slices.Concat(audioFiller, samples))
-		return slices.Concat(mp4Ftyp(), moov, mdat)
-	}
-	tmp := build(0, 0)
-	mdatIdx := bytes.Index(tmp, []byte("mdat"))
-	audioOff := mdatIdx + 4
-	textOff := audioOff + len(audioFiller)
-	return build(uint32(audioOff), uint32(textOff))
-}
+// ffmpeg writes a QuickTime chapter text track alongside the chpl when it adds chapters;
+// testfile.MP4QTFile builds one, so the reader is exercised without ffmpeg.
 
 func TestMP4QTChapterRead(t *testing.T) {
 	startsMS := []int{0, 5000, 12000}
 	titles := []string{"Cold Open", "Act One", "Act Two"}
-	data := mp4QTFile(startsMS, titles)
+	data := testfile.MP4QTFile(startsMS, titles)
 	doc := mustParseBytes(t, data)
 	chs := doc.Chapters()
 	if len(chs) != 3 {
@@ -134,17 +51,14 @@ func TestMP4QTChapterRead(t *testing.T) {
 func TestMP4ChapterWriteCreatesQTTrack(t *testing.T) {
 	// Setting chapters on a file with an audio track but no chapters builds a QuickTime chapter text
 	// track (the form iTunes/Apple Books read) alongside the chpl.
-	data := mp4Tagged(mp4Text("\xa9nam", "Book"))
-	res, re := execChapters(t, data, func(e *wl.Editor) *wl.Editor {
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "Book"))
+	re := execChapters(t, data, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
 			wl.Chapter{Start: 0, Title: "Intro"},
 			wl.Chapter{Start: 5 * time.Second, Title: "Body"},
 			wl.Chapter{Start: 9 * time.Second, Title: "Outro"},
 		)
 	})
-	if !equalChapterLists(res.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v", res.Chapters(), re.Chapters())
-	}
 	chs := re.Chapters()
 	if len(chs) != 3 || chs[1].Title != "Body" || chs[1].Start != 5*time.Second {
 		t.Fatalf("chapters read back wrong: %+v", chs)
@@ -169,20 +83,20 @@ func TestMP4ChapterWriteCreatesQTTrack(t *testing.T) {
 // mp4AudioTrakTkhd builds an audio trak with a tkhd carrying the given track id and any extra
 // children, such as a tref.
 func mp4AudioTrakTkhd(trackID int, audioStco uint32, extra ...[]byte) []byte {
-	tkhd := mp4Atom("tkhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), mp4be32(trackID), make([]byte, 4)))
-	stbl := mp4Atom("stbl", slices.Concat(mp4StsdAudio(), mp4Stco(audioStco)))
-	minf := mp4Atom("minf", stbl)
-	mdia := mp4Atom("mdia", slices.Concat(mp4HdlrSoun(), mp4Mdhd(44100), minf))
-	return mp4Atom("trak", slices.Concat(tkhd, slices.Concat(extra...), mdia))
+	tkhd := testfile.MP4Atom("tkhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), testfile.BE32(trackID), make([]byte, 4)))
+	stbl := testfile.MP4Atom("stbl", slices.Concat(testfile.MP4StsdAudio(), testfile.MP4Stco(audioStco)))
+	minf := testfile.MP4Atom("minf", stbl)
+	mdia := testfile.MP4Atom("mdia", slices.Concat(testfile.MP4HdlrSoun(), testfile.MP4Mdhd(44100), minf))
+	return testfile.MP4Atom("trak", slices.Concat(tkhd, slices.Concat(extra...), mdia))
 }
 
 func TestMP4ChapterEditKeepsMoovFingerprinted(t *testing.T) {
 	// A chapter edit appends a chapter mdat at end-of-file. On a non-faststart file (moov after the
 	// audio mdat) that would sandwich the moov between two mdats, in the fingerprint's un-hashed gap.
 	build := func(stcoOff uint32) []byte {
-		moov := mp4Atom("moov", mp4AudioTrakTkhd(1, stcoOff))
-		mdat := mp4Atom("mdat", bytes.Repeat([]byte{0xA7}, 200))
-		return slices.Concat(mp4Ftyp(), mdat, moov) // moov AFTER mdat (non-faststart)
+		moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(1, stcoOff))
+		mdat := testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 200))
+		return slices.Concat(testfile.MP4Ftyp(), mdat, moov) // moov AFTER mdat (non-faststart)
 	}
 	tmp := build(0)
 	data := build(uint32(bytes.Index(tmp, []byte("mdat")) + 4))
@@ -213,8 +127,8 @@ func TestMP4ChapterEditKeepsMoovFingerprinted(t *testing.T) {
 // warning and still writes a reparsable file. The uint64 Nero chpl keeps the exact start.
 func TestMP4ChapterStartOverflowWarns(t *testing.T) {
 	build := func(stcoOff uint32) []byte {
-		moov := mp4Atom("moov", mp4AudioTrakTkhd(1, stcoOff))
-		return slices.Concat(mp4Ftyp(), moov, mp4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
+		moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(1, stcoOff))
+		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
 	}
 	tmp := build(0)
 	data := build(uint32(bytes.Index(tmp, []byte("mdat")) + 4))
@@ -245,8 +159,8 @@ func TestMP4ChapterStartOverflowWarns(t *testing.T) {
 // checks the direct-edit warning for MP4's start+title-only chapter storage.
 func TestMP4SetChaptersMetadataDroppedWarns(t *testing.T) {
 	build := func(stcoOff uint32) []byte {
-		moov := mp4Atom("moov", mp4AudioTrakTkhd(1, stcoOff))
-		return slices.Concat(mp4Ftyp(), moov, mp4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
+		moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(1, stcoOff))
+		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
 	}
 	tmp := build(0)
 	data := build(uint32(bytes.Index(tmp, []byte("mdat")) + 4))
@@ -282,10 +196,10 @@ func TestMP4ChapterMaxTrackIDNoCreate(t *testing.T) {
 	// not build a track with the wrapped invalid id 0; it falls back to the chpl, and the chapters
 	// still read.
 	build := func(stcoOff uint32) []byte {
-		// -1 encodes the max track id 0xFFFFFFFF through mp4be32's uint32 conversion on every int width;
+		// -1 encodes the max track id 0xFFFFFFFF through BE32's uint32 conversion on every int width;
 		// int(uint32(0xFFFFFFFF)) overflows a 32-bit int at compile time.
-		moov := mp4Atom("moov", mp4AudioTrakTkhd(-1, stcoOff))
-		return slices.Concat(mp4Ftyp(), moov, mp4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
+		moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(-1, stcoOff))
+		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
 	}
 	tmp := build(0)
 	data := build(uint32(bytes.Index(tmp, []byte("mdat")) + 4))
@@ -308,11 +222,11 @@ func TestMP4ChapterMaxTrackIDNoCreate(t *testing.T) {
 
 func TestMP4ChapterTrefPreservesOtherRefs(t *testing.T) {
 	// An audio tref holding a non-"chap" reference must keep it when a chapter create adds the "chap".
-	otherRef := mp4Atom("hint", mp4be32(7)) // a non-chap reference
-	tref := mp4Atom("tref", otherRef)
+	otherRef := testfile.MP4Atom("hint", testfile.BE32(7)) // a non-chap reference
+	tref := testfile.MP4Atom("tref", otherRef)
 	build := func(stcoOff uint32) []byte {
-		moov := mp4Atom("moov", mp4AudioTrakTkhd(1, stcoOff, tref))
-		return slices.Concat(mp4Ftyp(), moov, mp4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
+		moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(1, stcoOff, tref))
+		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
 	}
 	tmp := build(0)
 	data := build(uint32(bytes.Index(tmp, []byte("mdat")) + 4))
@@ -336,11 +250,11 @@ func TestMP4ChapterClearRemovesDanglingChap(t *testing.T) {
 	// track (dangling). ClearChapters drops the chpl and must also strip the
 	// dangling "chap" reference, per the chapter-clear contract.
 	chpl := mp4Chpl(1, []time.Duration{0, 5 * time.Second}, []string{"X", "Y"})
-	dangling := mp4Atom("tref", mp4Atom("chap", mp4be32(99))) // track 99 does not exist
+	dangling := testfile.MP4Atom("tref", testfile.MP4Atom("chap", testfile.BE32(99))) // track 99 does not exist
 	build := func(stcoOff uint32) []byte {
 		trak := mp4AudioTrakTkhd(1, stcoOff, dangling)
-		moov := mp4Atom("moov", slices.Concat(trak, mp4Atom("udta", chpl)))
-		return slices.Concat(mp4Ftyp(), moov, mp4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
+		moov := testfile.MP4Atom("moov", slices.Concat(trak, testfile.MP4Atom("udta", chpl)))
+		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
 	}
 	tmp := build(0)
 	data := build(uint32(bytes.Index(tmp, []byte("mdat")) + 4))
@@ -363,11 +277,10 @@ func TestMP4ChapterClearRemovesDanglingChap(t *testing.T) {
 	}
 }
 
-func TestMP4ChapterClearThenSetNoReparse(t *testing.T) {
-	// ClearChapters deletes the audio tref; on the returned document a follow-up SetChapters without
-	// a reparse must re-insert a tref. The carried ref must reflect the deletion, or the new tref is
-	// spliced over the audio track's mdia.
-	data := mp4QTFile([]int{0, 5000}, []string{"A", "B"})
+func TestMP4ChapterClearThenSetOnReturnedDocument(t *testing.T) {
+	// ClearChapters deletes the audio tref; SetChapters on the Document that write returned must
+	// re-insert one, not splice a tref over the audio track's mdia.
+	data := testfile.MP4QTFile([]int{0, 5000}, []string{"A", "B"})
 	plan1, err := mustParseBytes(t, data).Edit().ClearChapters().Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -387,15 +300,7 @@ func TestMP4ChapterClearThenSetNoReparse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var w2 writerTo
-	res2, _, err := plan2.Execute(context.Background(), wl.WriteTo(&w2, wl.BytesSource(w1.b)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	re := mustParseBytes(t, w2.b)
-	if !equalChapterLists(res2.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v", res2.Chapters(), re.Chapters())
-	}
+	re := mustParseBytes(t, applyToBytes(t, w1.b, plan2))
 	if chs := re.Chapters(); len(chs) != 2 || chs[0].Title != "New One" {
 		t.Errorf("chapters wrong after clear-then-set: %+v", chs)
 	}
@@ -404,11 +309,10 @@ func TestMP4ChapterClearThenSetNoReparse(t *testing.T) {
 	}
 }
 
-func TestMP4ChapterCreateThenClearNoReparse(t *testing.T) {
-	// SetChapters on a chapterless file inserts an audio tref; on the returned document
-	// ClearChapters without a reparse must remove that tref. The carried ref must reflect
-	// the insert, or the tref is left dangling.
-	data := mp4Tagged(mp4Text("\xa9nam", "T"))
+func TestMP4ChapterCreateThenClearOnReturnedDocument(t *testing.T) {
+	// SetChapters on a chapterless file inserts an audio tref; ClearChapters on the Document that
+	// write returned must remove it, not leave it dangling.
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 	plan1, err := mustParseBytes(t, data).Edit().
 		SetChapters(wl.Chapter{Start: 0, Title: "A"}, wl.Chapter{Start: 3 * time.Second, Title: "B"}).Prepare()
 	if err != nil {
@@ -435,19 +339,15 @@ func TestMP4ChapterCreateThenClearNoReparse(t *testing.T) {
 
 func TestMP4ChaptersSortedByStart(t *testing.T) {
 	// Chapters set out of order are stored sorted by start time, so the chpl and the QuickTime track
-	// encode forward spans. A reparse reads them in order with no source conflict, and the in-memory
-	// result matches.
-	data := mp4Tagged(mp4Text("\xa9nam", "T"))
-	res, re := execChapters(t, data, func(e *wl.Editor) *wl.Editor {
+	// encode forward spans. A reparse reads them in order with no source conflict.
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
+	re := execChapters(t, data, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
 			wl.Chapter{Start: 6 * time.Second, Title: "Third"},
 			wl.Chapter{Start: 0, Title: "First"},
 			wl.Chapter{Start: 3 * time.Second, Title: "Second"},
 		)
 	})
-	if !equalChapterLists(res.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v", res.Chapters(), re.Chapters())
-	}
 	chs := re.Chapters()
 	if len(chs) != 3 || chs[0].Title != "First" || chs[1].Title != "Second" || chs[2].Title != "Third" {
 		t.Fatalf("chapters not sorted by start: %+v", chs)
@@ -463,10 +363,10 @@ func TestMP4ChaptersSortedByStart(t *testing.T) {
 func TestMP4ChapterClearRemovesQTTrack(t *testing.T) {
 	// Clearing chapters on a file with a QuickTime chapter track removes that track and the audio
 	// track's tref "chap", not just the chpl.
-	data := mp4QTFile([]int{0, 5000}, []string{"One", "Two"})
-	res, re := execChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.ClearChapters() })
-	if len(res.Chapters()) != 0 || len(re.Chapters()) != 0 {
-		t.Fatalf("chapters remain after clear: result=%d reparse=%d", len(res.Chapters()), len(re.Chapters()))
+	data := testfile.MP4QTFile([]int{0, 5000}, []string{"One", "Two"})
+	re := execChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.ClearChapters() })
+	if chs := re.Chapters(); len(chs) != 0 {
+		t.Fatalf("chapters remain after clear: %+v", chs)
 	}
 	for _, e := range re.Native().Describe() {
 		if e.Kind == "moov chapter track" {
@@ -484,8 +384,8 @@ func TestMP4ChapterClearRemovesQTTrack(t *testing.T) {
 
 func TestMP4ChapterReEditQTResult(t *testing.T) {
 	// A chapter edit on a QuickTime-track file, then a *tag* edit that grows the metadata on the
-	// returned document without a reparse.
-	data := mp4QTFile([]int{0, 5000}, []string{"V1 A", "V1 B"})
+	// Document the chapter write returned.
+	data := testfile.MP4QTFile([]int{0, 5000}, []string{"V1 A", "V1 B"})
 	plan1, err := mustParseBytes(t, data).Edit().
 		SetChapters(wl.Chapter{Start: 0, Title: "Edited A"}, wl.Chapter{Start: 4 * time.Second, Title: "Edited B"}).Prepare()
 	if err != nil {
@@ -501,15 +401,7 @@ func TestMP4ChapterReEditQTResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var w2 writerTo
-	res2, _, err := plan2.Execute(context.Background(), wl.WriteTo(&w2, wl.BytesSource(w1.b)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	re := mustParseBytes(t, w2.b)
-	if !equalChapterLists(res2.Chapters(), re.Chapters()) {
-		t.Errorf("re-edited result %+v != reparse %+v", res2.Chapters(), re.Chapters())
-	}
+	re := mustParseBytes(t, applyToBytes(t, w1.b, plan2))
 	if chs := re.Chapters(); len(chs) != 2 || chs[0].Title != "Edited A" || chs[1].Title != "Edited B" {
 		t.Errorf("chapters corrupted by a follow-up tag edit: %+v", chs)
 	}
@@ -543,17 +435,8 @@ func TestMP4TagGrowThenChapterEditReparses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var w2 writerTo
-	res2, _, err := plan2.Execute(context.Background(), wl.WriteTo(&w2, wl.BytesSource(w1.b)))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// 3. The twice-edited output must reparse cleanly and match the result view.
-	re := mustParseBytes(t, w2.b)
-	if !equalChapterLists(res2.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v", res2.Chapters(), re.Chapters())
-	}
+	// 3. The twice-edited output reparses with both edits.
+	re := mustParseBytes(t, applyToBytes(t, w1.b, plan2))
 	if chs := re.Chapters(); len(chs) != 2 || chs[0].Title != "Chained A" || chs[1].Title != "Chained B" {
 		t.Errorf("chained chapters corrupted: %+v", chs)
 	}
@@ -564,18 +447,14 @@ func TestMP4TagGrowThenChapterEditReparses(t *testing.T) {
 
 func TestMP4ChapterEditRealFixtureQTTrack(t *testing.T) {
 	// Editing chapters on the ffmpeg M4B fixture (chpl + a QuickTime track) replaces
-	// the QuickTime track in place: a fresh read returns the new chapters, and the
-	// result equals the reparse.
+	// the QuickTime track in place: a fresh read returns the new chapters.
 	src := readFixture(t, sampleM4B)
-	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
+	re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
 			wl.Chapter{Start: 0, Title: "Fresh Start"},
 			wl.Chapter{Start: 4 * time.Second, Title: "Fresh Middle"},
 		)
 	})
-	if !equalChapterLists(res.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v", res.Chapters(), re.Chapters())
-	}
 	chs := re.Chapters()
 	if len(chs) != 2 || chs[0].Title != "Fresh Start" || chs[1].Title != "Fresh Middle" {
 		t.Fatalf("fixture chapters not rewritten: %+v", chs)
@@ -592,15 +471,12 @@ func TestMP4ChapterNonZeroStartRoundTrip(t *testing.T) {
 	// A multi-chapter list whose first start is not zero round-trips with every start preserved: the
 	// QuickTime track's leading empty edit carries the offset.
 	src := readFixture(t, sampleM4B)
-	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
+	re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
 			wl.Chapter{Start: 4 * time.Second, Title: "Four"},
 			wl.Chapter{Start: 9 * time.Second, Title: "Nine"},
 		)
 	})
-	if !equalChapterLists(res.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v", res.Chapters(), re.Chapters())
-	}
 	chs := re.Chapters()
 	if len(chs) != 2 || chs[0].Start != 4*time.Second || chs[0].Title != "Four" {
 		t.Fatalf("first chapter not preserved at 4s: %+v", chs)
@@ -620,10 +496,7 @@ func TestMP4ChapterSingleNonZeroStart(t *testing.T) {
 	set := func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(wl.Chapter{Start: 4 * time.Second, Title: "Only"})
 	}
-	res, re := execChapters(t, src, set)
-	if !equalChapterLists(res.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v", res.Chapters(), re.Chapters())
-	}
+	re := execChapters(t, src, set)
 	chs := re.Chapters()
 	if len(chs) != 1 || chs[0].Start != 4*time.Second || chs[0].Title != "Only" {
 		t.Fatalf("single chapter not preserved at 4s: %+v", chs)
@@ -651,7 +524,7 @@ func TestMP4ChapterSourceConflict(t *testing.T) {
 	startsMS := []int{0, 5000}
 	qtTitles := []string{"QT Intro", "QT Body"}
 	chpl := mp4Chpl(1, []time.Duration{0, 5 * time.Second}, []string{"Nero Intro", "Nero Body"})
-	data := mp4QTFile(startsMS, qtTitles, chpl)
+	data := testfile.MP4QTFile(startsMS, qtTitles, chpl)
 
 	doc := mustParseBytes(t, data)
 	if !hasWarning(doc, wl.WarnChapterSourceConflict) {
@@ -667,7 +540,7 @@ func TestMP4ChapterAgreementNoConflict(t *testing.T) {
 	startsMS := []int{0, 8000}
 	titles := []string{"Same A", "Same B"}
 	chpl := mp4Chpl(1, []time.Duration{0, 8 * time.Second}, titles)
-	data := mp4QTFile(startsMS, titles, chpl)
+	data := testfile.MP4QTFile(startsMS, titles, chpl)
 	doc := mustParseBytes(t, data)
 	if hasWarning(doc, wl.WarnChapterSourceConflict) {
 		t.Errorf("agreeing chapter sources should not warn; got %v", doc.Warnings())
@@ -678,7 +551,7 @@ func TestMP4ChapterEditRewritesQTTrack(t *testing.T) {
 	// Editing chapters on a file with a QuickTime chapter track rebuilds that track too: no
 	// chapters-stale warning, and a fresh read returns the edit from the QuickTime track (the
 	// representation iTunes/Apple Books use).
-	data := mp4QTFile([]int{0, 5000}, []string{"Original One", "Original Two"})
+	data := testfile.MP4QTFile([]int{0, 5000}, []string{"Original One", "Original Two"})
 	plan, err := mustParseBytes(t, data).Edit().
 		SetChapters(
 			wl.Chapter{Start: 0, Title: "Edited One"},
@@ -702,8 +575,8 @@ func TestMP4ChapterEditRewritesQTTrack(t *testing.T) {
 }
 
 func TestMP4QTChapterReEditAfterTagEdit(t *testing.T) {
-	// Tag-edit a QuickTime-chapter file, then (without reparse) chapter-edit the result.
-	data := mp4QTFile([]int{0, 5000}, []string{"A", "B"})
+	// Tag-edit a QuickTime-chapter file, then chapter-edit the Document that write returned.
+	data := testfile.MP4QTFile([]int{0, 5000}, []string{"A", "B"})
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Tagged").Prepare()
 	if err != nil {
 		t.Fatal(err)

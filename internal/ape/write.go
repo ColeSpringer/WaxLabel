@@ -23,9 +23,6 @@ const (
 	headerFlagsBits  = flagHasHeader | flagIsHeader
 )
 
-// NewEmpty: APEv2 with header (current tagger shape; rebuild base when none).
-func NewEmpty() *Tag { return &Tag{Version: writeVersion, HasHeader: true} }
-
 // DiffKeys: shared with Vorbis so rebuilds agree on what changed.
 func DiffKeys(base, edited tag.TagSet) map[tag.Key]bool { return core.DiffKeys(base, edited) }
 
@@ -311,7 +308,7 @@ const (
 )
 
 // Render: optional header, items, footer. Size = items+footer. Keep source
-// version/hasHeader; new tags are APEv2+header ([NewEmpty]).
+// version/hasHeader; new tags are APEv2+header.
 func Render(items []Item, version int, hasHeader bool) ([]byte, error) {
 	if err := checkRenderLimits(items); err != nil {
 		return nil, err

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -41,7 +42,7 @@ func TestLavcStampReported(t *testing.T) {
 // write side: --strip-encoder / WithStripEncoderStamp judges the WAV ISFT item on its own bytes,
 // so a codec stamp there is dropped like a muxer stamp.
 func TestLavcStampStripped(t *testing.T) {
-	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Keep"}, [2]string{"ISFT", "Lavc61.19.101 libopus"}), wavData(400))
+	data := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"INAM", "Keep"}, [2]string{"ISFT", "Lavc61.19.101 libopus"}), testfile.WAVData(400))
 	doc := mustParseBytes(t, data)
 	if v, _ := doc.Tags().Get(tag.Encoder); len(v) != 1 || v[0] != "Lavc61.19.101 libopus" {
 		t.Fatalf("setup: ENCODER = %v, want the ISFT stamp", v)

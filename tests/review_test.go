@@ -10,6 +10,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -18,23 +19,15 @@ import (
 // only the first is projected into the canonical tags, and any rewrite collapses the extras to a
 // single block (the multiple-vorbis-comment lint promises this).
 func flacWithTwoVC() []byte {
-	out := []byte("fLaC")
-	out = append(out, flacBlock(0, false, validStreamInfo())...)
-	out = append(out, flacBlock(4, false, renderVC("TITLE=x"))...) // authoritative
-	out = append(out, flacBlock(4, false, renderVC("ALBUM=y"))...) // extra
-	out = append(out, flacBlock(1, true, make([]byte, 4))...)
-	return append(out, 0xFF, 0xF8)
+	return testfile.FLAC(testfile.CommentBlock("test", "TITLE=x"), testfile.CommentBlock("test", "ALBUM=y"),
+		testfile.FLACBlock(1, make([]byte, 4)))
 }
 
 // large existing padding region is reused exactly by splitting it across multiple legal FLAC
 // padding blocks.
 func TestFLACReuseLargePaddingNoSpuriousClamp(t *testing.T) {
-	data := []byte("fLaC")
-	data = append(data, flacBlock(0, false, validStreamInfo())...)
-	data = append(data, flacBlock(4, false, renderVC("TITLE=x"))...)
-	data = append(data, flacBlock(1, false, make([]byte, 10<<20))...) // ~10 MiB PADDING
-	data = append(data, flacBlock(1, true, make([]byte, 10<<20))...)  // ~10 MiB PADDING (last)
-	data = append(data, 0xFF, 0xF8)                                   // a frame sync so audio is detected
+	data := testfile.FLAC(testfile.CommentBlock("test", "TITLE=x"),
+		testfile.FLACBlock(1, make([]byte, 10<<20)), testfile.FLACBlock(1, make([]byte, 10<<20))) // two ~10 MiB PADDING blocks
 
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "y").Prepare()
 	if err != nil {
@@ -54,39 +47,16 @@ func TestFLACReuseLargePaddingNoSpuriousClamp(t *testing.T) {
 	}
 }
 
-// flacBlock renders a metadata block (header + body).
-func flacBlock(code byte, last bool, body []byte) []byte {
-	h := []byte{code, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}
-	if last {
-		h[0] |= 0x80
-	}
-	return append(h, body...)
-}
-
-// validStreamInfo returns a 34-byte STREAMINFO (44100 Hz, 2ch, 16-bit).
-func validStreamInfo() []byte {
-	si := make([]byte, 34)
-	si[0], si[1], si[2], si[3] = 0x10, 0x00, 0x10, 0x00
-	si[10], si[11] = 0x0A, 0xC4
-	si[12] = 0x40 | (1 << 1)
-	si[13] = 15 << 4
-	return si
-}
-
 // flacWithComments builds a FLAC carrying the given Vorbis comment entries.
 func flacWithComments(entries ...string) []byte {
-	out := []byte("fLaC")
-	out = append(out, flacBlock(0, false, validStreamInfo())...)
-	out = append(out, flacBlock(4, false, renderVC(entries...))...)
-	out = append(out, flacBlock(1, true, make([]byte, 4))...)
-	return append(out, 0xFF, 0xF8)
+	return testfile.TaggedFLAC("test", entries...)
 }
 
 // An oversized picture must be rejected, not silently truncated.
 func TestPictureTooLargeRejected(t *testing.T) {
 	doc := mustParseBytes(t, flacWithComments("TITLE=x"))
 	big := make([]byte, 16<<20) // 16 MiB body exceeds the 24-bit block length
-	copy(big, tinyJPEG())       // complete JPEG header for the image-recognition gate
+	copy(big, testfile.JPEG())  // complete JPEG header for the image-recognition gate
 	_, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Data: big}).Prepare()
 	if !errors.Is(err, waxerr.ErrPictureTooLarge) {
 		t.Errorf("err = %v, want ErrPictureTooLarge", err)
@@ -128,13 +98,9 @@ func TestTrailingID3FalsePositiveGuard(t *testing.T) {
 	ctx := context.Background()
 	// PADDING body of 130 bytes with "TAG" at file offset size-128, well inside
 	// the metadata region (audio is only 2 bytes).
-	pad := make([]byte, 130)
-	out := []byte("fLaC")
-	out = append(out, flacBlock(0, false, validStreamInfo())...)
-	// Padding block starts at offset 42 (4 + 4+34); its body starts at 46.
-	out = append(out, flacBlock(1, true, pad)...)
-	out = append(out, 0xFF, 0xF8) // 2 audio bytes
+	// The padding block starts at offset 42 (4 + 4+34), its body at 46. With 2 audio bytes,
 	// size = 4 + 38 + (4+130) + 2 = 178; size-128 = 50, which is body offset 4.
+	out := testfile.FLAC(testfile.FLACBlock(1, make([]byte, 130)))
 	copy(out[50:], "TAG")
 
 	doc, err := wl.Parse(ctx, wl.BytesSource(out))
@@ -229,28 +195,16 @@ func TestFingerprintDetectsInPlaceMetadataChange(t *testing.T) {
 	}
 }
 
-// A key set present-but-empty (which Vorbis cannot store) must be absent in the returned
-// Document, matching a re-parse of the written bytes.
-func TestPresentEmptyKeyAbsentInResult(t *testing.T) {
-	data := readFixture(t, sampleFLAC) // has Title="Original Title"
-	doc := mustParseBytes(t, data)
-
-	plan, err := doc.Edit().Set(tag.Title).Prepare() // Set with no values
+// A key set with no values (present but empty, which Vorbis cannot store) is absent from the
+// written file, here the fixture's TITLE.
+func TestPresentEmptyKeyNotWritten(t *testing.T) {
+	data := readFixture(t, sampleFLAC)
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var buf writerTo
-	resDoc, _, err := plan.Execute(context.Background(), wl.WriteTo(&buf, wl.BytesSource(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, inResult := resDoc.Get(tag.Title)
-	_, inReparse := mustParseBytes(t, buf.b).Get(tag.Title)
-	if inResult != inReparse {
-		t.Errorf("result Title present=%v but re-parse present=%v - plan and write disagree", inResult, inReparse)
-	}
-	if inResult {
-		t.Error("present-but-empty Title should be absent in the written result")
+	if _, ok := mustParseBytes(t, applyToBytes(t, data, plan)).Get(tag.Title); ok {
+		t.Error("a present-but-empty Title should be absent from the written file")
 	}
 }
 
@@ -282,7 +236,7 @@ func TestExtraVorbisBlocksCollapsedOnAnyEdit(t *testing.T) {
 
 	t.Run("picture-only collapses extras", func(t *testing.T) {
 		doc := mustParseBytes(t, data)
-		plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
+		plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
 		if err != nil {
 			t.Fatal(err)
 		}

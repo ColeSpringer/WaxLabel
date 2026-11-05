@@ -272,41 +272,6 @@ func TestChapterCTOCOrdering(t *testing.T) {
 	}
 }
 
-// TestCarryProjectionWarnings checks the front-tag warning carry: a stale projection note
-// (chapters-flattened or invalid-picture) is dropped when the written tag no longer
-// projects it and kept in source order when it does; container warnings carry unchanged.
-func TestCarryProjectionWarnings(t *testing.T) {
-	flat := core.Warning{Code: core.WarnChaptersFlattened, Message: "flat"}
-	enc := core.Warning{Code: core.WarnInheritedEncoder, Message: "enc"}
-	source := []core.Warning{flat, enc}
-
-	// Written tag still flattens (proj carries the note): keep source order [flatten, enc].
-	got := CarryProjectionWarnings(source, []core.Warning{flat})
-	if len(got) != 2 || got[0].Code != core.WarnChaptersFlattened || got[1].Code != core.WarnInheritedEncoder {
-		t.Errorf("still-flattened: got %+v, want [flatten, encoder] in order", got)
-	}
-	// Written tag no longer flattens (proj empty): drop the stale flatten, keep the rest.
-	got = CarryProjectionWarnings(source, nil)
-	if len(got) != 1 || got[0].Code != core.WarnInheritedEncoder {
-		t.Errorf("flattened-away: got %+v, want [encoder] only", got)
-	}
-
-	// A source invalid-picture is dropped when the rewritten tag no longer projects it (a
-	// picture edit dropped the malformed cover); a container warning like legacy-ape
-	// carries unchanged.
-	badPic := core.Warning{Code: core.WarnInvalidPicture, Message: "APIC: invalid picture data"}
-	ape := core.Warning{Code: core.WarnLegacyAPE, Message: "ape"}
-	got = CarryProjectionWarnings([]core.Warning{badPic, ape}, nil)
-	if len(got) != 1 || got[0].Code != core.WarnLegacyAPE {
-		t.Errorf("dropped-malformed-apic: got %+v, want [legacy-ape] only", got)
-	}
-	// A tag-only edit preserves the malformed APIC, so proj still projects invalid-picture: keep it.
-	got = CarryProjectionWarnings([]core.Warning{badPic}, []core.Warning{badPic})
-	if len(got) != 1 || got[0].Code != core.WarnInvalidPicture {
-		t.Errorf("preserved-malformed-apic: got %+v, want [invalid-picture] kept", got)
-	}
-}
-
 // TestCheckChapterCount checks the codec-level check for the single-byte CTOC count:
 // exactly 255 is accepted, 256 is rejected with ErrUnsupportedTag.
 func TestCheckChapterCount(t *testing.T) {
@@ -594,8 +559,7 @@ func TestRebuildPreservesChaptersOnTagEdit(t *testing.T) {
 }
 
 // TestChapterEditFlattensNestedCTOCWarning checks a chapter edit on a tag with a nested
-// CTOC writes one flat CTOC whose projection carries no flatten warning; the post-write
-// result uses the written tag's warnings, not stale source warnings.
+// CTOC writes one flat CTOC whose projection carries no flatten warning.
 func TestChapterEditFlattensNestedCTOCWarning(t *testing.T) {
 	chapA, _ := encodeCHAP("a", core.Chapter{Start: 0, Title: "A"}, 4)
 	nested := []Frame{

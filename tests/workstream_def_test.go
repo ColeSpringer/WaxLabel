@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -237,7 +238,7 @@ func TestSingleValuedMultiWarning(t *testing.T) {
 // builds a WAV whose only INFO item is a transcoder ISFT stamp, strips it, and verifies the stamp
 // is gone and the now-empty LIST chunk is dropped entirely (not emitted bodyless).
 func TestWAVStripEncoderStampDropsEmptyLIST(t *testing.T) {
-	data := wavFile(wavFmtPCM(), wavInfo([2]string{"ISFT", "Lavf61.7.100"}), wavData(400))
+	data := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"ISFT", "Lavf61.7.100"}), testfile.WAVData(400))
 	doc := mustParseBytes(t, data)
 	if !hasWarning(doc, wl.WarnInheritedEncoder) {
 		t.Fatal("setup: expected an inherited-encoder warning for the ISFT stamp")
@@ -261,7 +262,7 @@ func TestWAVStripEncoderStampDropsEmptyLIST(t *testing.T) {
 }
 
 func TestWAVStripEncoderStampKeepsOtherInfo(t *testing.T) {
-	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Keep Me"}, [2]string{"ISFT", "Lavf61.7.100"}), wavData(400))
+	data := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"INAM", "Keep Me"}, [2]string{"ISFT", "Lavf61.7.100"}), testfile.WAVData(400))
 	plan, err := mustParseBytes(t, data).Edit().Clear(tag.Encoder).Prepare(wl.WithStripEncoderStamp())
 	if err != nil {
 		t.Fatal(err)
@@ -278,7 +279,7 @@ func TestWAVStripEncoderStampKeepsOtherInfo(t *testing.T) {
 // strip is gated on IsTranscoderStamp: a user's own ISFT (not a transcoder stamp) is preserved, so
 // a strip of a file without a transcoder stamp is a no-op.
 func TestWAVStripEncoderStampLeavesUserISFT(t *testing.T) {
-	data := wavFile(wavFmtPCM(), wavInfo([2]string{"ISFT", "My Editor 1.0"}), wavData(400))
+	data := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"ISFT", "My Editor 1.0"}), testfile.WAVData(400))
 	doc := mustParseBytes(t, data)
 	if hasWarning(doc, wl.WarnInheritedEncoder) {
 		t.Fatal("a non-transcoder ISFT should not warn")

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -20,35 +21,9 @@ func mp3Audio(t *testing.T) []byte {
 	return readFixture(t, notagsMP3)
 }
 
-func syncsafe(n int) []byte {
-	return []byte{byte(n>>21) & 0x7f, byte(n>>14) & 0x7f, byte(n>>7) & 0x7f, byte(n) & 0x7f}
-}
-
-// id3v2 wraps frame bytes in an ID3v2 header of the given minor version.
-func id3v2(version byte, frames ...[]byte) []byte {
-	body := slices.Concat(frames...)
-	out := append([]byte{'I', 'D', '3', version, 0, 0}, syncsafe(len(body))...)
-	return append(out, body...)
-}
-
-// id3Frame wraps a frame body in a v2.3/v2.4 header: 4-char id, size, two flag bytes. v2.4 sizes
-// are sync-safe; v2.3 uses a plain 4-byte big-endian count.
-func id3Frame(version byte, id string, body []byte) []byte {
-	sz := []byte{byte(len(body) >> 24), byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}
-	if version >= 4 {
-		sz = syncsafe(len(body))
-	}
-	return slices.Concat([]byte(id), sz, []byte{0, 0}, body)
-}
-
-// textFrame builds a Latin-1 text frame.
-func textFrame(version byte, id, text string) []byte {
-	return id3Frame(version, id, append([]byte{0}, text...)) // encoding 0 = Latin-1
-}
-
 // txxxFrame builds a TXXX user frame: encoding byte, description, NUL, value.
 func txxxFrame(version byte, desc, value string) []byte {
-	return id3Frame(version, "TXXX", slices.Concat([]byte{0}, []byte(desc), []byte{0}, []byte(value)))
+	return testfile.ID3Frame(version, "TXXX", slices.Concat([]byte{0}, []byte(desc), []byte{0}, []byte(value)))
 }
 
 // frame22 builds a v2.2 frame: 3-char ID, 3-byte size, no flags.
@@ -60,20 +35,6 @@ func frame22(id string, body []byte) []byte {
 // textFrame22 builds a v2.2 Latin-1 text frame.
 func textFrame22(id, text string) []byte {
 	return frame22(id, append([]byte{0}, text...))
-}
-
-// id3v1 builds a 128-byte ID3v1 trailer. Every text field is a parameter so a single
-// hand-written offset table serves every test.
-func id3v1(title, artist, album, year, comment string, genre byte) []byte {
-	b := make([]byte, 128)
-	copy(b[0:3], "TAG")
-	copy(b[3:33], title)
-	copy(b[33:63], artist)
-	copy(b[63:93], album)
-	copy(b[93:97], year)
-	copy(b[97:127], comment)
-	b[127] = genre
-	return b
 }
 
 // mp3XingFrameVariant builds one MPEG-1 Layer 3 frame (128 kbps, 44.1 kHz, 417 bytes) carrying a
@@ -143,7 +104,7 @@ func TestMP3VBRXingOffsetProbing(t *testing.T) {
 }
 
 func TestMP3NumericGenreRead(t *testing.T) {
-	data := append(id3v2(3, textFrame(3, "TCON", "(17)"), textFrame(3, "TIT2", "T")), mp3Audio(t)...)
+	data := append(testfile.ID3v2(3, testfile.TextFrame(3, "TCON", "(17)"), testfile.TextFrame(3, "TIT2", "T")), mp3Audio(t)...)
 	doc := mustParseBytes(t, data)
 	if g := doc.Fields().Genres; len(g) != 1 || g[0] != "Rock" {
 		t.Errorf("numeric genre (17) -> %v, want [Rock]", g)
@@ -155,7 +116,7 @@ func TestMP3NumericGenreRead(t *testing.T) {
 
 func TestMP3MultipleNumericGenres(t *testing.T) {
 	// An ID3v2.3 two-genre TCON "(51)(39)" must resolve to both names.
-	data := append(id3v2(3, textFrame(3, "TCON", "(51)(39)"), textFrame(3, "TIT2", "T")), mp3Audio(t)...)
+	data := append(testfile.ID3v2(3, testfile.TextFrame(3, "TCON", "(51)(39)"), testfile.TextFrame(3, "TIT2", "T")), mp3Audio(t)...)
 	g := mustParseBytes(t, data).Fields().Genres
 	if len(g) != 2 || g[0] != "Techno-Industrial" || g[1] != "Noise" {
 		t.Errorf("(51)(39) -> %v, want [Techno-Industrial Noise]", g)
@@ -163,7 +124,7 @@ func TestMP3MultipleNumericGenres(t *testing.T) {
 }
 
 func TestMP3NumericGenreWrite(t *testing.T) {
-	data := append(id3v2(4, textFrame(4, "TIT2", "T")), mp3Audio(t)...)
+	data := append(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "T")), mp3Audio(t)...)
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Genre, "Rock").Prepare(wl.WithNumericGenre())
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +148,7 @@ func TestMP3NumericGenreWrite(t *testing.T) {
 }
 
 func TestMP3V22EndToEnd(t *testing.T) {
-	data := append(id3v2(2, textFrame22("TT2", "V22 Title"), textFrame22("TP1", "V22 Artist")), mp3Audio(t)...)
+	data := append(testfile.ID3v2(2, textFrame22("TT2", "V22 Title"), textFrame22("TP1", "V22 Artist")), mp3Audio(t)...)
 	doc := mustParseBytes(t, data)
 	if doc.Fields().Title != "V22 Title" || len(doc.Fields().Artists) != 1 || doc.Fields().Artists[0] != "V22 Artist" {
 		t.Fatalf("v2.2 read: title=%q artists=%v", doc.Fields().Title, doc.Fields().Artists)
@@ -225,9 +186,9 @@ func TestMP3VersionPreserved(t *testing.T) {
 }
 
 func TestMP3LegacyConflictSurfaced(t *testing.T) {
-	data := id3v2(3, textFrame(3, "TIT2", "V2 Title"))
+	data := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "V2 Title"))
 	data = append(data, mp3Audio(t)...)
-	data = append(data, id3v1("V1 Different Title", "", "", "", "", 255)...)
+	data = append(data, testfile.ID3v1("V1 Different Title", "", "", "", "", 255)...)
 
 	doc := mustParseBytes(t, data)
 	if doc.Fields().Title != "V2 Title" {
@@ -277,36 +238,20 @@ func TestMP3APELegacyView(t *testing.T) {
 	}
 }
 
-// The document returned from a write surfaces the preserved trailing ID3v1 in its family view,
-// matching a fresh parse of the output.
-func TestMP3PostWriteRetainsLegacyFamilies(t *testing.T) {
-	data := id3v2(3, textFrame(3, "TIT2", "V2 Title"))
+// An edit preserves the trailing ID3v1 and the family entry its title projects.
+func TestMP3EditKeepsID3v1Family(t *testing.T) {
+	data := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "V2 Title"))
 	data = append(data, mp3Audio(t)...)
-	data = append(data, id3v1("V1 Different", "", "", "", "", 255)...)
+	data = append(data, testfile.ID3v1("V1 Different", "", "", "", "", 255)...)
 
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Edited").Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var w writerTo
-	outDoc, _, err := plan.Execute(context.Background(), wl.WriteTo(&w, wl.BytesSource(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	hasV1Title := func(d *wl.Document) bool {
-		for _, f := range d.Families() {
-			if f.Family == wl.FamilyID3v1 && f.Key == tag.Title {
-				return true
-			}
-		}
-		return false
-	}
-	if !hasV1Title(outDoc) {
-		t.Error("post-write document dropped the preserved ID3v1 family entry")
-	}
-	if !hasV1Title(mustParseBytes(t, w.b)) {
-		t.Error("a fresh parse of the output should carry the ID3v1 family entry")
+	if !slices.ContainsFunc(mustParseBytes(t, applyToBytes(t, data, plan)).Families(), func(f wl.FamilyValue) bool {
+		return f.Family == wl.FamilyID3v1 && f.Key == tag.Title
+	}) {
+		t.Error("the written file lost the ID3v1 title family entry")
 	}
 }
 
@@ -339,7 +284,7 @@ func apeTagCount(items map[string]string, footerCount int) []byte {
 // still reads.
 func TestMP3APEOverstatedItemCountPreserved(t *testing.T) {
 	ape := apeTagCount(map[string]string{"Title": "APE Title"}, 1_000_000)
-	data := id3v2(3, textFrame(3, "TIT2", "V2 Title"))
+	data := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "V2 Title"))
 	data = append(data, mp3Audio(t)...)
 	data = append(data, ape...)
 
@@ -365,9 +310,9 @@ func put32le(b []byte, v int) {
 }
 
 func TestMP3StripLegacy(t *testing.T) {
-	data := id3v2(3, textFrame(3, "TIT2", "Keep"))
+	data := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Keep"))
 	data = append(data, mp3Audio(t)...)
-	data = append(data, id3v1("Old V1", "", "", "", "", 255)...)
+	data = append(data, testfile.ID3v1("Old V1", "", "", "", "", 255)...)
 
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Keep").
 		Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
@@ -378,7 +323,7 @@ func TestMP3StripLegacy(t *testing.T) {
 		t.Fatal("stripping a present legacy tag is not a no-op")
 	}
 	out := applyToBytes(t, data, plan)
-	if bytes.HasSuffix(out, id3v1("Old V1", "", "", "", "", 255)) {
+	if bytes.HasSuffix(out, testfile.ID3v1("Old V1", "", "", "", "", 255)) {
 		t.Error("ID3v1 should have been stripped")
 	}
 	if mustParseBytes(t, out).Fields().Title != "Keep" {
@@ -391,7 +336,7 @@ func TestMP3CoverRoundTrip(t *testing.T) {
 	before := essenceOf(t, src)
 
 	plan, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +440,7 @@ func mp3VBRStream(frames int, declared uint32) []byte {
 // average bitrate collapses below the MPEG floor and truncated-audio fires.
 func TestMP3TruncatedAfterXingWarns(t *testing.T) {
 	t.Run("frames missing after Xing", func(t *testing.T) {
-		data := append(id3v2(3, textFrame(3, "TIT2", "X")), mp3XingFrame(10000)...)
+		data := append(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "X")), mp3XingFrame(10000)...)
 		doc := mustParseBytes(t, data)
 		if doc.Format() != wl.FormatMP3 {
 			t.Fatalf("format = %v, want MP3", doc.Format())
@@ -507,7 +452,7 @@ func TestMP3TruncatedAfterXingWarns(t *testing.T) {
 	t.Run("extreme truncation collapses bitrate to zero", func(t *testing.T) {
 		// A multi-minute declared duration with only the ~48-byte header present drives the integer average
 		// bitrate to exactly 0; the warning must still fire (the signal is "< 8000", not "> 0 && < 8000").
-		data := append(id3v2(3, textFrame(3, "TIT2", "X")), mp3XingFrame(50000)...)
+		data := append(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "X")), mp3XingFrame(50000)...)
 		if doc := mustParseBytes(t, data); !hasWarning(doc, wl.WarnTruncatedAudio) {
 			t.Errorf("expected truncated-audio warning on an extreme truncation; got %v", doc.Warnings())
 		}
@@ -517,7 +462,7 @@ func TestMP3TruncatedAfterXingWarns(t *testing.T) {
 		// bitrate is ~128 kbps, so the "< 8000" branch runs and no warning fires. The
 		// codec check rules out the vacuous case, where a stub that fails parseMPEG
 		// never reaches the check.
-		data := append(id3v2(3, textFrame(3, "TIT2", "X")), mp3VBRStream(2, 2)...)
+		data := append(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "X")), mp3VBRStream(2, 2)...)
 		doc := mustParseBytes(t, data)
 		if got := doc.Properties().First().Codec; got != "MP3" {
 			t.Fatalf("setup: codec = %q, want MP3 (parseMPEG must succeed for this test to mean anything)", got)
@@ -533,7 +478,7 @@ func TestMP3TruncatedAfterXingWarns(t *testing.T) {
 // root zero-essence path does not fire.
 func TestMP3NonAudioWarnsNoAudio(t *testing.T) {
 	t.Parallel()
-	data := append(id3v2(4, textFrame(4, "TIT2", "x")), []byte("this is text, not audio\n")...)
+	data := append(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "x")), []byte("this is text, not audio\n")...)
 	path := writeTempFile(t, "fake.mp3", data)
 	doc := mustParseFile(t, path)
 	if doc.Format() != wl.FormatMP3 {

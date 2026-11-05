@@ -7,23 +7,18 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// execChapters runs an edit to bytes and returns the in-memory result Document
-// plus a fresh parse of the written bytes, the pair that must agree.
-func execChapters(t *testing.T, src []byte, edit func(*wl.Editor) *wl.Editor) (result, reparse *wl.Document) {
+// execChapters applies an edit to src and returns a fresh parse of the written bytes.
+func execChapters(t *testing.T, src []byte, edit func(*wl.Editor) *wl.Editor) *wl.Document {
 	t.Helper()
 	plan, err := edit(mustParseBytes(t, src).Edit()).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var w writerTo
-	res, _, err := plan.Execute(context.Background(), wl.WriteTo(&w, wl.BytesSource(src)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return res, mustParseBytes(t, w.b)
+	return mustParseBytes(t, applyToBytes(t, src, plan))
 }
 
 func chapterWarn(doc *wl.Document, code wl.WarningCode) bool {
@@ -35,39 +30,35 @@ func chapterWarn(doc *wl.Document, code wl.WarningCode) bool {
 	return false
 }
 
-// The in-memory result of a chapter edit must equal a fresh parse of its own bytes: same chapters
-// (a preserved QuickTime track still wins), same source-conflict warning, and same ftyp brand in
-// the native view.
-func TestMP4ChapterEditResultMatchesReparse(t *testing.T) {
-	data := mp4QTFile([]int{0, 3000, 6000}, []string{"A", "B", "C"})
-	res, re := execChapters(t, data, func(e *wl.Editor) *wl.Editor {
+// A chapter edit on a file with a QuickTime chapter track rebuilds the track, so the edit reads
+// back with the chpl and the track in agreement.
+func TestMP4ChapterEditRebuildsAgreeingQTTrack(t *testing.T) {
+	data := testfile.MP4QTFile([]int{0, 3000, 6000}, []string{"A", "B", "C"})
+	re := execChapters(t, data, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(wl.Chapter{Start: 0, Title: "NEW1"}, wl.Chapter{Start: 4 * time.Second, Title: "NEW2"})
 	})
-	if !equalChapterLists(res.Chapters(), re.Chapters()) {
-		t.Errorf("result chapters %+v != reparse %+v", res.Chapters(), re.Chapters())
-	}
-	if chapterWarn(res, wl.WarnChapterSourceConflict) != chapterWarn(re, wl.WarnChapterSourceConflict) {
-		t.Errorf("conflict warning differs: result=%v reparse=%v", res.Warnings(), re.Warnings())
+	if chs := re.Chapters(); len(chs) != 2 || chs[0].Title != "NEW1" || chs[1].Title != "NEW2" || chs[1].Start != 4*time.Second {
+		t.Errorf("chapters = %+v, want NEW1 at 0 and NEW2 at 4s", chs)
 	}
 	if chapterWarn(re, wl.WarnChapterSourceConflict) {
 		t.Error("a rebuilt QuickTime track agrees with the chpl, so there must be no source conflict")
 	}
 }
 
-func TestMP4ChapterEndFilledInResult(t *testing.T) {
-	// chpl carries no End; the result must fill it from the next start as a reparse does.
-	data := mp4Tagged(mp4Text("\xa9nam", "T"))
-	res, re := execChapters(t, data, func(e *wl.Editor) *wl.Editor {
+func TestMP4ChapterEndFilledFromNextStart(t *testing.T) {
+	// chpl carries no End; a read fills it from the next start.
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
+	re := execChapters(t, data, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(wl.Chapter{Start: 0, Title: "A"}, wl.Chapter{Start: 4 * time.Second, Title: "B"})
 	})
-	if res.Chapters()[0].End != re.Chapters()[0].End || res.Chapters()[0].End != 4*time.Second {
-		t.Errorf("result End=%v reparse End=%v, want 4s", res.Chapters()[0].End, re.Chapters()[0].End)
+	if got := re.Chapters()[0].End; got != 4*time.Second {
+		t.Errorf("End = %v, want 4s", got)
 	}
 }
 
 func TestMP4BrandPreservedAcrossEdit(t *testing.T) {
 	src := readFixture(t, sampleM4B)
-	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor { return e.Set(tag.Title, "X") })
+	re := execChapters(t, src, func(e *wl.Editor) *wl.Editor { return e.Set(tag.Title, "X") })
 	brand := func(d *wl.Document) string {
 		for _, e := range d.Native().Describe() {
 			if e.Kind == "ftyp" {
@@ -76,8 +67,8 @@ func TestMP4BrandPreservedAcrossEdit(t *testing.T) {
 		}
 		return ""
 	}
-	if brand(res) != brand(re) || brand(res) == "file type" {
-		t.Errorf("ftyp brand lost on edit: result=%q reparse=%q", brand(res), brand(re))
+	if got, want := brand(re), brand(mustParseBytes(t, src)); got != want || got == "file type" {
+		t.Errorf("ftyp brand after an edit = %q, want the source's %q", got, want)
 	}
 }
 
@@ -85,7 +76,7 @@ func TestMP4ClearChaptersRemovesUdtaCleanly(t *testing.T) {
 	// Clearing the only child of a udta (a chpl) must drop the whole udta, not leave an empty one, so a
 	// later edit does not create a second udta box.
 	chpl := mp4Chpl(1, []time.Duration{0}, []string{"Solo"})
-	data := mp4AssembleUdta(chpl)
+	data := testfile.MP4AssembleUdta(chpl)
 	plan, err := mustParseBytes(t, data).Edit().ClearChapters().Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +103,7 @@ func TestMP4ClearChaptersRemovesUdtaCleanly(t *testing.T) {
 func TestMP4MediaTypeWideValueDropped(t *testing.T) {
 	// A stik value past the single byte the atom stores (the iTunes media kinds are 0-14) is
 	// dropped and warned, not widened into a 2- or 4-byte atom. A value that fits (2) still stores.
-	data := mp4Tagged(mp4Text("\xa9nam", "T"))
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 	p, err := mustParseBytes(t, data).Edit().Set(tag.MediaType, "256").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +136,7 @@ func TestMP4MediaTypeWideValueDropped(t *testing.T) {
 func TestMP4EmptyChplNoSpuriousConflict(t *testing.T) {
 	// A count-0 chpl alongside a real QuickTime track is not a conflicting source.
 	emptyChpl := mp4Chpl(1, nil, nil)
-	data := mp4QTFile([]int{0, 5000}, []string{"A", "B"}, emptyChpl)
+	data := testfile.MP4QTFile([]int{0, 5000}, []string{"A", "B"}, emptyChpl)
 	doc := mustParseBytes(t, data)
 	if hasWarning(doc, wl.WarnChapterSourceConflict) {
 		t.Errorf("an empty chpl should not conflict with the QuickTime track; warnings=%v", doc.Warnings())
@@ -158,7 +149,7 @@ func TestMP4EmptyChplNoSpuriousConflict(t *testing.T) {
 func TestMP4QTTimescaleZeroIgnored(t *testing.T) {
 	// A zero media timescale is invalid; the QuickTime track must be rejected rather
 	// than collapsing every chapter to time zero.
-	data := mp4QTFileTS(0, []int{0, 5000}, []string{"A", "B"})
+	data := testfile.MP4QTFileTS(0, []int{0, 5000}, []string{"A", "B"})
 	if chs := mustParseBytes(t, data).Chapters(); len(chs) != 0 {
 		t.Errorf("zero-timescale QuickTime track yielded %d chapters, want 0", len(chs))
 	}
@@ -169,7 +160,7 @@ func TestMP4ChplInvalidUTF8TitleEmptied(t *testing.T) {
 	// not raw bytes a JSON dump would mangle.
 	bad := string([]byte{0xff, 0xfe, 0x41})
 	chpl := mp4Chpl(1, []time.Duration{0, 5 * time.Second}, []string{bad, "Good"})
-	data := mp4AssembleUdta(mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T"))), chpl)
+	data := testfile.MP4AssembleUdta(testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T"))), chpl)
 	chs := mustParseBytes(t, data).Chapters()
 	if len(chs) != 2 || chs[0].Title != "" || chs[1].Title != "Good" {
 		t.Errorf("chapters = %+v, want [{Title:\"\"}, {Title:\"Good\"}]", chs)

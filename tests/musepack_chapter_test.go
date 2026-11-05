@@ -3,74 +3,24 @@ package waxlabel_test
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
-	"hash/crc32"
 	"strings"
 	"testing"
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // SV8 chapter synthesis.
 
-// mpcSV8Stream builds an SV8 file from a stream header with the given geometry and the packets that
-// follow it. The header carries a valid CRC so the reference decoder accepts the file too.
-func mpcSV8Stream(samples uint64, rateIndex, channels int, packets ...[]byte) []byte {
-	sh := []byte{0, 0, 0, 0, 8}
-	sh = append(sh, mpcVarlen(samples)...)
-	sh = append(sh, mpcVarlen(0)...)
-	sh = append(sh, byte(rateIndex<<5)|20)
-	sh = append(sh, byte((channels-1)<<4), 0x00)
-	binary.BigEndian.PutUint32(sh[0:4], crc32.ChecksumIEEE(sh[4:]))
-	out := append([]byte("MPCK"), mpcPacket("SH", sh)...)
-	for _, p := range packets {
-		out = append(out, p...)
-	}
-	return out
-}
-
-// mpcChapterTag renders the tag a chapter packet carries: the APEv2 header record minus its
-// preamble (version, size, item count, flags, reserved) and the items.
-func mpcChapterTag(items ...[2]string) []byte {
-	if len(items) == 0 {
-		return nil
-	}
-	var body []byte
-	for _, it := range items {
-		body = binary.LittleEndian.AppendUint32(body, uint32(len(it[1])))
-		body = binary.LittleEndian.AppendUint32(body, 0)
-		body = append(body, it[0]...)
-		body = append(body, 0)
-		body = append(body, it[1]...)
-	}
-	head := make([]byte, 24)
-	binary.LittleEndian.PutUint32(head[0:4], 2000)
-	binary.LittleEndian.PutUint32(head[4:8], uint32(len(body)))
-	binary.LittleEndian.PutUint32(head[8:12], uint32(len(items)))
-	binary.LittleEndian.PutUint32(head[12:16], 0xA0000000)
-	return append(head, body...)
-}
-
-// mpcChapter builds a CT packet starting at sample with the given tag bytes.
-func mpcChapter(sample uint64, tag []byte) []byte {
-	p := append(mpcVarlen(sample), 0, 0, 0, 0)
-	return mpcPacket("CT", append(p, tag...))
-}
-
-// mpcTitled is the common chapter: a single Title item.
-func mpcTitled(sample uint64, title string) []byte {
-	return mpcChapter(sample, mpcChapterTag([2]string{"Title", title}))
-}
-
 // mpcSeekOffset builds an SO packet whose pointer lands gap bytes past the packet's own end.
 func mpcSeekOffset(gap int) []byte {
 	ptr := gap + 4
 	for {
-		so := mpcPacket("SO", mpcVarlen(uint64(ptr)))
+		so := testfile.MPCPacket("SO", testfile.MPCVarlen(uint64(ptr)))
 		if len(so)+gap == ptr {
 			return so
 		}
@@ -78,25 +28,8 @@ func mpcSeekOffset(gap int) []byte {
 	}
 }
 
-// mpcAudio is a stub audio packet of n bytes.
-func mpcAudio(n int) []byte { return mpcPacket("AP", make([]byte, n)) }
-
 // mpcSeekTable is an empty seek table packet.
-func mpcSeekTable() []byte { return mpcPacket("ST", []byte{0, 0}) }
-
-// mpcEnd is the stream end marker.
-func mpcEnd() []byte { return mpcPacket("SE", nil) }
-
-// mpcChaptered is the fixture most tests share: three titled chapters before the end
-// marker, stored out of time order to show the projection sorts them.
-func mpcChaptered() []byte {
-	return mpcSV8Stream(44100*120, 0, 2,
-		mpcAudio(64),
-		mpcTitled(0, "Intro"),
-		mpcTitled(44100*90, "Finale"),
-		mpcTitled(44100*30, "Middle"),
-		mpcEnd())
-}
+func mpcSeekTable() []byte { return testfile.MPCPacket("ST", []byte{0, 0}) }
 
 // chaptersMPC is an mpcenc stream mpcchap r475 wrote chapters into: Title=Intro at sample 0, a
 // three-item chapter at 8000 whose title item comes last, TITLE=Coda at 16000, and an untitled
@@ -125,7 +58,7 @@ func TestMusepackChaptersFromEditorWrittenFile(t *testing.T) {
 }
 
 func TestMusepackSV8ChaptersRead(t *testing.T) {
-	doc := mustParseBytes(t, mpcChaptered())
+	doc := mustParseBytes(t, testfile.MPCChaptered())
 	chs := doc.Chapters()
 	want := []wl.Chapter{
 		{Start: 0, Title: "Intro"},
@@ -152,7 +85,7 @@ func TestMusepackSV8ChaptersRead(t *testing.T) {
 // where the reference decoder looks for chapters: right after the seek table an SO packet points
 // at, or else the run of CT packets that ends at the end marker.
 func TestMusepackSV8ChapterRunPlacement(t *testing.T) {
-	audio := mpcAudio(64)
+	audio := testfile.MPCAudio(64)
 	st := mpcSeekTable()
 	for _, c := range []struct {
 		name    string
@@ -160,23 +93,23 @@ func TestMusepackSV8ChapterRunPlacement(t *testing.T) {
 		want    []string
 	}{
 		{"run before the end marker",
-			[][]byte{audio, mpcTitled(0, "a"), mpcTitled(1152, "b"), mpcEnd()}, []string{"a", "b"}},
+			[][]byte{audio, testfile.MPCTitled(0, "a"), testfile.MPCTitled(1152, "b"), testfile.MPCEnd()}, []string{"a", "b"}},
 		{"run after the seek table, without a seek offset",
-			[][]byte{audio, st, mpcTitled(0, "a"), mpcEnd()}, []string{"a"}},
+			[][]byte{audio, st, testfile.MPCTitled(0, "a"), testfile.MPCEnd()}, []string{"a"}},
 		{"run after the seek table the seek offset points at, audio following",
-			[][]byte{mpcSeekOffset(len(audio)), audio, st, mpcTitled(0, "after st"), audio, mpcEnd()}, []string{"after st"}},
+			[][]byte{mpcSeekOffset(len(audio)), audio, st, testfile.MPCTitled(0, "after st"), audio, testfile.MPCEnd()}, []string{"after st"}},
 		{"run interrupted by audio is not the run before the end marker",
-			[][]byte{audio, mpcTitled(0, "lost"), audio, mpcEnd()}, nil},
+			[][]byte{audio, testfile.MPCTitled(0, "lost"), audio, testfile.MPCEnd()}, nil},
 		{"seek offset pointing at a non-table packet falls back to the run before the end marker",
-			[][]byte{mpcSeekOffset(0), audio, mpcTitled(0, "a"), mpcEnd()}, []string{"a"}},
+			[][]byte{mpcSeekOffset(0), audio, testfile.MPCTitled(0, "a"), testfile.MPCEnd()}, []string{"a"}},
 		{"chapters at the front, before the audio, are not seen",
-			[][]byte{mpcTitled(0, "front"), audio, mpcEnd()}, nil},
+			[][]byte{testfile.MPCTitled(0, "front"), audio, testfile.MPCEnd()}, nil},
 		{"no end marker",
-			[][]byte{audio, mpcTitled(0, "a")}, nil},
+			[][]byte{audio, testfile.MPCTitled(0, "a")}, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var got []string
-			for _, ch := range mustParseBytes(t, mpcSV8Stream(44100, 0, 2, c.packets...)).Chapters() {
+			for _, ch := range mustParseBytes(t, testfile.MPCStream(44100, 0, 2, c.packets...)).Chapters() {
 				got = append(got, ch.Title)
 			}
 			if strings.Join(got, ",") != strings.Join(c.want, ",") {
@@ -193,12 +126,12 @@ func TestMusepackSV8ChapterTagForms(t *testing.T) {
 		title string
 	}{
 		{"no tag: untitled", nil, ""},
-		{"title item name in any case", mpcChapterTag([2]string{"TITLE", "Loud"}), "Loud"},
-		{"other items are not the title", mpcChapterTag([2]string{"Track", "1/3"}, [2]string{"Artist", "A"}, [2]string{"Title", "T"}), "T"},
-		{"a multi-valued title reads its first value", mpcChapterTag([2]string{"Title", "One\x00Two"}), "One"},
+		{"title item name in any case", testfile.MPCChapterTag([2]string{"TITLE", "Loud"}), "Loud"},
+		{"other items are not the title", testfile.MPCChapterTag([2]string{"Track", "1/3"}, [2]string{"Artist", "A"}, [2]string{"Title", "T"}), "T"},
+		{"a multi-valued title reads its first value", testfile.MPCChapterTag([2]string{"Title", "One\x00Two"}), "One"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			data := mpcSV8Stream(44100, 0, 2, mpcAudio(8), mpcChapter(0, c.tag), mpcEnd())
+			data := testfile.MPCStream(44100, 0, 2, testfile.MPCAudio(8), testfile.MPCChapter(0, c.tag), testfile.MPCEnd())
 			chs := mustParseBytes(t, data).Chapters()
 			if len(chs) != 1 || chs[0].Title != c.title {
 				t.Errorf("chapters = %+v, want one titled %q", chs, c.title)
@@ -213,7 +146,7 @@ func TestMusepackSV8ChapterTagForms(t *testing.T) {
 // however many packets share it, and every packet counts against the element cap.
 func TestMusepackSV8MalformedChapterPackets(t *testing.T) {
 	t.Run("start sample past any duration", func(t *testing.T) {
-		data := mpcSV8Stream(44100, 0, 2, mpcAudio(8), mpcTitled(1<<62, "far"), mpcTitled(1152, "near"), mpcEnd())
+		data := testfile.MPCStream(44100, 0, 2, testfile.MPCAudio(8), testfile.MPCTitled(1<<62, "far"), testfile.MPCTitled(1152, "near"), testfile.MPCEnd())
 		doc := mustParseBytes(t, data)
 		if chs := doc.Chapters(); len(chs) != 1 || chs[0].Title != "near" {
 			t.Errorf("chapters = %+v, want only the placeable chapter", chs)
@@ -224,8 +157,8 @@ func TestMusepackSV8MalformedChapterPackets(t *testing.T) {
 	})
 	t.Run("faults are reported once and count against the cap", func(t *testing.T) {
 		// The run sits behind a seek offset, so the walk's own cap stays out of it.
-		audio, bad := mpcAudio(8), mpcPacket("CT", []byte{0xFF, 0xFF})
-		data := mpcSV8Stream(44100, 0, 2, mpcSeekOffset(len(audio)), audio, mpcSeekTable(), bad, bad, bad, bad, mpcTitled(0, "ok"), mpcEnd())
+		audio, bad := testfile.MPCAudio(8), testfile.MPCPacket("CT", []byte{0xFF, 0xFF})
+		data := testfile.MPCStream(44100, 0, 2, mpcSeekOffset(len(audio)), audio, mpcSeekTable(), bad, bad, bad, bad, testfile.MPCTitled(0, "ok"), testfile.MPCEnd())
 		doc, err := wl.Parse(context.Background(), wl.BytesSource(data), wl.WithLimits(wl.Limits{MaxElements: 20}))
 		if err != nil {
 			t.Fatal(err)
@@ -247,7 +180,7 @@ func TestMusepackSV8MalformedChapterPackets(t *testing.T) {
 		}
 	})
 	t.Run("short tag", func(t *testing.T) {
-		data := mpcSV8Stream(44100, 0, 2, mpcAudio(8), mpcChapter(1152, []byte("junk")), mpcEnd())
+		data := testfile.MPCStream(44100, 0, 2, testfile.MPCAudio(8), testfile.MPCChapter(1152, []byte("junk")), testfile.MPCEnd())
 		doc := mustParseBytes(t, data)
 		if chs := doc.Chapters(); len(chs) != 1 || chs[0].Title != "" {
 			t.Errorf("chapters = %+v, want one untitled chapter", chs)
@@ -259,8 +192,8 @@ func TestMusepackSV8MalformedChapterPackets(t *testing.T) {
 	t.Run("empty payload at the end of the stream", func(t *testing.T) {
 		// A zero-length read at a source's end is one io.ReaderAt may answer with EOF
 		// (bytes.Reader does, a file does not); the packet is truncated either way.
-		audio := mpcAudio(64)
-		data := mpcSV8Stream(44100, 0, 2, mpcSeekOffset(len(audio)), audio, mpcSeekTable(), mpcPacket("CT", nil))
+		audio := testfile.MPCAudio(64)
+		data := testfile.MPCStream(44100, 0, 2, mpcSeekOffset(len(audio)), audio, mpcSeekTable(), testfile.MPCPacket("CT", nil))
 		file := mustParseFile(t, writeTempFile(t, "trailing-ct.mpc", data))
 		for name, src := range map[string]wl.ReaderAtSized{"bytes source": wl.BytesSource(data), "bytes.Reader": bytes.NewReader(data)} {
 			doc, err := wl.Parse(context.Background(), src)
@@ -278,9 +211,9 @@ func TestMusepackSV8MalformedChapterPackets(t *testing.T) {
 		}
 	})
 	t.Run("payload the source cannot read", func(t *testing.T) {
-		audio := mpcAudio(64)
-		head := mpcSV8Stream(44100, 0, 2, mpcSeekOffset(len(audio)), audio, mpcSeekTable())
-		data := append(append(head, mpcTitled(0, "x")...), mpcEnd()...)
+		audio := testfile.MPCAudio(64)
+		head := testfile.MPCStream(44100, 0, 2, mpcSeekOffset(len(audio)), audio, mpcSeekTable())
+		data := append(append(head, testfile.MPCTitled(0, "x")...), testfile.MPCEnd()...)
 		doc, err := wl.Parse(context.Background(), failAfterSource{data: data, failAt: int64(len(head) + 3)})
 		if err != nil {
 			t.Fatal(err)
@@ -295,8 +228,8 @@ func TestMusepackSV8MalformedChapterPackets(t *testing.T) {
 		}
 	})
 	t.Run("truncated start sample", func(t *testing.T) {
-		data := mpcSV8Stream(44100, 0, 2, mpcAudio(8),
-			mpcTitled(0, "kept"), mpcPacket("CT", []byte{0xFF, 0xFF}), mpcTitled(1152, "after"), mpcEnd())
+		data := testfile.MPCStream(44100, 0, 2, testfile.MPCAudio(8),
+			testfile.MPCTitled(0, "kept"), testfile.MPCPacket("CT", []byte{0xFF, 0xFF}), testfile.MPCTitled(1152, "after"), testfile.MPCEnd())
 		doc := mustParseBytes(t, data)
 		if chs := doc.Chapters(); len(chs) != 2 || chs[0].Title != "kept" || chs[1].Title != "after" {
 			t.Errorf("chapters = %+v, want the two readable chapters around the truncated packet", chs)
@@ -310,9 +243,9 @@ func TestMusepackSV8MalformedChapterPackets(t *testing.T) {
 // element cap bounds the packets walked to find the run, the packets of the run itself, and the
 // items a chapter tag is read for, each reported when it trips.
 func TestMusepackSV8ChapterElementCap(t *testing.T) {
-	audio := mpcAudio(64)
-	viaSeekTable := mpcSV8Stream(44100, 0, 2, mpcSeekOffset(len(audio)), audio, mpcSeekTable(),
-		mpcTitled(0, "a"), mpcTitled(1152, "b"), mpcTitled(2304, "c"), mpcEnd())
+	audio := testfile.MPCAudio(64)
+	viaSeekTable := testfile.MPCStream(44100, 0, 2, mpcSeekOffset(len(audio)), audio, mpcSeekTable(),
+		testfile.MPCTitled(0, "a"), testfile.MPCTitled(1152, "b"), testfile.MPCTitled(2304, "c"), testfile.MPCEnd())
 	doc, err := wl.Parse(context.Background(), wl.BytesSource(viaSeekTable), wl.WithLimits(wl.Limits{MaxElements: 2}))
 	if err != nil {
 		t.Fatal(err)
@@ -323,7 +256,7 @@ func TestMusepackSV8ChapterElementCap(t *testing.T) {
 	if !hasWarning(doc, wl.WarnElementCap) {
 		t.Error("expected an element-cap warning")
 	}
-	doc, err = wl.Parse(context.Background(), wl.BytesSource(mpcChaptered()), wl.WithLimits(wl.Limits{MaxElements: 2}))
+	doc, err = wl.Parse(context.Background(), wl.BytesSource(testfile.MPCChaptered()), wl.WithLimits(wl.Limits{MaxElements: 2}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +275,7 @@ func TestMusepackSV8ChapterElementCap(t *testing.T) {
 		items = append(items, [2]string{"Comment", strings.Repeat("x", i+1)})
 	}
 	items = append(items, [2]string{"Title", "Last"})
-	data := mpcSV8Stream(44100, 0, 2, mpcAudio(8), mpcChapter(0, mpcChapterTag(items...)), mpcEnd())
+	data := testfile.MPCStream(44100, 0, 2, testfile.MPCAudio(8), testfile.MPCChapter(0, testfile.MPCChapterTag(items...)), testfile.MPCEnd())
 	doc, err = wl.Parse(context.Background(), wl.BytesSource(data), wl.WithLimits(wl.Limits{MaxElements: 6}))
 	if err != nil {
 		t.Fatal(err)
@@ -366,13 +299,13 @@ func (s *countingSource) ReadAt(p []byte, off int64) (int, error) {
 // once the run cap trips nothing more of the run is read, so a run of any length past the cap costs
 // the same reads as one just over it.
 func TestMusepackSV8ChapterRunCapBoundsWork(t *testing.T) {
-	audio := mpcAudio(64)
+	audio := testfile.MPCAudio(64)
 	reads := func(n int) int {
 		packets := [][]byte{mpcSeekOffset(len(audio)), audio, mpcSeekTable()}
 		for i := range n {
-			packets = append(packets, mpcTitled(uint64(i)*1152, "c"))
+			packets = append(packets, testfile.MPCTitled(uint64(i)*1152, "c"))
 		}
-		src := &countingSource{ReaderAtSized: wl.BytesSource(mpcSV8Stream(44100, 0, 2, append(packets, mpcEnd())...))}
+		src := &countingSource{ReaderAtSized: wl.BytesSource(testfile.MPCStream(44100, 0, 2, append(packets, testfile.MPCEnd())...))}
 		doc, err := wl.Parse(context.Background(), src, wl.WithLimits(wl.Limits{MaxElements: 2}))
 		if err != nil {
 			t.Fatal(err)
@@ -396,7 +329,7 @@ func TestMusepackSV8StreamVersionAndKeys(t *testing.T) {
 	if _, err := wl.Parse(context.Background(), wl.BytesSource(data)); !errors.Is(err, waxerr.ErrUnsupportedFormat) {
 		t.Errorf("SH version 7 in an MPCK stream: err = %v, want ErrUnsupportedFormat", err)
 	}
-	data = append([]byte("MPCK"), mpcPacket("s1", nil)...)
+	data = append([]byte("MPCK"), testfile.MPCPacket("s1", nil)...)
 	data = append(data, mpcSV8(44100, 0, 0, 2)[4:]...)
 	if _, err := wl.Parse(context.Background(), wl.BytesSource(data)); !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("non-letter packet key ahead of SH: err = %v, want ErrInvalidData", err)
@@ -404,40 +337,33 @@ func TestMusepackSV8StreamVersionAndKeys(t *testing.T) {
 }
 
 func TestMusepackReservedRateReportsNoChapters(t *testing.T) {
-	doc := mustParseBytes(t, mpcSV8Stream(44100, 5, 2, mpcAudio(8), mpcTitled(0, "a"), mpcEnd()))
+	doc := mustParseBytes(t, testfile.MPCStream(44100, 5, 2, testfile.MPCAudio(8), testfile.MPCTitled(0, "a"), testfile.MPCEnd()))
 	if caps := doc.Capabilities().Chapters; caps.Read != wl.AccessNone || len(doc.Chapters()) != 0 {
 		t.Errorf("reserved rate index: chapters cannot be placed, so read = %s and %d chapters; want none", caps.Read, len(doc.Chapters()))
 	}
 }
 
-// packets sit inside the stream a rewrite copies verbatim, so a tag edit keeps them and the plan's
-// result document agrees with a fresh parse.
+// Chapter packets sit inside the stream a rewrite copies verbatim, so a tag edit keeps them.
 func TestMusepackChaptersSurviveTagEdit(t *testing.T) {
-	src := mpcChaptered()
+	src := testfile.MPCChaptered()
 	plan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "Edited").Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var w writerTo
-	result, _, err := plan.Execute(context.Background(), wl.WriteTo(&w, wl.BytesSource(src)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	re := mustParseBytes(t, w.b)
-	if len(re.Chapters()) != 3 {
+	out := applyToBytes(t, src, plan)
+	if re := mustParseBytes(t, out); len(re.Chapters()) != 3 {
 		t.Fatalf("chapters after a tag edit = %+v, want 3", re.Chapters())
 	}
-	if !bytes.Contains(w.b, []byte("Finale")) {
+	if !bytes.Contains(out, []byte("Finale")) {
 		t.Error("the chapter packets were not copied through")
 	}
-	assertSameProjection(t, result, re)
 }
 
 // chapters are read but not written, so an edit that would change them is refused, or dropped with
 // a warning that says the file keeps what it had. A clear on a chapterless file and an unchanged
 // set stay no-ops.
 func TestMusepackChapterEditRefused(t *testing.T) {
-	src := mpcChaptered()
+	src := testfile.MPCChaptered()
 	doc := mustParseBytes(t, src)
 	for _, c := range []struct {
 		name string
@@ -513,7 +439,7 @@ func TestMusepackChapterEditRefused(t *testing.T) {
 // Musepack file keeps its own chapters while the report says why the source's were not written.
 func TestMusepackChaptersTransfer(t *testing.T) {
 	t.Run("out of Musepack", func(t *testing.T) {
-		src := mustParseBytes(t, mpcChaptered())
+		src := mustParseBytes(t, testfile.MPCChaptered())
 		dstBytes := readFixture(t, notagsFLAC)
 		plan, report, err := src.PrepareTransfer(mustParseBytes(t, dstBytes))
 		if err != nil {
@@ -535,7 +461,7 @@ func TestMusepackChaptersTransfer(t *testing.T) {
 	})
 	t.Run("into Musepack", func(t *testing.T) {
 		src := mustParseBytes(t, flacWithComments("TITLE=Book", "CHAPTER001=00:00:00.000", "CHAPTER001NAME=One"))
-		dstBytes := mpcChaptered()
+		dstBytes := testfile.MPCChaptered()
 		plan, report, err := src.PrepareTransfer(mustParseBytes(t, dstBytes))
 		if err != nil {
 			t.Fatal(err)
@@ -567,7 +493,7 @@ func TestMusepackSV7HasNoChapterStore(t *testing.T) {
 }
 
 func TestMusepackNativeDescribesChapterPackets(t *testing.T) {
-	for _, e := range mustParseBytes(t, mpcChaptered()).Native().Describe() {
+	for _, e := range mustParseBytes(t, testfile.MPCChaptered()).Native().Describe() {
 		if strings.Contains(e.Note, "3 chapters") {
 			return
 		}

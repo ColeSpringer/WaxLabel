@@ -96,11 +96,21 @@ func parseSource(ctx context.Context, src ReaderAtSized, path string, opts core.
 	if src.Size() == 0 {
 		return nil, fmt.Errorf("%w: could not identify %q (empty file)", waxerr.ErrUnsupportedFormat, name)
 	}
-	// Detection looks past a leading ID3v2 when present (MP3/AAC/FLAC).
-	codec, ok := core.DetectLeading(src, path, id3.TagSize)
+	codec, ok := detectCodec(src)
 	if !ok {
 		return nil, fmt.Errorf("%w: could not identify %q", waxerr.ErrUnsupportedFormat, name)
 	}
+	return parseWith(ctx, codec, src, opts)
+}
+
+// detectCodec picks the codec for src, looking past a leading ID3v2 (MP3/AAC/FLAC).
+func detectCodec(src core.ReaderAtSized) (core.Codec, bool) {
+	return core.DetectLeading(src, id3.TagSize)
+}
+
+// parseWith parses src with the detected codec: canonical codec names, and a no-audio warning for a
+// file with no essence.
+func parseWith(ctx context.Context, codec core.Codec, src core.ReaderAtSized, opts core.ParseOptions) (*Document, error) {
 	media, err := codec.Parse(ctx, src, opts)
 	if err != nil {
 		return nil, err

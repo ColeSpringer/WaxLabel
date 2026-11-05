@@ -94,7 +94,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	newSize := bits.OutputLen(segs)
 	report.BytesAfter = newSize
 
-	result := buildResult(edited, d, ft.Tag, ft.Bytes, audioLen, newSize)
+	result := buildResult(edited, d, ft.Tag, ft.Bytes, audioLen)
 	// Rebuild losses not visible in bytes (e.g. v2.3 date precision). Fresh tags are v2.4.
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, info, result.Tags)
 	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3)
@@ -105,34 +105,19 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 
-// buildResult builds post-write Media without re-parsing. Frames are re-projected
+// buildResult builds the plan's result. Frames are re-projected
 // so the result matches a fresh parse of the output.
-func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte, audioLen, newSize int64) *core.Media {
+func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte, audioLen int64) *core.Media {
 	id3Len := int64(len(tagBytes))
-	nd := &doc{
-		id3:        newTag,
-		id3Len:     id3Len,
-		audioStart: id3Len,
-		audioEnd:   id3Len + audioLen,
-		header:     base.header,
-		track:      base.track,
-		size:       newSize,
-	}
 	proj := id3.Project(newTag)
-	// Carry parse warnings; drop stale chapter-flatten when the written tag no longer flattens.
-	warnings := id3.CarryProjectionWarnings(edited.Warnings, proj.Warnings)
 	return &core.Media{
 		Format:       core.FormatAAC,
 		Properties:   edited.Properties.Clone(),
 		Tags:         proj.Tags,
-		Families:     proj.Families,
 		Pictures:     core.ClonePictures(edited.Pictures),
-		Chapters:     core.ChaptersOpenedPastDuration(proj.Chapters, nd.track.Duration),
+		Chapters:     core.ChaptersOpenedPastDuration(proj.Chapters, base.track.Duration),
 		SyncedLyrics: proj.SyncedLyrics,
-		Warnings:     warnings,
-		Native:       nd,
-		Identity:     core.Identity{Size: newSize},
-		AudioStart:   nd.audioStart,
-		AudioEnd:     nd.audioEnd,
+		AudioStart:   id3Len,
+		AudioEnd:     id3Len + audioLen,
 	}
 }

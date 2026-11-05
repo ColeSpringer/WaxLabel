@@ -174,8 +174,8 @@ func TestVoidOfTotal(t *testing.T) {
 // and distinct across renders.
 func TestAttachedFileUID(t *testing.T) {
 	pic := core.Picture{Type: core.PicFrontCover, MIME: "image/png", Data: []byte("cover-bytes")}
-	b0, _ := attachedFileBytes(pic, "cover.png")
-	b1, _ := attachedFileBytes(pic, "cover.png")
+	b0 := attachedFileBytes(pic, "cover.png")
+	b1 := attachedFileBytes(pic, "cover.png")
 
 	if uidOf(t, b0) == 0 || uidOf(t, b1) == 0 {
 		t.Error("FileUID must be non-zero")
@@ -343,8 +343,7 @@ func TestMatroskaNameRoundTrip(t *testing.T) {
 }
 
 // TestBuildAlbumGroupEmitsTargets: a created album-scope Tag carries the mandatory
-// Targets child (strict validators reject a Tag without one), and the returned
-// tagGroup matches a fresh parse of the rendered bytes.
+// Targets child (strict validators reject a Tag without one).
 func TestBuildAlbumGroupEmitsTargets(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()
@@ -359,11 +358,6 @@ func TestBuildAlbumGroupEmitsTargets(t *testing.T) {
 	if want := encElement(idTargets, nil); !bytes.Equal(out.targetsRaw, want) {
 		t.Errorf("out.targetsRaw = % x, want the empty Targets element % x", out.targetsRaw, want)
 	}
-	// out.raw is the freshly rendered bytes, so a re-edit of the returned doc preserves it.
-	if !bytes.Equal(out.raw, rendered) {
-		t.Error("out.raw must equal the rendered Tag bytes (the returned-doc-equals-fresh-parse invariant)")
-	}
-
 	// The serialized Tag's first child is the mandatory Targets element.
 	src := core.BytesSource(rendered)
 	limit := int64(len(rendered))

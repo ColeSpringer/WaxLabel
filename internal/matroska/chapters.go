@@ -226,21 +226,20 @@ func clampNs(v uint64) int64 {
 	return int64(v)
 }
 
-// chaptersFromRaw parses a standalone Chapters element's bytes into a chapterDoc and
-// its projected chapters. buildResult uses it on the rendered bytes (the seekFromRaw
-// pattern) so the returned Document equals a fresh parse.
-func chaptersFromRaw(raw []byte, depth *bits.Depth, limit int64) (*chapterDoc, []core.Chapter) {
+// chaptersFromRaw parses a standalone Chapters element's bytes into its projected
+// chapters. buildResult uses it on the rendered bytes so the plan's result equals a
+// fresh parse.
+func chaptersFromRaw(raw []byte, depth *bits.Depth, limit int64) []core.Chapter {
 	rs := core.BytesSource(raw)
 	root, ok := readElement(rs, 0, int64(len(raw)), limit)
 	if !ok || root.id != idChapters {
-		return nil, nil
+		return nil
 	}
-	var d doc
-	chs, err := parseChapters(rs, root, depth, limit, &d)
+	chs, err := parseChapters(rs, root, depth, limit, &doc{})
 	if err != nil {
-		return nil, nil
+		return nil
 	}
-	return d.chapters, chs
+	return chs
 }
 
 // renderChapters builds the new Chapters element bytes from the edited chapters,

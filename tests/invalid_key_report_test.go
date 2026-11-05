@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // A native key the canonical vocabulary cannot represent is preserved on disk but never reaches the
@@ -17,13 +18,13 @@ func TestUnprojectableKeyReportedEverywhere(t *testing.T) {
 		data func(*testing.T) []byte
 	}{
 		{"vorbis comment", func(t *testing.T) []byte {
-			return flacWithVendor("ref", "MOOD~X=calm", "TITLE=Song")
+			return testfile.TaggedFLAC("ref", "MOOD~X=calm", "TITLE=Song")
 		}},
 		{"apev2 item", func(t *testing.T) []byte {
 			return wavPackWithAPE(t, [2]string{"MOOD~X", "calm"}, [2]string{"Title", "Song"})
 		}},
 		{"id3 txxx description", func(t *testing.T) []byte {
-			return mp3WithFrames(t, txxxFrame(4, "MOOD~X", "calm"), textFrame(4, "TIT2", "Song"))
+			return mp3WithFrames(t, txxxFrame(4, "MOOD~X", "calm"), testfile.TextFrame(4, "TIT2", "Song"))
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -75,26 +76,22 @@ func wavPackWithAPE(t *testing.T, items ...[2]string) []byte {
 	}
 	var body []byte
 	for _, it := range items {
-		body = append(body, apeLE32(len(it[1]))...)
-		body = append(body, apeLE32(0)...)
+		body = append(body, testfile.LE32(len(it[1]))...)
+		body = append(body, testfile.LE32(0)...)
 		body = append(body, it[0]...)
 		body = append(body, 0)
 		body = append(body, it[1]...)
 	}
 	size := len(body) + 32
 	rec := func(flags uint32) []byte {
-		b := append([]byte("APETAGEX"), apeLE32(2000)...)
-		b = append(b, apeLE32(size)...)
-		b = append(b, apeLE32(len(items))...)
-		b = append(b, apeLE32(int(flags))...)
+		b := append([]byte("APETAGEX"), testfile.LE32(2000)...)
+		b = append(b, testfile.LE32(size)...)
+		b = append(b, testfile.LE32(len(items))...)
+		b = append(b, testfile.LE32(int(flags))...)
 		return append(b, make([]byte, 8)...)
 	}
 	const hasHeader, isHeader = 1 << 31, 1 << 29
 	out := append(audio, rec(hasHeader|isHeader)...)
 	out = append(out, body...)
 	return append(out, rec(hasHeader)...)
-}
-
-func apeLE32(n int) []byte {
-	return []byte{byte(n), byte(n >> 8), byte(n >> 16), byte(n >> 24)}
 }

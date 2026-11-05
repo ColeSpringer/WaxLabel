@@ -9,31 +9,23 @@ import (
 // TestSerializeMetadataOmitsEmptyPadding: Target 0 emits no PADDING block.
 func TestSerializeMetadataOmitsEmptyPadding(t *testing.T) {
 	blocks := []block{{code: blkVorbisComment, body: renderVorbisComment("v", nil)}}
+	commentLen := 4 + len(blocks[0].body)
 
-	out, padSize, all, clamped := serializeMetadata(blocks, &doc{}, core.PaddingPolicy{Target: 0})
+	out, padSize, clamped := serializeMetadata(blocks, &doc{}, core.PaddingPolicy{Target: 0})
 	if clamped {
 		t.Error("a zero padding target must not report clamped")
 	}
 	if padSize != 0 {
 		t.Errorf("padSize = %d, want 0", padSize)
 	}
-	for _, b := range all {
-		if b.code == blkPadding {
-			t.Fatalf("emitted a PADDING block for a zero target: %+v", all)
-		}
-	}
-	if len(all) != 1 || all[0].code != blkVorbisComment {
-		t.Fatalf("all = %+v, want only the VORBIS_COMMENT block", all)
-	}
-
-	if len(out) == 0 || out[0] != 0x80|blkVorbisComment {
-		t.Errorf("first/last block header = 0x%02x, want 0x%02x (last-block flag on VORBIS_COMMENT)", out[0], 0x80|blkVorbisComment)
+	if len(out) != commentLen || out[0] != 0x80|blkVorbisComment {
+		t.Errorf("rendered % x, want only the VORBIS_COMMENT block, flagged last", out)
 	}
 
 	// Positive target still appends one PADDING block.
-	_, padSize2, all2, _ := serializeMetadata(blocks, &doc{}, core.PaddingPolicy{Target: 100})
-	if padSize2 != 100 || all2[len(all2)-1].code != blkPadding {
-		t.Errorf("positive target: padSize=%d lastCode=%d, want 100 with a trailing PADDING block", padSize2, all2[len(all2)-1].code)
+	out, padSize, _ = serializeMetadata(blocks, &doc{}, core.PaddingPolicy{Target: 100})
+	if padSize != 100 || len(out) != commentLen+4+100 || out[commentLen] != 0x80|blkPadding {
+		t.Errorf("positive target: padSize=%d, %d bytes rendered, want 100 with a trailing PADDING block", padSize, len(out))
 	}
 }
 
@@ -53,7 +45,7 @@ func TestPaddingBytesMatchesReuse(t *testing.T) {
 		d := &doc{blocks: blocks, audioStart: int64(4 + region)}
 
 		// The reuse path with unchanged content is the in-place write the accessor describes.
-		_, padSize, _, _ := serializeMetadata([]block{comment}, d, core.PaddingPolicy{ReuseInPlace: true})
+		_, padSize, _ := serializeMetadata([]block{comment}, d, core.PaddingPolicy{ReuseInPlace: true})
 		if got := d.PaddingBytes(); got != int64(padSize) {
 			t.Errorf("%d PADDING block(s): PaddingBytes = %d, reuse writes %d", n, got, padSize)
 		}

@@ -313,7 +313,7 @@ func planQTMetaWrite(d *doc, base, edited *core.Media, newItems []item, qw qtMet
 	if qw.udtaOnly {
 		resultItems = d.items
 	}
-	result := buildQTMetaResult(edited, d, resultItems, reg, delta, total)
+	result := buildQTMetaResult(edited, d, resultItems, reg, delta)
 	// Collapse to a no-op when the rebuild re-projected to base's values, as the in-place
 	// ilst path does. A grown region (delta != 0) is a structural change and blocks it.
 	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result,
@@ -346,40 +346,19 @@ func qtMetaOps(d *doc, qw qtMetaWrite, delta int64, pics int) []string {
 	return ops
 }
 
-// buildQTMetaResult constructs the post-write Media for a udta-region tag rewrite, the
-// analogue of buildChapterResult for an edit that changes no chapters: the chapter model is
-// carried forward verbatim, and the atom refs come from re-walking the rendered udta.
-func buildQTMetaResult(edited *core.Media, src *doc, items []item, reg udtaRegion, delta, total int64) *core.Media {
-	nd := &doc{
-		size:            total,
-		cfg:             src.cfg,
-		track:           src.track,
-		majorBrand:      src.majorBrand,
-		items:           items,
-		chapters:        core.CloneChapters(src.chapters),
-		chplVersion:     src.chplVersion,
-		chplCount:       src.chplCount,
-		hasQTChapters:   src.hasQTChapters,
-		chapterConflict: src.chapterConflict,
-		udtaRaw:         reg.udtaPayload,
-	}
-	// metaHandler, keyNames, udtaTexts and every udta atom ref come from applyUdtaRefs
-	// re-reading the rendered bytes, so they match a fresh parse.
-	shiftStructure(nd, src, reg.regionStart, reg.regionEnd, delta)
-	carryChapterRefs(nd, src, reg.regionEnd, delta)
-	applyUdtaRefs(nd, reg)
-
-	tags, pics, families, numericGenre := project(nd)
+// buildQTMetaResult constructs the plan's result for a udta-region tag rewrite, the analogue
+// of buildChapterResult for an edit that changes no chapters: the chapter model is carried
+// forward verbatim, and the udta text atoms come from the rendered udta.
+func buildQTMetaResult(edited *core.Media, src *doc, items []item, reg udtaRegion, delta int64) *core.Media {
+	nd := &doc{items: items, udtaTexts: udtaTextsIn(reg)}
+	shiftEssence(nd, src, reg.regionStart, reg.regionEnd, delta)
+	tags, pics, _, _ := project(nd)
 	out := &core.Media{
 		Format:     core.FormatMP4,
 		Properties: edited.Properties.Clone(),
 		Tags:       tags,
 		Pictures:   pics,
-		Chapters:   nd.chapters,
-		Families:   families,
-		Warnings:   chapterWarnings(mediaWarnings(tags, numericGenre), src.chapterConflict),
-		Native:     nd,
-		Identity:   core.Identity{Size: total},
+		Chapters:   core.CloneChapters(src.chapters),
 	}
 	setEssence(nd, out)
 	return out

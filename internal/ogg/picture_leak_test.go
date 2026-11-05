@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 )
@@ -13,15 +14,7 @@ import (
 // then each "NAME=VALUE" comment, every length prefixed little-endian (the Vorbis comment
 // layout Opus reuses).
 func opusTagsPacket(vendor string, comments ...string) []byte {
-	le32 := func(n int) []byte { return []byte{byte(n), byte(n >> 8), byte(n >> 16), byte(n >> 24)} }
-	b := append([]byte("OpusTags"), le32(len(vendor))...)
-	b = append(b, vendor...)
-	b = append(b, le32(len(comments))...)
-	for _, c := range comments {
-		b = append(b, le32(len(c))...)
-		b = append(b, c...)
-	}
-	return b
+	return append([]byte("OpusTags"), testfile.VorbisComments(vendor, comments...)...)
 }
 
 // TestParseHidesMalformedPictureComment checks that a malformed METADATA_BLOCK_PICTURE

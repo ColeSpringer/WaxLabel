@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -185,7 +186,7 @@ func TestLintSetAgreeOnWhitespaceNumeric(t *testing.T) {
 // Role+description add/remove; description-only and unknown roles are usage errors.
 func TestPictureEditing(t *testing.T) {
 	t.Parallel()
-	png := writeTempImage(t, "back.png", minimalPNG())
+	png := writeTempImage(t, "back.png", testfile.PNG())
 	f := copyFixture(t, notagsFLAC)
 	withPic := filepath.Join(t.TempDir(), "withpic.flac")
 	if _, errb, code := runCLI(t, "set", f, "--add-picture", "back-cover="+png, "--picture-description", "rear sleeve", "-o", withPic); code != 0 {
@@ -233,8 +234,8 @@ func TestPictureRoleVocabulary(t *testing.T) {
 // --add-cover replaces an existing front cover; does not append.
 func TestAddCoverReplacesFrontCover(t *testing.T) {
 	t.Parallel()
-	coverA := writeTempImage(t, "a.png", minimalPNG())
-	coverB := writeTempImage(t, "b.png", append(minimalPNG(), 0x7A)) // distinct PNG
+	coverA := writeTempImage(t, "a.png", testfile.PNG())
+	coverB := writeTempImage(t, "b.png", append(testfile.PNG(), 0x7A)) // distinct PNG
 	f := copyFixture(t, notagsFLAC)
 
 	withA := filepath.Join(t.TempDir(), "a.flac")
@@ -254,8 +255,8 @@ func TestAddCoverReplacesFrontCover(t *testing.T) {
 // Repeated --add-cover in one command: last wins (PNG vs JPEG MIME proves survivor).
 func TestAddCoverLastWinsWithinInvocation(t *testing.T) {
 	t.Parallel()
-	coverA := writeTempImage(t, "a.png", minimalPNG())
-	coverB := writeTempImage(t, "b.jpg", minimalJPEG())
+	coverA := writeTempImage(t, "a.png", testfile.PNG())
+	coverB := writeTempImage(t, "b.jpg", testfile.JPEG())
 	f := copyFixture(t, notagsFLAC)
 
 	out := filepath.Join(t.TempDir(), "out.flac")
@@ -274,7 +275,7 @@ func TestAddCoverLastWinsWithinInvocation(t *testing.T) {
 // Last-wins does not skip validation: a bad earlier --add-cover path fails before write.
 func TestAddCoverValidatesSupersededPaths(t *testing.T) {
 	t.Parallel()
-	good := writeTempImage(t, "good.png", minimalPNG())
+	good := writeTempImage(t, "good.png", testfile.PNG())
 	missing := filepath.Join(t.TempDir(), "missing.png")
 	f := copyFixture(t, notagsFLAC)
 
@@ -290,8 +291,8 @@ func TestAddCoverValidatesSupersededPaths(t *testing.T) {
 // --add-picture front-cover= appends; replacement is scoped to --add-cover only.
 func TestAddPictureFrontCoverAppends(t *testing.T) {
 	t.Parallel()
-	coverA := writeTempImage(t, "a.png", minimalPNG())
-	coverB := writeTempImage(t, "b.png", append(minimalPNG(), 0x7A)) // distinct PNG
+	coverA := writeTempImage(t, "a.png", testfile.PNG())
+	coverB := writeTempImage(t, "b.png", append(testfile.PNG(), 0x7A)) // distinct PNG
 	f := copyFixture(t, notagsFLAC)
 
 	withA := filepath.Join(t.TempDir(), "a.flac")
@@ -312,7 +313,7 @@ func TestAddPictureFrontCoverAppends(t *testing.T) {
 func TestMP4PictureMetadataDropped(t *testing.T) {
 	t.Parallel()
 	notagsM4A := filepath.Join("..", "..", "testdata", "notags.m4a")
-	png := writeTempImage(t, "c.png", minimalPNG())
+	png := writeTempImage(t, "c.png", testfile.PNG())
 
 	out, _, code := runCLI(t, "plan", copyFixture(t, notagsM4A), "--add-picture", "back-cover="+png, "--picture-description", "rear")
 	if code != 0 {
@@ -363,7 +364,7 @@ func TestZeroByteImageRefused(t *testing.T) {
 
 func TestAddedPictureDetailInPlan(t *testing.T) {
 	t.Parallel()
-	png := writeTempImage(t, "c.png", minimalPNG())
+	png := writeTempImage(t, "c.png", testfile.PNG())
 	out, _, code := runCLI(t, "plan", copyFixture(t, notagsFLAC), "--add-cover", png)
 	if code != 0 {
 		t.Fatalf("plan exit = %d", code)

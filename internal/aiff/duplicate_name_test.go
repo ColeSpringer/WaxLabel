@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -14,7 +15,7 @@ import (
 // guard never fires here.
 func TestDuplicateNamePreserved(t *testing.T) {
 	chunks := slices.Concat(aiffComm(), aiffSsnd(),
-		aiffChunk("NAME", []byte("First")), aiffChunk("NAME", []byte("Second")))
+		testfile.AIFFChunk("NAME", []byte("First")), testfile.AIFFChunk("NAME", []byte("Second")))
 	m, err := parse(context.Background(), core.BytesSource(formWrap(chunks, nil, nil)), core.DefaultParseOptions())
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -39,7 +40,7 @@ func TestDuplicateNamePreserved(t *testing.T) {
 // both project, unaffected by the number-pair guard.
 func TestDuplicateAnnoStillAccumulates(t *testing.T) {
 	chunks := slices.Concat(aiffComm(), aiffSsnd(),
-		aiffChunk("ANNO", []byte("one")), aiffChunk("ANNO", []byte("two")))
+		testfile.AIFFChunk("ANNO", []byte("one")), testfile.AIFFChunk("ANNO", []byte("two")))
 	m, err := parse(context.Background(), core.BytesSource(formWrap(chunks, nil, nil)), core.DefaultParseOptions())
 	if err != nil {
 		t.Fatalf("parse: %v", err)

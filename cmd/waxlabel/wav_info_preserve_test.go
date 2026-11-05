@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // spliceInfoAfterHeader: insert LIST/INFO after RIFF header and fix RIFF size.
@@ -16,7 +18,7 @@ func spliceInfoAfterHeader(t *testing.T, path string, pairs ...[2]string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	list := riffInfoList(pairs...)
+	list := testfile.WAVInfo(pairs...)
 	out := slices.Concat(data[:12], list, data[12:])
 	binary.LittleEndian.PutUint32(out[4:], uint32(len(out)-8))
 	if err := os.WriteFile(path, out, 0o644); err != nil {

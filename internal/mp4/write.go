@@ -130,9 +130,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		// Collapse a chapter edit that re-projected to base's exact chapters, tags, and
 		// pictures into a no-op, so re-applying an identical list does not rewrite the
 		// file. --add-chapter builds chapters with End==0 while a parse derives End, so
-		// core.EqualChapters always reports a change. Compare pl.Result instead: it is
-		// the round-tripped read view and equals a fresh reparse of the output. A real
-		// title/start/end edit still differs and writes.
+		// core.EqualChapters always reports a change. Compare pl.Result instead: its
+		// chapters, tags and pictures are the round-tripped read view a fresh reparse of
+		// the output returns. A real title/start/end edit still differs and writes.
 		//
 		// Skip the collapse when the source was conflicted. If chpl and the QuickTime
 		// table disagreed at parse, re-applying the preferred list rewrites the stale
@@ -214,7 +214,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Operations = append(report.Operations, core.EncodingRewriteOp("genre"))
 	}
 
-	result := buildResult(edited, d, newItems, lay, delta, total, int64(len(newIlst)))
+	result := buildResult(edited, d, newItems, lay, delta)
 	// Collapse to a no-op when the ilst rebuild re-projected to base's values.
 	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), delta != 0 || encodingRewrite, report.Warnings); np != nil {
 		return np, nil
@@ -258,15 +258,12 @@ func preservedItems(items []item) []item {
 }
 
 // layout is the resolved placement of the rewritten tag region: the source span
-// it replaces, the literal bytes that replace it, the enclosing atoms whose sizes
-// grow, and where the new ilst/free sit within the replacement bytes.
+// it replaces, the literal bytes that replace it, and the enclosing atoms whose sizes
+// grow.
 type layout struct {
 	regionStart, regionEnd int64
 	regionBytes            []byte
 	ancestors              []atomRef
-	ilstOff                int64 // offset of the new ilst atom within regionBytes
-	freeOff                int64 // offset of the new free atom within regionBytes, or -1
-	freeLen                int64 // total length of the new free atom (0 if none)
 	freeContent            int64 // free atom payload length (padding bytes)
 	created                bool  // true when the tag path was created (no prior ilst)
 	paddingClamped         bool  // a too-large padding Target was clamped to maxPadding (a free atom was emitted)
@@ -303,7 +300,7 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 		// place only while the leftover padding meets it; otherwise the region must grow.
 		floor := opts.Padding.Min
 
-		lay := layout{regionStart: regionStart, regionEnd: regionEnd, ilstOff: 0, freeOff: -1}
+		lay := layout{regionStart: regionStart, regionEnd: regionEnd}
 		lay.ancestors = []atomRef{*d.moov, *d.udta, *d.meta}
 		switch {
 		case leftover == 0 && floor <= 0:
@@ -313,12 +310,12 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 		case leftover >= freeAtomHeaderLen && leftover-freeAtomHeaderLen >= floor:
 			// Fits with room for a free atom whose padding still meets the floor: reuse
 			// the region in place (delta 0).
-			lay.regionBytes, lay.freeOff, lay.freeLen, lay.freeContent = appendFree(newIlst, leftover-freeAtomHeaderLen)
+			lay.regionBytes, lay.freeContent = appendFree(newIlst, leftover-freeAtomHeaderLen)
 		default:
 			// Does not fit, leaves a 1-7 byte remainder a free atom cannot represent, or
 			// the leftover would fall below the floor: grow with fresh padding (ClampTarget
 			// floors it to Min) so a later edit fits in place again.
-			lay.regionBytes, lay.freeOff, lay.freeLen, lay.freeContent = appendFree(newIlst, pad)
+			lay.regionBytes, lay.freeContent = appendFree(newIlst, pad)
 			lay.paddingClamped = padClamped
 		}
 		return lay, nil
@@ -327,7 +324,7 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 	// No ilst: create the missing path. Insert into the deepest existing of
 	// moov/udta/meta, at its end (the new atom becomes that container's last child;
 	// everything after shifts and the ancestor sizes grow).
-	inner, withFree, ilstOff, freeOff, freeLen, freeContent, err := buildCreated(d, newIlst, pad)
+	inner, withFree, freeContent, err := buildCreated(d, newIlst, pad)
 	if err != nil {
 		return layout{}, err
 	}
@@ -343,42 +340,38 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 	}
 	return layout{
 		regionStart: regionStart, regionEnd: at, regionBytes: withFree,
-		ancestors: createdAncestors(d), ilstOff: ilstOff,
-		freeOff: freeOff, freeLen: freeLen, freeContent: freeContent, created: true,
+		ancestors: createdAncestors(d), freeContent: freeContent, created: true,
 		paddingClamped: padClamped,
 	}, nil
 }
 
 // buildCreated renders the atom(s) to insert when the file had no ilst, choosing the
 // wrapper depth from which containers already exist.
-func buildCreated(d *doc, newIlst []byte, pad int64) (inner atomRef, bytes []byte, ilstOff, freeOff, freeLen, freeContent int64, err error) {
-	ilstAndFree, fOff, fLen, fContent := appendFree(newIlst, pad)
+func buildCreated(d *doc, newIlst []byte, pad int64) (inner atomRef, bytes []byte, freeContent int64, err error) {
+	ilstAndFree, freeContent := appendFree(newIlst, pad)
 	switch {
 	case d.meta != nil:
 		// Append ilst(+free) inside the existing meta. The ilst is already size-checked, and
 		// the existing meta/udta/moov grow via sizePatch, which is 64-bit-aware.
-		return *d.meta, ilstAndFree, 0, fOff, fLen, fContent, nil
+		return *d.meta, ilstAndFree, freeContent, nil
 	case d.udta != nil:
 		metaInner := append(hdlrAtom(), ilstAndFree...)
 		// The fresh meta has a 32-bit size field and is not an ancestor checkSizes can see,
 		// so check it here. meta total = metaPrefix() + len(metaInner).
 		if err := checkBoxSize32(atomName("meta"), int64(metaPrefix()+len(metaInner))); err != nil {
-			return atomRef{}, nil, 0, 0, 0, 0, err
+			return atomRef{}, nil, 0, err
 		}
 		meta := renderFullBox(atomName("meta"), metaInner)
-		base := metaPrefix() + len(hdlrAtom())
-		return *d.udta, meta, int64(base), int64(base) + fOff, fLen, fContent, nil
+		return *d.udta, meta, freeContent, nil
 	default:
 		metaInner := append(hdlrAtom(), ilstAndFree...)
 		// The fresh udta wraps the fresh meta. Both have 32-bit size fields and are invisible
 		// to checkSizes.
 		if err := checkBoxSize32(atomName("udta"), int64(8+metaPrefix()+len(metaInner))); err != nil {
-			return atomRef{}, nil, 0, 0, 0, 0, err
+			return atomRef{}, nil, 0, err
 		}
 		meta := renderFullBox(atomName("meta"), metaInner)
-		udta := renderAtom(atomName("udta"), meta)
-		base := 8 + metaPrefix() + len(hdlrAtom()) // udta header + meta prefix + hdlr
-		return *d.moov, udta, int64(base), int64(base) + fOff, fLen, fContent, nil
+		return *d.moov, renderAtom(atomName("udta"), meta), freeContent, nil
 	}
 }
 
@@ -396,15 +389,14 @@ func createdAncestors(d *doc) []atomRef {
 }
 
 // appendFree appends a free atom of the given payload length to ilst bytes,
-// returning the combined bytes and the free atom's offset/total/payload sizes. A
-// non-positive payload yields no free atom.
-func appendFree(ilst []byte, content int64) (combined []byte, freeOff, freeLen, freeContent int64) {
+// returning the combined bytes and the free atom's payload size. A non-positive
+// payload yields no free atom.
+func appendFree(ilst []byte, content int64) (combined []byte, freeContent int64) {
 	if content <= 0 {
-		return ilst, -1, 0, 0
+		return ilst, 0
 	}
 	free := renderAtom(atomName("free"), make([]byte, content))
-	combined = append(slices.Clone(ilst), free...)
-	return combined, int64(len(ilst)), int64(len(free)), content
+	return append(slices.Clone(ilst), free...), content
 }
 
 // hdlrAtom builds the iTunes metadata handler atom required inside a freshly
@@ -573,7 +565,7 @@ func offsetPatch(t offsetTable, delta, insertion int64) (edit, error) {
 
 // shiftOffset moves a chunk offset past the insertion point by delta, so the media chunk
 // resolves to its new position after the metadata changed size. Both the offset bytes
-// and the returned document use it, so the two cannot disagree.
+// and the plan's result use it, so the two cannot disagree.
 func shiftOffset(e uint64, insertion, delta int64) (uint64, bool) {
 	if e > uint64(insertion) {
 		shifted := int64(e) + delta

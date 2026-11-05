@@ -8,6 +8,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -23,8 +24,8 @@ const longTitle = "A substantially longer title that grows the ilst region past 
 func mp4SaioFile(t *testing.T, version uint8, auxType bool) []byte {
 	t.Helper()
 	build := func(auxOff uint32) []byte {
-		return mp4AssembleExtra(mp4Saio(version, auxType, auxOff), nil,
-			mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T"))))
+		return testfile.MP4AssembleExtra(mp4Saio(version, auxType, auxOff), nil,
+			testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T"))))
 	}
 	tmp := build(0)
 	j := bytes.Index(tmp, []byte("mdat"))
@@ -93,8 +94,8 @@ func TestMP4SaioOffsetsShifted(t *testing.T) {
 // mp4UnknownSaioFile builds a tagged file carrying a saio whose version this codec does
 // not recognize, so its entry width is unknown.
 func mp4UnknownSaioFile() []byte {
-	return mp4AssembleExtra(mp4Saio(2, false, 0x1000), nil,
-		mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T"))))
+	return testfile.MP4AssembleExtra(mp4Saio(2, false, 0x1000), nil,
+		testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T"))))
 }
 
 func TestMP4MalformedSaioStillReads(t *testing.T) {
@@ -102,13 +103,13 @@ func TestMP4MalformedSaioStillReads(t *testing.T) {
 	// depend on it.
 	cases := map[string][]byte{
 		"unknown version":   mp4Saio(2, false, 0x1000),
-		"absurd entrycount": mp4Atom("saio", slices.Concat([]byte{0, 0, 0, 0}, mp4be32(1<<30))),
-		"short body":        mp4Atom("saio", []byte{0, 0, 0, 0}),
-		"truncated entries": mp4Atom("saio", slices.Concat([]byte{0, 0, 0, 1}, mp4be32(4), mp4be32(1))),
+		"absurd entrycount": testfile.MP4Atom("saio", slices.Concat([]byte{0, 0, 0, 0}, testfile.BE32(1<<30))),
+		"short body":        testfile.MP4Atom("saio", []byte{0, 0, 0, 0}),
+		"truncated entries": testfile.MP4Atom("saio", slices.Concat([]byte{0, 0, 0, 1}, testfile.BE32(4), testfile.BE32(1))),
 	}
 	for name, saio := range cases {
 		t.Run(name, func(t *testing.T) {
-			data := mp4AssembleExtra(saio, nil, mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T"))))
+			data := testfile.MP4AssembleExtra(saio, nil, testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T"))))
 			doc := mustParseBytes(t, data)
 			if got := doc.Fields().Title; got != "T" {
 				t.Errorf("Title = %q, want T", got)
@@ -152,8 +153,8 @@ func mp4SaioAheadOfAudio(auxLead int, withSaio bool) []byte {
 		if withSaio {
 			stblExtra = mp4Saio(0, false, auxOff)
 		}
-		udta := mp4Atom("udta", mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T"))))
-		return slices.Concat(mp4Ftyp(), mp4MoovExtra(udta, stcoOff, stblExtra, nil), mp4Atom("mdat", mdatPayload))
+		udta := testfile.MP4Atom("udta", testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T"))))
+		return slices.Concat(testfile.MP4Ftyp(), mp4MoovExtra(udta, stcoOff, stblExtra, nil), testfile.MP4Atom("mdat", mdatPayload))
 	}
 	tmp := build(0, 0)
 	payload := bytes.Index(tmp, []byte("mdat")) + 4
@@ -183,16 +184,16 @@ func TestMP4SaioDoesNotAffectEssenceDigest(t *testing.T) {
 // mdat.
 func mp4QTFileSaioTrailingMdat(startsMS []int, titles []string, aux []byte) []byte {
 	audio := bytes.Repeat([]byte{0xA7}, 120)
-	samples := mp4SamplesBlob(titles)
+	samples := testfile.MP4SamplesBlob(titles)
 	build := func(audioStco, textStco, auxOff uint32) []byte {
 		kids := slices.Concat(
-			mp4AudioTrakChap(2, audioStco, mp4Saio(0, false, auxOff)),
-			mp4TextTrak(2, 1000, startsMS, titles, textStco),
+			testfile.MP4AudioTrakChap(2, audioStco, mp4Saio(0, false, auxOff)),
+			testfile.MP4TextTrak(2, 1000, startsMS, titles, textStco),
 		)
-		moov := mp4Atom("moov", kids)
-		return slices.Concat(mp4Ftyp(), moov,
-			mp4Atom("mdat", audio),
-			mp4Atom("mdat", slices.Concat(samples, aux)))
+		moov := testfile.MP4Atom("moov", kids)
+		return slices.Concat(testfile.MP4Ftyp(), moov,
+			testfile.MP4Atom("mdat", audio),
+			testfile.MP4Atom("mdat", slices.Concat(samples, aux)))
 	}
 	tmp := build(0, 0, 0)
 	audioOff := bytes.Index(tmp, []byte("mdat")) + 4
@@ -241,12 +242,12 @@ func TestMP4SaioInChapterTrackNotPatched(t *testing.T) {
 	// would emit an edit inside the replaced region and fail assemble's overlap guard.
 	build := func(audioStco, textStco uint32) []byte {
 		kids := slices.Concat(
-			mp4AudioTrakChap(2, audioStco),
-			mp4TextTrak(2, 1000, []int{0, 5000}, []string{"A", "B"}, textStco, mp4Saio(0, false, textStco)),
+			testfile.MP4AudioTrakChap(2, audioStco),
+			testfile.MP4TextTrak(2, 1000, []int{0, 5000}, []string{"A", "B"}, textStco, mp4Saio(0, false, textStco)),
 		)
 		audio := bytes.Repeat([]byte{0xA7}, 120)
-		mdat := mp4Atom("mdat", slices.Concat(audio, mp4SamplesBlob([]string{"A", "B"})))
-		return slices.Concat(mp4Ftyp(), mp4Atom("moov", kids), mdat)
+		mdat := testfile.MP4Atom("mdat", slices.Concat(audio, testfile.MP4SamplesBlob([]string{"A", "B"})))
+		return slices.Concat(testfile.MP4Ftyp(), testfile.MP4Atom("moov", kids), mdat)
 	}
 	tmp := build(0, 0)
 	audioOff := bytes.Index(tmp, []byte("mdat")) + 4

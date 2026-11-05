@@ -102,7 +102,7 @@ func rebuildText(orig []textItem, edited tag.TagSet, changed map[tag.Key]bool) [
 		}
 		if !changed[key] {
 			// Untouched: the file's own bytes, whatever the projection holds.
-			out = append(out, outChunk{id: it.id, role: roleText, body: it.raw, bodyLen: int64(len(it.raw))})
+			out = append(out, outChunk{id: it.id, body: it.raw, bodyLen: int64(len(it.raw))})
 			continue
 		}
 		emit(it.id, key)
@@ -185,7 +185,7 @@ func strippedTextKeys(fams []core.FamilyValue, edited tag.TagSet) []tag.Key {
 // textOut builds one native text output chunk: the value bytes verbatim, with no NUL
 // terminator; assemble word-aligns it.
 func textOut(id [4]byte, value string) outChunk {
-	return outChunk{id: id, role: roleText, body: []byte(value), bodyLen: int64(len(value))}
+	return outChunk{id: id, body: []byte(value), bodyLen: int64(len(value))}
 }
 
 // nativeReducedWarnings notes each multi-valued key reduced to its first value in a

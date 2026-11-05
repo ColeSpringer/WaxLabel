@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -151,7 +152,7 @@ func TestMatroskaWriteCover(t *testing.T) {
 	src := readFixture(t, sampleMKA)
 	out, outDoc := saveMatroska(t, src, mustParseBytes(t, src).Edit().
 		ClearPictures().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}))
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}))
 	if len(outDoc.Pictures()) == 0 {
 		t.Fatal("returned doc has no pictures")
 	}
@@ -160,7 +161,7 @@ func TestMatroskaWriteCover(t *testing.T) {
 	if len(pics) != 1 || pics[0].Type != wl.PicFrontCover {
 		t.Fatalf("reparsed pictures = %+v", pics)
 	}
-	if !bytes.Equal(pics[0].Data, tinyPNG()) {
+	if !bytes.Equal(pics[0].Data, testfile.PNG()) {
 		t.Error("cover bytes not preserved")
 	}
 	essenceUnchanged(t, src, out)
@@ -168,8 +169,8 @@ func TestMatroskaWriteCover(t *testing.T) {
 
 func TestMatroskaTwoFrontCoversDistinctNames(t *testing.T) {
 	src := readFixture(t, sampleMKA)
-	cover1 := tinyPNG()
-	cover2 := append(append([]byte{}, tinyPNG()...), 0xAA, 0xBB) // distinct bytes, still sniffs PNG
+	cover1 := testfile.PNG()
+	cover2 := append(append([]byte{}, testfile.PNG()...), 0xAA, 0xBB) // distinct bytes, still sniffs PNG
 	out, _ := saveMatroska(t, src, mustParseBytes(t, src).Edit().
 		ClearPictures().
 		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: cover1}).
@@ -410,13 +411,13 @@ func countSegChildren(t *testing.T, data []byte, wantID uint64) int {
 // Editing a file with a track-scoped tag must not duplicate that tag into album scope: a save
 // that re-emits the whole flattened set bloats the file and risks a spurious conflict.
 func TestMatroskaWriteCrossScopeNoDuplicate(t *testing.T) {
-	tags := mkEl(idTags, concat(
-		mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"))),
-		mkEl(idTag, concat(
-			mkEl(idTargets, concat(mkUint(idTgtTypeVal, 30), mkUint(idTagTrackUID, 7))),
-			mkSimple("PART_NUMBER", "2/10"))),
+	tags := testfile.El(testfile.IDTags, concat(
+		testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ARTIST", "AA"))),
+		testfile.El(testfile.IDTag, concat(
+			testfile.El(testfile.IDTargets, concat(testfile.Uint(testfile.IDTgtTypeVal, 30), testfile.Uint(testfile.IDTagTrackUID, 7))),
+			testfile.SimpleTag("PART_NUMBER", "2/10"))),
 	))
-	data := buildMatroska("matroska", "T", tags)
+	data := testfile.Matroska("matroska", "T", tags)
 
 	out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Album, "X"))
 	if n := bytes.Count(out, []byte("PART_NUMBER")); n != 1 {
@@ -445,21 +446,21 @@ func mkCRC(content []byte) []byte {
 // plus the given extra track-scope SimpleTags. The track group is optionally CRC-guarded so the
 // re-render path's CRC recompute is exercised.
 func multiScopeTags(crc bool, trackExtra ...[]byte) []byte {
-	album := mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)),
-		mkSimple("ARTIST", "AA"), mkSimple("ENCODER", "album-enc")))
-	trackContent := concat(mkEl(idTargets, concat(mkUint(idTgtTypeVal, 50), mkUint(idTagTrackUID, 7))),
-		mkSimple("ENCODER", "track-enc"))
+	album := testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)),
+		testfile.SimpleTag("ARTIST", "AA"), testfile.SimpleTag("ENCODER", "album-enc")))
+	trackContent := concat(testfile.El(testfile.IDTargets, concat(testfile.Uint(testfile.IDTgtTypeVal, 50), testfile.Uint(testfile.IDTagTrackUID, 7))),
+		testfile.SimpleTag("ENCODER", "track-enc"))
 	trackContent = concat(trackContent, concat(trackExtra...))
 	if crc {
 		trackContent = mkCRC(trackContent)
 	}
-	return mkEl(idTags, concat(album, mkEl(idTag, trackContent)))
+	return testfile.El(testfile.IDTags, concat(album, testfile.El(testfile.IDTag, trackContent)))
 }
 
 // Clearing a key carried at album and track scope removes it from every scope, leaves
 // unrelated scoped tags intact, and dissolves the cross-scope conflict the two copies produced.
 func TestMatroskaWriteMultiScopeClear(t *testing.T) {
-	data := buildMatroska("matroska", "T", multiScopeTags(false, mkSimple("PART_NUMBER", "2/10")))
+	data := testfile.Matroska("matroska", "T", multiScopeTags(false, testfile.SimpleTag("PART_NUMBER", "2/10")))
 
 	// The fresh file projects ENCODER to two conflicting values across scopes.
 	if v, _ := mustParseBytes(t, data).Get(tag.Encoder); len(v) != 2 {
@@ -488,7 +489,7 @@ func TestMatroskaWriteMultiScopeClear(t *testing.T) {
 // setting a key carried at two scopes replaces it with the single new value at album scope (not one
 // new + one stale).
 func TestMatroskaWriteMultiScopeSet(t *testing.T) {
-	data := buildMatroska("matroska", "T", multiScopeTags(false))
+	data := testfile.Matroska("matroska", "T", multiScopeTags(false))
 
 	out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Encoder, "OnlyEnc"))
 
@@ -525,7 +526,7 @@ func assertFamilyScopes(t *testing.T, doc *wl.Document, key tag.Key, want ...wl.
 }
 
 func TestMatroskaWriteMultiScopeSetKeepsTrackValueInPlace(t *testing.T) {
-	data := buildMatroska("matroska", "T", multiScopeTags(false, mkSimple("COMPOSER", "TC")))
+	data := testfile.Matroska("matroska", "T", multiScopeTags(false, testfile.SimpleTag("COMPOSER", "TC")))
 	out, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Encoder, "track-enc"))
 	if n := bytes.Count(out, []byte("ENCODER")); n != 1 {
 		t.Errorf("ENCODER written %d times, want 1", n)
@@ -548,7 +549,7 @@ func TestMatroskaWriteMultiScopeSetKeepsTrackValueInPlace(t *testing.T) {
 // mirror case: keeping only the album-scoped value leaves the album Tag block carrying it and
 // strips the track group's stale copy, without relocating anything.
 func TestMatroskaWriteMultiScopeSetKeepsAlbumValueInPlace(t *testing.T) {
-	data := buildMatroska("matroska", "T", multiScopeTags(false, mkSimple("COMPOSER", "TC")))
+	data := testfile.Matroska("matroska", "T", multiScopeTags(false, testfile.SimpleTag("COMPOSER", "TC")))
 	out, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Encoder, "album-enc"))
 	if n := bytes.Count(out, []byte("ENCODER")); n != 1 {
 		t.Errorf("ENCODER written %d times, want 1", n)
@@ -571,7 +572,7 @@ func TestMatroskaWriteMultiScopeSetKeepsAlbumValueInPlace(t *testing.T) {
 // appending a value to a key split across scopes keeps both existing values where they are and
 // writes only the new one at album scope.
 func TestMatroskaWriteMultiScopeAppendKeepsScopes(t *testing.T) {
-	data := buildMatroska("matroska", "T", multiScopeTags(false))
+	data := testfile.Matroska("matroska", "T", multiScopeTags(false))
 	out, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().
 		Set(tag.Encoder, "album-enc", "track-enc", "new-enc"))
 	if n := bytes.Count(out, []byte("ENCODER")); n != 3 {
@@ -587,7 +588,7 @@ func TestMatroskaWriteMultiScopeAppendKeepsScopes(t *testing.T) {
 // A pure cross-scope reorder is an ordering Matroska cannot represent, so it collapses to a
 // no-op rather than rewriting the file to the same projection.
 func TestMatroskaWriteMultiScopeReorderIsNoOp(t *testing.T) {
-	data := buildMatroska("matroska", "T", multiScopeTags(false))
+	data := testfile.Matroska("matroska", "T", multiScopeTags(false))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Encoder, "track-enc", "album-enc").Prepare()
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
@@ -606,12 +607,12 @@ func TestMatroskaWriteMultiScopeReorderIsNoOp(t *testing.T) {
 
 // track-scoped slash number carries two canonical keys in one SimpleTag.
 func TestMatroskaWriteSlashPairSurvivesWhenBothHalvesKept(t *testing.T) {
-	data := buildMatroska("matroska", "T", mkEl(idTags, concat(
-		mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)),
-			mkSimple("ARTIST", "AA"), mkSimple("PART_NUMBER", "7"))),
-		mkEl(idTag, concat(
-			mkEl(idTargets, concat(mkUint(idTgtTypeVal, 50), mkUint(idTagTrackUID, 7))),
-			mkSimple("PART_NUMBER", "2/10"))),
+	data := testfile.Matroska("matroska", "T", testfile.El(testfile.IDTags, concat(
+		testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)),
+			testfile.SimpleTag("ARTIST", "AA"), testfile.SimpleTag("PART_NUMBER", "7"))),
+		testfile.El(testfile.IDTag, concat(
+			testfile.El(testfile.IDTargets, concat(testfile.Uint(testfile.IDTgtTypeVal, 50), testfile.Uint(testfile.IDTagTrackUID, 7))),
+			testfile.SimpleTag("PART_NUMBER", "2/10"))),
 	)))
 	out, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.TrackNumber, "2"))
 	if n := bytes.Count(out, []byte("PART_NUMBER")); n != 1 {
@@ -633,7 +634,7 @@ func TestMatroskaWriteSlashPairSurvivesWhenBothHalvesKept(t *testing.T) {
 // A CRC-bearing track group that must be re-rendered (to drop the edited key) has its CRC
 // recomputed over the new content.
 func TestMatroskaWriteMultiScopeCRCRecompute(t *testing.T) {
-	data := buildMatroska("matroska", "T", multiScopeTags(true, mkSimple("COMPOSER", "TrackComposer")))
+	data := testfile.Matroska("matroska", "T", multiScopeTags(true, testfile.SimpleTag("COMPOSER", "TrackComposer")))
 
 	out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Clear(tag.Encoder))
 
@@ -651,10 +652,10 @@ func TestMatroskaWriteMultiScopeCRCRecompute(t *testing.T) {
 // place: a second, unrelated edit preserves the surviving track tag and does not resurrect the
 // cleared key.
 func TestMatroskaWriteMultiScopeRerenderRoundTrips(t *testing.T) {
-	data := buildMatroska("matroska", "T", multiScopeTags(false, mkSimple("COMPOSER", "TrackComposer")))
+	data := testfile.Matroska("matroska", "T", multiScopeTags(false, testfile.SimpleTag("COMPOSER", "TrackComposer")))
 
 	out1, doc1 := saveMatroska(t, data, mustParseBytes(t, data).Edit().Clear(tag.Encoder))
-	// Re-edit the returned document in memory (no re-parse) and save again.
+	// Re-edit the returned document and save again.
 	out2, _ := saveMatroska(t, out1, doc1.Edit().Set(tag.Album, "NewAlbum"))
 
 	re := mustParseBytes(t, out2)
@@ -672,7 +673,7 @@ func TestMatroskaWriteMultiScopeRerenderRoundTrips(t *testing.T) {
 // A key split across scopes with different values (ENCODER album=album-enc + track=track-enc,
 // the transcoded-file shape) must keep both values when an unrelated tag is edited.
 func TestMatroskaWriteCrossScopeSplitValuePreserved(t *testing.T) {
-	data := buildMatroska("matroska", "T", multiScopeTags(false))
+	data := testfile.Matroska("matroska", "T", multiScopeTags(false))
 	if v, _ := mustParseBytes(t, data).Get(tag.Encoder); len(v) != 2 {
 		t.Fatalf("setup: want 2 ENCODER values across scopes, got %v", v)
 	}
@@ -704,13 +705,13 @@ func TestMatroskaWriteCrossScopeSplitValuePreserved(t *testing.T) {
 
 // A track-scoped slash number (PART_NUMBER=3/12) projects to TrackNumber=3 and TrackTotal=12.
 func TestMatroskaWriteCrossScopeSplitNumberNoDuplicate(t *testing.T) {
-	tags := mkEl(idTags, concat(
-		mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"))),
-		mkEl(idTag, concat(
-			mkEl(idTargets, concat(mkUint(idTgtTypeVal, 30), mkUint(idTagTrackUID, 7))),
-			mkSimple("PART_NUMBER", "3/12"))),
+	tags := testfile.El(testfile.IDTags, concat(
+		testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ARTIST", "AA"))),
+		testfile.El(testfile.IDTag, concat(
+			testfile.El(testfile.IDTargets, concat(testfile.Uint(testfile.IDTgtTypeVal, 30), testfile.Uint(testfile.IDTagTrackUID, 7))),
+			testfile.SimpleTag("PART_NUMBER", "3/12"))),
 	))
-	data := buildMatroska("matroska", "T", tags)
+	data := testfile.Matroska("matroska", "T", tags)
 
 	out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Album, "X"))
 
@@ -731,11 +732,11 @@ func TestMatroskaWriteCrossScopeSplitNumberNoDuplicate(t *testing.T) {
 // and TrackTotal=12) must keep the other half.
 func TestMatroskaWriteSplitNumberComponentEdit(t *testing.T) {
 	build := func() []byte {
-		return buildMatroska("matroska", "T", mkEl(idTags, concat(
-			mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"))),
-			mkEl(idTag, concat(
-				mkEl(idTargets, concat(mkUint(idTgtTypeVal, 30), mkUint(idTagTrackUID, 7))),
-				mkSimple("PART_NUMBER", "3/12"))),
+		return testfile.Matroska("matroska", "T", testfile.El(testfile.IDTags, concat(
+			testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ARTIST", "AA"))),
+			testfile.El(testfile.IDTag, concat(
+				testfile.El(testfile.IDTargets, concat(testfile.Uint(testfile.IDTgtTypeVal, 30), testfile.Uint(testfile.IDTagTrackUID, 7))),
+				testfile.SimpleTag("PART_NUMBER", "3/12"))),
 		)))
 	}
 
@@ -769,11 +770,11 @@ func TestMatroskaWriteSplitNumberComponentEdit(t *testing.T) {
 	// The same slash split applies to DISC=n/total (DiscNumber + DiscTotal), so editing one component
 	// must keep the other; the drop predicate handles both numbering keys.
 	t.Run("edit DiscNumber keeps DiscTotal", func(t *testing.T) {
-		data := buildMatroska("matroska", "T", mkEl(idTags, concat(
-			mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"))),
-			mkEl(idTag, concat(
-				mkEl(idTargets, concat(mkUint(idTgtTypeVal, 30), mkUint(idTagTrackUID, 7))),
-				mkSimple("DISC", "1/2"))),
+		data := testfile.Matroska("matroska", "T", testfile.El(testfile.IDTags, concat(
+			testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ARTIST", "AA"))),
+			testfile.El(testfile.IDTag, concat(
+				testfile.El(testfile.IDTargets, concat(testfile.Uint(testfile.IDTgtTypeVal, 30), testfile.Uint(testfile.IDTagTrackUID, 7))),
+				testfile.SimpleTag("DISC", "1/2"))),
 		)))
 		out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.DiscNumber, "3"))
 		re := mustParseBytes(t, out)
@@ -789,10 +790,10 @@ func TestMatroskaWriteSplitNumberComponentEdit(t *testing.T) {
 // into the canonical Title), so the projection reads the single new title. The cross-scope
 // removal contract applies to Title, not just SimpleTag-only keys.
 func TestMatroskaWriteTitleOnlyDropsScopedTitleTag(t *testing.T) {
-	tags := mkEl(idTags, mkEl(idTag, concat(
-		mkEl(idTargets, concat(mkUint(idTgtTypeVal, 50), mkUint(idTagTrackUID, 7))),
-		mkSimple("TITLE", "OldTrackTitle"), mkSimple("ARTIST", "TrackArtist"))))
-	data := buildMatroska("matroska", "X", tags)
+	tags := testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(
+		testfile.El(testfile.IDTargets, concat(testfile.Uint(testfile.IDTgtTypeVal, 50), testfile.Uint(testfile.IDTagTrackUID, 7))),
+		testfile.SimpleTag("TITLE", "OldTrackTitle"), testfile.SimpleTag("ARTIST", "TrackArtist"))))
+	data := testfile.Matroska("matroska", "X", tags)
 
 	if v, _ := mustParseBytes(t, data).Get(tag.Title); len(v) != 2 {
 		t.Fatalf("setup: want Title=[Info.Title, track TITLE], got %v", v)
@@ -832,15 +833,15 @@ func TestMatroskaStripEncoderMultiScopePreservesEssence(t *testing.T) {
 
 func TestMatroskaWriteMultipleTagsConsolidated(t *testing.T) {
 	tags := concat(
-		mkEl(idTags, mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA")))),
-		mkEl(idTags, mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("COMPOSER", "CC")))),
+		testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ARTIST", "AA")))),
+		testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("COMPOSER", "CC")))),
 	)
-	data := buildMatroska("matroska", "T", tags)
-	if got := countSegChildren(t, data, idTags); got != 2 {
+	data := testfile.Matroska("matroska", "T", tags)
+	if got := countSegChildren(t, data, testfile.IDTags); got != 2 {
 		t.Fatalf("setup: want 2 Tags elements, got %d", got)
 	}
 	out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Genre, "Jazz"))
-	if got := countSegChildren(t, out, idTags); got != 1 {
+	if got := countSegChildren(t, out, testfile.IDTags); got != 1 {
 		t.Errorf("output has %d Tags elements, want 1 (consolidated)", got)
 	}
 	f := mustParseBytes(t, out).Fields()
@@ -851,12 +852,12 @@ func TestMatroskaWriteMultipleTagsConsolidated(t *testing.T) {
 
 // linked (multi-)SeekHead layout is refused rather than copied with stale offsets.
 func TestMatroskaWriteMultipleSeekHeadRefused(t *testing.T) {
-	seek := mkEl(idSeekHead, nil)
+	seek := testfile.El(idSeekHead, nil)
 	// Include a cluster so the file has audio essence: otherwise Editor.Prepare's
 	// no-audio guard preempts the multi-SeekHead refusal this test exercises.
-	seg := concat(seek, seek, mkAudioCluster(), mkEl(idTags, mkEl(idTag, concat(
-		mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA")))))
-	data := concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkEl(idSegment, seg))
+	seg := concat(seek, seek, testfile.AudioCluster(0), testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(
+		testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ARTIST", "AA")))))
+	data := concat(testfile.EBMLHeader("matroska"), testfile.El(testfile.IDSegment, seg))
 	_, err := mustParseBytes(t, data).Edit().Set(tag.Artist, "X").Prepare()
 	if !errors.Is(err, waxerr.ErrUnsupportedTag) {
 		t.Errorf("multi-SeekHead edit err = %v, want ErrUnsupportedTag", err)
@@ -866,8 +867,8 @@ func TestMatroskaWriteMultipleSeekHeadRefused(t *testing.T) {
 // Adding a 2nd Title value is detected as a change, even though Info.Title stores only the
 // first.
 func TestMatroskaWriteMultiValueTitleNotNoOp(t *testing.T) {
-	data := buildMatroska("matroska", "A", mkEl(idTags, mkEl(idTag, concat(
-		mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA")))))
+	data := testfile.Matroska("matroska", "A", testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(
+		testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ARTIST", "AA")))))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "A", "B").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -877,23 +878,19 @@ func TestMatroskaWriteMultiValueTitleNotNoOp(t *testing.T) {
 	}
 }
 
-// returned document's picture matches a fresh parse; a non-front-cover role normalizes to Other
-// (Matroska names only cover/small_cover), not the input role.
+// A non-front-cover role normalizes to Other on the wire (Matroska names only cover/small_cover),
+// not the input role.
 func TestMatroskaWriteCoverRoleNormalized(t *testing.T) {
 	src := readFixture(t, sampleMKA)
-	out, outDoc := saveMatroska(t, src, mustParseBytes(t, src).Edit().
+	out, _ := saveMatroska(t, src, mustParseBytes(t, src).Edit().
 		ClearPictures().
-		AddPicture(wl.Picture{Type: wl.PicBackCover, MIME: "image/png", Data: tinyPNG()}))
-	got := outDoc.Pictures()
-	reparsed := mustParseBytes(t, out).Pictures()
-	if len(got) != 1 || len(reparsed) != 1 {
-		t.Fatalf("pictures: returned %d, reparsed %d", len(got), len(reparsed))
+		AddPicture(wl.Picture{Type: wl.PicBackCover, MIME: "image/png", Data: testfile.PNG()}))
+	pics := mustParseBytes(t, out).Pictures()
+	if len(pics) != 1 {
+		t.Fatalf("pictures = %d, want 1", len(pics))
 	}
-	if got[0].Type != reparsed[0].Type {
-		t.Errorf("returned-doc role %v != reparse role %v", got[0].Type, reparsed[0].Type)
-	}
-	if got[0].Type != wl.PicOther {
-		t.Errorf("back cover should normalize to Other on the wire, got %v", got[0].Type)
+	if pics[0].Type != wl.PicOther {
+		t.Errorf("back cover should normalize to Other on the wire, got %v", pics[0].Type)
 	}
 }
 
@@ -904,7 +901,7 @@ func TestMatroskaBackCoverWarnsRoleLoss(t *testing.T) {
 
 	back := prepareWith(t, src, func(e *wl.Editor) {
 		e.ClearPictures()
-		e.AddPicture(wl.Picture{Type: wl.PicBackCover, MIME: "image/png", Description: "BackDesc", Data: tinyPNG()})
+		e.AddPicture(wl.Picture{Type: wl.PicBackCover, MIME: "image/png", Description: "BackDesc", Data: testfile.PNG()})
 	})
 	if !planWarns(t, back, wl.WarnPictureMetadataDropped) {
 		t.Errorf("a back cover should warn picture-metadata-dropped; got %v", back.Report().Warnings)
@@ -912,7 +909,7 @@ func TestMatroskaBackCoverWarnsRoleLoss(t *testing.T) {
 
 	front := prepareWith(t, src, func(e *wl.Editor) {
 		e.ClearPictures()
-		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()})
+		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()})
 	})
 	if planWarns(t, front, wl.WarnPictureMetadataDropped) {
 		t.Errorf("a plain front cover must not warn role loss; got %v", front.Report().Warnings)
@@ -922,7 +919,7 @@ func TestMatroskaBackCoverWarnsRoleLoss(t *testing.T) {
 	// no role and must not warn.
 	other := prepareWith(t, src, func(e *wl.Editor) {
 		e.ClearPictures()
-		e.AddPicture(wl.Picture{Type: wl.PicOther, MIME: "image/png", Data: tinyPNG()})
+		e.AddPicture(wl.Picture{Type: wl.PicOther, MIME: "image/png", Data: testfile.PNG()})
 	})
 	if planWarns(t, other, wl.WarnPictureMetadataDropped) {
 		t.Errorf("a PicOther picture round-trips as Other on Matroska; must not warn; got %v", other.Report().Warnings)
@@ -936,8 +933,8 @@ func TestMatroskaBackCoverWarnsRoleLoss(t *testing.T) {
 // A Title edit on a (malformed) file with no Info element is refused rather than dropped or
 // corrupting.
 func TestMatroskaWriteNoInfoTitleRefused(t *testing.T) {
-	data := buildMatroska("matroska", "", mkEl(idTags, mkEl(idTag, concat(
-		mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "A")))))
+	data := testfile.Matroska("matroska", "", testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(
+		testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ARTIST", "A")))))
 	_, err := mustParseBytes(t, data).Edit().Set(tag.Title, "nope").Prepare()
 	if !errors.Is(err, waxerr.ErrUnsupportedTag) {
 		t.Errorf("no-Info Title edit err = %v, want ErrUnsupportedTag", err)
@@ -949,9 +946,9 @@ func TestMatroskaWriteNoInfoTitleRefused(t *testing.T) {
 }
 
 func TestMatroskaWebMCaseInsensitive(t *testing.T) {
-	data := buildMatroska("WEBM", "Title", nil)
+	data := testfile.Matroska("WEBM", "Title", nil)
 	_, err := mustParseBytes(t, data).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}).Prepare()
 	if !errors.Is(err, waxerr.ErrUnsupportedTag) {
 		t.Errorf("cover into WEBM err = %v, want ErrUnsupportedTag", err)
 	}
@@ -962,7 +959,7 @@ func TestMatroskaWebMCaseInsensitive(t *testing.T) {
 func TestMatroskaWebMRefusesCover(t *testing.T) {
 	src := readFixture(t, sampleWebM)
 	_, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}).Prepare()
 	if !errors.Is(err, waxerr.ErrUnsupportedTag) {
 		t.Errorf("WebM cover Prepare err = %v, want ErrUnsupportedTag", err)
 	}
@@ -989,14 +986,8 @@ func TestMatroskaWebMCapabilityFileAware(t *testing.T) {
 	}
 }
 
-// Cue/Cluster element IDs for the boundary-crossing offset checks below (idSegment,
-// idCluster, idCRC32 are already declared in matroska_test.go).
-const (
-	idCues          = 0x1C53BB6B
-	idCuePoint      = 0xBB
-	idCueTrackPos   = 0xB7
-	idCueClusterPos = 0xF1
-)
+// idCueClusterPos is the CueClusterPosition ID, for the boundary-crossing offset checks below.
+const idCueClusterPos = 0xF1
 
 // elemRange finds the first element with id want by a depth-first walk of [start, end), descending
 // only into the master IDs in into (nil = scan one level).
@@ -1036,16 +1027,16 @@ func elemRange(b []byte, start, end int, want uint64, into map[uint64]bool) (eSt
 // boundary AND still resolves, as a segment-relative offset, to the first Cluster's start.
 func assertCuePointsAtCluster(t *testing.T, data []byte) {
 	t.Helper()
-	_, segData, segEnd, ok := elemRange(data, 0, len(data), idSegment, nil)
+	_, segData, segEnd, ok := elemRange(data, 0, len(data), testfile.IDSegment, nil)
 	if !ok {
 		t.Fatal("no Segment in output")
 	}
-	clusterStart, _, _, ok := elemRange(data, segData, segEnd, idCluster, nil)
+	clusterStart, _, _, ok := elemRange(data, segData, segEnd, testfile.IDCluster, nil)
 	if !ok {
 		t.Fatal("no Cluster in output")
 	}
 	_, posDS, posDE, ok := elemRange(data, segData, segEnd, idCueClusterPos,
-		map[uint64]bool{idCues: true, idCuePoint: true, idCueTrackPos: true})
+		map[uint64]bool{testfile.IDCues: true, testfile.IDCuePoint: true, testfile.IDCueTrackPos: true})
 	if !ok {
 		t.Fatal("no CueClusterPosition in output")
 	}
@@ -1066,7 +1057,7 @@ func assertCuePointsAtCluster(t *testing.T, data []byte) {
 // 2->3 byte CueClusterPosition (and SeekHead) rebuild end to end.
 func TestMatroskaLargeCoverRebuildsCues(t *testing.T) {
 	src := readFixture(t, sampleMKA)
-	big := append(tinyPNG(), bytes.Repeat([]byte{0x7F}, 200000)...) // valid PNG header + filler
+	big := append(testfile.PNG(), bytes.Repeat([]byte{0x7F}, 200000)...) // valid PNG header + filler
 	out, outDoc := saveMatroska(t, src, mustParseBytes(t, src).Edit().
 		ClearPictures().
 		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: big}))
@@ -1139,16 +1130,16 @@ func TestMatroskaWebMLargeTitleRebuildsCues(t *testing.T) {
 	})
 }
 
-// A second edit on the document returned by a boundary-crossing save (no reparse) proves
-// buildResult's cuesFromRaw re-derivation supports the rebuilt Cues tree.
+// A second edit on the document a boundary-crossing save returned shifts the rebuilt Cues tree
+// again, and every cue still resolves.
 func TestMatroskaCoverRebuildReedit(t *testing.T) {
 	src := readFixture(t, sampleMKA)
-	big := append(tinyPNG(), bytes.Repeat([]byte{0x42}, 200000)...)
+	big := append(testfile.PNG(), bytes.Repeat([]byte{0x42}, 200000)...)
 	out1, outDoc := saveMatroska(t, src, mustParseBytes(t, src).Edit().
 		ClearPictures().
 		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: big}))
 
-	// Second edit on the RETURNED document (no reparse): add a tag, shifting again.
+	// Second edit on the returned document: add a tag, shifting again.
 	out2, _ := saveMatroska(t, out1, outDoc.Edit().Set(tag.Artist, "Re-edited Artist"))
 
 	re := mustParseBytes(t, out2)
@@ -1169,14 +1160,14 @@ func TestMatroskaWriteUnknownSizeSegment(t *testing.T) {
 	// Reuse the 0xFF-segment construction from TestMatroskaUnknownSizeSegment, with a one-block
 	// audio Cluster added so the file has essence (the write path refuses a no-audio file). The
 	// cluster sits before the tags so a Title edit rewrites the tail without touching it.
-	tags := mkEl(idTags, mkEl(idTag, concat(
-		mkEl(idTargets, nil),
-		mkSimple("ARTIST", "Streamed Artist"),
+	tags := testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(
+		testfile.El(testfile.IDTargets, nil),
+		testfile.SimpleTag("ARTIST", "Streamed Artist"),
 	)))
-	info := mkEl(idInfo, mkStr(idSegTitle, "Streamed"))
-	body := concat(info, mkAudioCluster(), tags)
-	seg := concat(idToBytes(idSegment), []byte{0xFF}, body) // Segment with an unknown-size VINT (1-byte form: 0xFF)
-	file := concat(mkEl(idEBML, mkStr(idDocType, "matroska")), seg)
+	info := testfile.El(testfile.IDInfo, mkStr(testfile.IDSegTitle, "Streamed"))
+	body := concat(info, testfile.AudioCluster(0), tags)
+	seg := concat(testfile.IDBytes(testfile.IDSegment), []byte{0xFF}, body) // Segment with an unknown-size VINT (1-byte form: 0xFF)
+	file := concat(testfile.EBMLHeader("matroska"), seg)
 
 	out, outDoc := saveMatroska(t, file, mustParseBytes(t, file).Edit().Set(tag.Title, "Retitled Stream"))
 
@@ -1194,7 +1185,7 @@ func TestMatroskaWriteUnknownSizeSegment(t *testing.T) {
 	// The unknown-size marker must survive. The write copies [0, segDataStart) verbatim, and
 	// segDataStart == idx+len(segID)+1 (EBML header + Segment ID + the 0xFF byte), so the output
 	// must carry that exact prefix.
-	segID := idToBytes(idSegment)
+	segID := testfile.IDBytes(testfile.IDSegment)
 	idx := bytes.Index(file, segID)
 	if idx < 0 {
 		t.Fatalf("setup: Segment ID not found in the synthetic file")
@@ -1204,19 +1195,13 @@ func TestMatroskaWriteUnknownSizeSegment(t *testing.T) {
 	}
 }
 
-// uidTrackTag builds one Tag element narrowed to a track UID, so a fixture can
-// carry the same key in several UID-scoped groups.
-func uidTrackTag(uid uint64, tags ...[]byte) []byte {
-	return mkEl(idTag, concat(mkEl(idTargets, concat(mkUint(idTgtTypeVal, 50), mkUint(idTagTrackUID, uid))), concat(tags...)))
-}
-
 // Editing the track number away from one of two slash tags must not halve the unedited
 // total's multiplicity. The surviving slash tag keeps its "10", so the album re-emit must carry
 // the full [10 10]; a subtracted copy would be suppressed by the reader as an echo.
 func TestMatroskaWriteUneditedTotalKeepsMultiplicity(t *testing.T) {
-	data := buildMatroska("matroska", "T", mkEl(idTags, concat(
-		uidTrackTag(7, mkSimple("PART_NUMBER", "1/10")),
-		uidTrackTag(8, mkSimple("PART_NUMBER", "2/10")),
+	data := testfile.Matroska("matroska", "T", testfile.El(testfile.IDTags, concat(
+		testfile.TagGroup(7, testfile.SimpleTag("PART_NUMBER", "1/10")),
+		testfile.TagGroup(8, testfile.SimpleTag("PART_NUMBER", "2/10")),
 	)))
 	if v, _ := mustParseBytes(t, data).Get(tag.TrackTotal); !slices.Equal(v, []string{"10", "10"}) {
 		t.Fatalf("setup: base TRACKTOTAL = %v, want [10 10]", v)
@@ -1233,8 +1218,8 @@ func TestMatroskaWriteUneditedTotalKeepsMultiplicity(t *testing.T) {
 // A boolean set must store one canonical "1", not leave a differently-spelled scoped copy that
 // re-reads as a second value on a single-valued key.
 func TestMatroskaWriteBooleanCanonicalizesEveryScope(t *testing.T) {
-	album := mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("COMPILATION", "yes")))
-	data := buildMatroska("matroska", "T", mkEl(idTags, concat(album, uidTrackTag(7, mkSimple("COMPILATION", "yes")))))
+	album := testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("COMPILATION", "yes")))
+	data := testfile.Matroska("matroska", "T", testfile.El(testfile.IDTags, concat(album, testfile.TagGroup(7, testfile.SimpleTag("COMPILATION", "yes")))))
 	out, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Compilation, "Yes"))
 	if v, _ := re.Get(tag.Compilation); len(v) != 1 || v[0] != "1" {
 		t.Errorf("COMPILATION = %v, want [1]", v)
@@ -1247,8 +1232,8 @@ func TestMatroskaWriteBooleanCanonicalizesEveryScope(t *testing.T) {
 // A boolean word kept by an exact scoped match must still be stored canonically; the same
 // command must not store "1" or "yes" depending on which scoped copies exist.
 func TestMatroskaWriteBooleanClaimStillCanonicalizes(t *testing.T) {
-	album := mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("COMPILATION", "1")))
-	data := buildMatroska("matroska", "T", mkEl(idTags, concat(album, uidTrackTag(7, mkSimple("COMPILATION", "yes")))))
+	album := testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("COMPILATION", "1")))
+	data := testfile.Matroska("matroska", "T", testfile.El(testfile.IDTags, concat(album, testfile.TagGroup(7, testfile.SimpleTag("COMPILATION", "yes")))))
 	_, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Compilation, "yes"))
 	if v, _ := re.Get(tag.Compilation); len(v) != 1 || v[0] != "1" {
 		t.Errorf("COMPILATION = %v, want [1] (canonicalized on write)", v)
@@ -1259,9 +1244,9 @@ func TestMatroskaWriteBooleanClaimStillCanonicalizes(t *testing.T) {
 // the whole list in edited order; a value left in the second block would re-read ahead of the
 // appended one.
 func TestMatroskaWriteTwoAlbumBlocksAppendKeepsOrder(t *testing.T) {
-	tag0 := mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"), mkSimple("ENCODER", "A")))
-	tag1 := mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ENCODER", "B")))
-	data := buildMatroska("matroska", "T", mkEl(idTags, concat(tag0, tag1)))
+	tag0 := testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ARTIST", "AA"), testfile.SimpleTag("ENCODER", "A")))
+	tag1 := testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ENCODER", "B")))
+	data := testfile.Matroska("matroska", "T", testfile.El(testfile.IDTags, concat(tag0, tag1)))
 	_, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Encoder, "B", "C"))
 	if v, _ := re.Get(tag.Encoder); !slices.Equal(v, []string{"B", "C"}) {
 		t.Errorf("ENCODER = %v, want [B C] (edited order)", v)

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -271,7 +272,7 @@ func TestMP4ReadsSampleFixture(t *testing.T) {
 	}
 }
 
-// realPNG encodes a small, fully decodable PNG (unlike the truncated tinyPNG sniff stub), so ffmpeg
+// realPNG encodes a small, fully decodable PNG (unlike the truncated testfile.PNG sniff stub), so ffmpeg
 // can treat an embedded cover as a real attached-picture stream when remuxing.
 func realPNG(t *testing.T) []byte {
 	t.Helper()
@@ -339,7 +340,7 @@ func TestMP4DifferentialFFprobeReadsOurTags(t *testing.T) {
 		Set(tag.Title, "Differential Title").
 		Set(tag.Album, "Differential Album").
 		Set(tag.Composer, "Differential Composer").
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
 		Prepare()
 	if err != nil {
 		t.Fatal(err)

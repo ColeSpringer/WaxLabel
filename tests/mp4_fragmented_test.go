@@ -9,6 +9,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -18,17 +19,17 @@ import (
 
 // mp4Fragmented builds a tagged progressive file that also declares mvex and carries a moof.
 func mp4Fragmented(title string) []byte {
-	data := mp4AssembleExtra(nil, mp4Mvex(),
-		mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", title))))
-	return append(data, mp4Atom("moof", make([]byte, 16))...)
+	data := testfile.MP4AssembleExtra(nil, mp4Mvex(),
+		testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", title))))
+	return append(data, testfile.MP4Atom("moof", make([]byte, 16))...)
 }
 
 func TestMP4MvexWithoutFragmentsIsWritable(t *testing.T) {
 	// ffmpeg -movflags frag_keyframe on a short stream emits a moov carrying mvex but no
 	// moof at all: an ordinary progressive file with a forward declaration. It must read,
 	// write, and keep its media addressable.
-	data := mp4AssembleExtra(nil, mp4Mvex(),
-		mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "Declared"))))
+	data := testfile.MP4AssembleExtra(nil, mp4Mvex(),
+		testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "Declared"))))
 	doc := mustParseBytes(t, data)
 	if got := doc.Fields().Title; got != "Declared" {
 		t.Fatalf("Title = %q, want Declared", got)
@@ -104,10 +105,10 @@ func TestMP4FragmentedSegmentUnsupported(t *testing.T) {
 	// it, so without one the file never reaches the MP4 codec and the test would pass for the
 	// wrong reason.
 	data := slices.Concat(
-		mp4Ftyp(),
-		mp4Atom("styp", []byte("msdh\x00\x00\x00\x00msdhmsix")),
-		mp4Atom("moof", make([]byte, 16)),
-		mp4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)),
+		testfile.MP4Ftyp(),
+		testfile.MP4Atom("styp", []byte("msdh\x00\x00\x00\x00msdhmsix")),
+		testfile.MP4Atom("moof", make([]byte, 16)),
+		testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)),
 	)
 	_, err := wl.Parse(context.Background(), wl.BytesSource(data))
 	if !errors.Is(err, waxerr.ErrUnsupportedFormat) {
@@ -150,7 +151,7 @@ func TestMP4UnwritableFilesReportReadOnly(t *testing.T) {
 func TestMP4UnwritableDestinationDropsTransfer(t *testing.T) {
 	// A transfer onto a ReadOnly file reports per-item drops and returns the codec's own refusal:
 	// the report says what could not be carried, the error says the write will not happen.
-	src := mustParseBytes(t, mp4Tagged(mp4Text("\xa9nam", "Source Title")))
+	src := mustParseBytes(t, testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "Source Title")))
 	for name, data := range map[string][]byte{"iloc": mp4IlocFile(), "unknown saio": mp4UnknownSaioFile()} {
 		t.Run(name, func(t *testing.T) {
 			_, report, err := src.PrepareTransfer(mustParseBytes(t, data))
@@ -172,9 +173,9 @@ func TestMP4FragmentedTransferDropsEverything(t *testing.T) {
 	// A read-only destination drops every item and the transfer is refused with the codec's own
 	// error: ErrFragmented here, not the generic unsupported-format the iloc/saio cases give,
 	// since the two are distinct exit-code rows.
-	src := mustParseBytes(t, mp4Tagged(
-		mp4Text("\xa9nam", "Source Title"),
-		mp4Text("\xa9ART", "Source Artist"),
+	src := mustParseBytes(t, testfile.MP4Tagged(
+		testfile.MP4Text("\xa9nam", "Source Title"),
+		testfile.MP4Text("\xa9ART", "Source Artist"),
 	))
 	dstBytes := mp4Fragmented("Fragged")
 	plan, report, err := src.PrepareTransfer(mustParseBytes(t, dstBytes))
@@ -199,11 +200,11 @@ func TestMP4FragmentedTransferDropsEverything(t *testing.T) {
 
 func TestMP4IlstItemNamedLikeOffsetTable(t *testing.T) {
 	// Offset-table collection is scoped to stbl children.
-	data := mp4Tagged(
-		mp4Text("\xa9nam", "T"),
-		mp4Text("stco", "not an offset table"),
-		mp4Text("co64", "nor is this"),
-		mp4Text("saio", "nor this"),
+	data := testfile.MP4Tagged(
+		testfile.MP4Text("\xa9nam", "T"),
+		testfile.MP4Text("stco", "not an offset table"),
+		testfile.MP4Text("co64", "nor is this"),
+		testfile.MP4Text("saio", "nor this"),
 	)
 	doc := mustParseBytes(t, data)
 	if got := doc.Fields().Title; got != "T" {
@@ -223,21 +224,21 @@ func TestMP4IlstItemNamedLikeOffsetTable(t *testing.T) {
 
 // mp4Iloc builds a minimal iloc item-location box.
 func mp4Iloc() []byte {
-	return mp4Atom("iloc", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 12)))
+	return testfile.MP4Atom("iloc", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 12)))
 }
 
 // mp4IlocFile builds a tagged file carrying an iloc beside its ilst, inside moov.udta.meta.
 func mp4IlocFile() []byte {
-	return mp4Assemble(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T")), mp4Iloc())
+	return testfile.MP4Assemble(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T")), mp4Iloc())
 }
 
 func TestMP4IlocRefusedAtEveryPlacement(t *testing.T) {
 	// An iloc's extents are absolute file offsets that nothing patches, so any rewrite that moves
 	// bytes strands them, not only one sharing the moov.udta.meta this codec replaces.
-	tagged := mp4Tagged(mp4Text("\xa9nam", "T"))
+	tagged := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 	cases := map[string][]byte{
 		"moov.udta.meta": mp4IlocFile(),
-		"top-level meta": slices.Concat(tagged, mp4Meta(mp4Iloc())),
+		"top-level meta": slices.Concat(tagged, testfile.MP4Meta(mp4Iloc())),
 	}
 	for name, data := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -257,11 +258,11 @@ func TestMP4IlstItemNamedLikeSampleTableContainer(t *testing.T) {
 	// trak, mdia, minf, and stbl are all container atoms, so walkAtoms descends into an ilst item
 	// carrying one of those four-ccs. Collecting offset tables by name search would reach a crafted
 	// table nested inside the very region a growing write replaces, and emit a byte patch there.
-	data := mp4Tagged(
-		mp4Text("\xa9nam", "T"),
-		mp4Atom("stbl", mp4Stco(0x4000)),
-		mp4Atom("minf", mp4Atom("stbl", mp4Stco(0x4000))),
-		mp4Atom("trak", mp4Atom("mdia", mp4Atom("minf", mp4Atom("stbl", mp4Stco(0x4000))))),
+	data := testfile.MP4Tagged(
+		testfile.MP4Text("\xa9nam", "T"),
+		testfile.MP4Atom("stbl", testfile.MP4Stco(0x4000)),
+		testfile.MP4Atom("minf", testfile.MP4Atom("stbl", testfile.MP4Stco(0x4000))),
+		testfile.MP4Atom("trak", testfile.MP4Atom("mdia", testfile.MP4Atom("minf", testfile.MP4Atom("stbl", testfile.MP4Stco(0x4000))))),
 	)
 	doc := mustParseBytes(t, data)
 	if got := doc.Fields().Title; got != "T" {

@@ -1,8 +1,6 @@
 package waxlabel_test
 
 import (
-	"bytes"
-	"context"
 	"os"
 	"testing"
 	"time"
@@ -37,30 +35,18 @@ func TestChapterCapabilityConsistency(t *testing.T) {
 }
 
 // assertChapters checks a chapter slice by start and title, the common subset every chaptered
-// format stores. path names the source being checked: in-memory result or reparsed bytes.
-func assertChapters(t *testing.T, path string, got, want []wl.Chapter) {
+// format stores. step names the write being checked.
+func assertChapters(t *testing.T, step string, got, want []wl.Chapter) {
 	t.Helper()
 	if len(got) != len(want) {
-		t.Fatalf("%s: chapter count = %d, want %d: %+v", path, len(got), len(want), got)
+		t.Fatalf("%s: chapter count = %d, want %d: %+v", step, len(got), len(want), got)
 	}
 	for i := range want {
 		if got[i].Start != want[i].Start || got[i].Title != want[i].Title {
 			t.Errorf("%s: chapter %d = {%v %q}, want {%v %q}",
-				path, i, got[i].Start, got[i].Title, want[i].Start, want[i].Title)
+				step, i, got[i].Start, got[i].Title, want[i].Start, want[i].Title)
 		}
 	}
-}
-
-// executeChapters applies the plan and returns chapters from both the in-memory Document that
-// Execute builds from plan.Result and a fresh re-parse of the written bytes.
-func executeChapters(t *testing.T, src []byte, plan *wl.Plan) (inMemory, reparsed []wl.Chapter) {
-	t.Helper()
-	var buf bytes.Buffer
-	doc, _, err := plan.Execute(context.Background(), wl.WriteTo(&buf, wl.BytesSource(src)))
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	return doc.Chapters(), mustParseBytes(t, buf.Bytes()).Chapters()
 }
 
 // chapterFixtures maps each format to a clean fixture for the chapter invariant test.
@@ -79,7 +65,7 @@ var chapterFixtures = map[wl.Format]string{
 }
 
 // Every writable chapter format gets the same structured edit, which catches missing change
-// detection, missing write support, and broken post-write result plumbing.
+// detection and missing write support.
 func TestChapterWriteInvariant(t *testing.T) {
 	want := []wl.Chapter{
 		{Start: 0, Title: "Opening"},
@@ -107,13 +93,11 @@ func TestChapterWriteInvariant(t *testing.T) {
 			if plan.IsNoOp() {
 				t.Fatal("structured-only chapter edit produced a no-op plan; the codec's change-detection gate omits chapters")
 			}
-			inMem, reparsed := executeChapters(t, src, plan)
-			assertChapters(t, "in-memory result", inMem, want)
-			assertChapters(t, "reparsed bytes", reparsed, want)
-
-			// Clearing must also round-trip to none on both paths; that is the clear branch the
-			// set-only path does not reach.
 			chaptered := applyToBytes(t, src, plan)
+			assertChapters(t, "after set", mustParseBytes(t, chaptered).Chapters(), want)
+
+			// Clearing must also round-trip to none; that is the clear branch the set-only path
+			// does not reach.
 			clearPlan, err := mustParseBytes(t, chaptered).Edit().ClearChapters().Prepare()
 			if err != nil {
 				t.Fatalf("clear Prepare: %v", err)
@@ -121,9 +105,7 @@ func TestChapterWriteInvariant(t *testing.T) {
 			if clearPlan.IsNoOp() {
 				t.Fatal("ClearChapters on a chaptered file produced a no-op plan")
 			}
-			clearedMem, clearedReparsed := executeChapters(t, chaptered, clearPlan)
-			assertChapters(t, "in-memory after clear", clearedMem, nil)
-			assertChapters(t, "reparsed after clear", clearedReparsed, nil)
+			assertChapters(t, "after clear", mustParseBytes(t, applyToBytes(t, chaptered, clearPlan)).Chapters(), nil)
 		})
 	}
 }

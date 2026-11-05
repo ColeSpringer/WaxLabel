@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -197,33 +198,33 @@ func TestMatroskaAudioEssence(t *testing.T) {
 // A file with album, track, edition, and chapter targets plus pass-through and technical tag
 // names: the scope-aware projection, and what is and is not projected.
 func TestMatroskaScopeResolution(t *testing.T) {
-	tags := mkEl(idTags, concat(
+	tags := testfile.El(testfile.IDTags, concat(
 		// Album-level (TargetTypeValue 50): ARTIST.
-		mkEl(idTag, concat(
-			mkEl(idTargets, mkUint(idTgtTypeVal, 50)),
-			mkSimple("ARTIST", "Album Artist"),
+		testfile.El(testfile.IDTag, concat(
+			testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)),
+			testfile.SimpleTag("ARTIST", "Album Artist"),
 		)),
 		// Track-level (TargetTypeValue 30 + a track UID): TITLE + a split number +
 		// a MusicBrainz pass-through + a technical tag that must be ignored.
-		mkEl(idTag, concat(
-			mkEl(idTargets, concat(mkUint(idTgtTypeVal, 30), mkUint(idTagTrackUID, 7))),
-			mkSimple("TITLE", "Track Title"),
-			mkSimple("PART_NUMBER", "3/12"),
-			mkSimple("MUSICBRAINZ_ALBUMID", "abc-123"),
-			mkSimple("DURATION", "00:00:09"),
+		testfile.El(testfile.IDTag, concat(
+			testfile.El(testfile.IDTargets, concat(testfile.Uint(testfile.IDTgtTypeVal, 30), testfile.Uint(testfile.IDTagTrackUID, 7))),
+			testfile.SimpleTag("TITLE", "Track Title"),
+			testfile.SimpleTag("PART_NUMBER", "3/12"),
+			testfile.SimpleTag("MUSICBRAINZ_ALBUMID", "abc-123"),
+			testfile.SimpleTag("DURATION", "00:00:09"),
 		)),
 		// Edition-level (TargetTypeValue 60).
-		mkEl(idTag, concat(
-			mkEl(idTargets, mkUint(idTgtTypeVal, 60)),
-			mkSimple("LABEL", "Some Label"),
+		testfile.El(testfile.IDTag, concat(
+			testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 60)),
+			testfile.SimpleTag("LABEL", "Some Label"),
 		)),
 		// Chapter-level (a chapter UID forces chapter scope regardless of level).
-		mkEl(idTag, concat(
-			mkEl(idTargets, mkUint(idTagChapUID, 99)),
-			mkSimple("COMMENT", "Chapter note"),
+		testfile.El(testfile.IDTag, concat(
+			testfile.El(testfile.IDTargets, testfile.Uint(idTagChapUID, 99)),
+			testfile.SimpleTag("COMMENT", "Chapter note"),
 		)),
 	))
-	doc := mustParseBytes(t, buildMatroska("matroska", "", tags))
+	doc := mustParseBytes(t, testfile.Matroska("matroska", "", tags))
 
 	wantScope := map[tag.Key]wl.Scope{
 		tag.Artist:      wl.ScopeAlbum,
@@ -259,11 +260,11 @@ func TestMatroskaScopeResolution(t *testing.T) {
 // Targets element that carries only the informational TargetType string (no numeric
 // TargetTypeValue) still scopes correctly; the Picard / hand-authored case.
 func TestMatroskaTargetTypeString(t *testing.T) {
-	tags := mkEl(idTags, mkEl(idTag, concat(
-		mkEl(idTargets, mkStr(idTgtType, "TRACK")),
-		mkSimple("ARTIST", "Track-scoped Artist"),
+	tags := testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(
+		testfile.El(testfile.IDTargets, mkStr(idTgtType, "TRACK")),
+		testfile.SimpleTag("ARTIST", "Track-scoped Artist"),
 	)))
-	doc := mustParseBytes(t, buildMatroska("matroska", "", tags))
+	doc := mustParseBytes(t, testfile.Matroska("matroska", "", tags))
 	for _, fv := range doc.Families() {
 		if fv.Key == tag.Artist && fv.Scope != wl.ScopeTrack {
 			t.Errorf("ARTIST scope = %v, want track (from TargetType string)", fv.Scope)
@@ -272,15 +273,15 @@ func TestMatroskaTargetTypeString(t *testing.T) {
 }
 
 func TestMatroskaUnknownSizeSegment(t *testing.T) {
-	tags := mkEl(idTags, mkEl(idTag, concat(
-		mkEl(idTargets, nil),
-		mkSimple("ARTIST", "Streamed Artist"),
+	tags := testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(
+		testfile.El(testfile.IDTargets, nil),
+		testfile.SimpleTag("ARTIST", "Streamed Artist"),
 	)))
-	info := mkEl(idInfo, mkStr(idSegTitle, "Streamed"))
+	info := testfile.El(testfile.IDInfo, mkStr(testfile.IDSegTitle, "Streamed"))
 	body := concat(info, tags)
 	// Segment with an explicit "unknown size" VINT (all ones, 1-byte form: 0xFF).
-	seg := concat(idToBytes(idSegment), []byte{0xFF}, body)
-	file := concat(mkEl(idEBML, mkStr(idDocType, "matroska")), seg)
+	seg := concat(testfile.IDBytes(testfile.IDSegment), []byte{0xFF}, body)
+	file := concat(testfile.EBMLHeader("matroska"), seg)
 
 	doc := mustParseBytes(t, file)
 	if doc.Fields().Title != "Streamed" {
@@ -294,15 +295,15 @@ func TestMatroskaUnknownSizeSegment(t *testing.T) {
 // Tags placed after an unknown-size (streamed) Cluster are still read: the parser resolves the
 // cluster's end by skipping its children instead of running it to the segment end.
 func TestMatroskaUnknownSizeClusterTrailingTags(t *testing.T) {
-	info := mkEl(idInfo, mkStr(idSegTitle, "Streamed"))
-	tracks := mkEl(idTracks, mkEl(idTrackEntry, concat(mkUint(idTrackType, 2), mkStr(idCodecID, "A_OPUS"))))
+	info := testfile.El(testfile.IDInfo, mkStr(testfile.IDSegTitle, "Streamed"))
+	tracks := testfile.El(testfile.IDTracks, testfile.El(testfile.IDTrackEntry, concat(testfile.Uint(testfile.IDTrackType, 2), mkStr(testfile.IDCodecID, "A_OPUS"))))
 	// A Cluster with an explicit unknown-size VINT (0xFF), holding a couple of
 	// definite-size children, followed by a Tags element at the segment level.
-	clusterBody := concat(mkUint(idTimestamp, 0), mkEl(idSimpleBlock, make([]byte, 4)))
-	cluster := concat(idToBytes(idCluster), []byte{0xFF}, clusterBody)
-	tags := mkEl(idTags, mkEl(idTag, concat(mkEl(idTargets, nil), mkSimple("ARTIST", "Trailing Artist"))))
+	clusterBody := concat(testfile.Uint(testfile.IDTimestamp, 0), testfile.El(testfile.IDSimpleBlock, make([]byte, 4)))
+	cluster := concat(testfile.IDBytes(testfile.IDCluster), []byte{0xFF}, clusterBody)
+	tags := testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, nil), testfile.SimpleTag("ARTIST", "Trailing Artist"))))
 	seg := concat(info, tracks, cluster, tags)
-	file := concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkEl(idSegment, seg))
+	file := concat(testfile.EBMLHeader("matroska"), testfile.El(testfile.IDSegment, seg))
 
 	doc := mustParseBytes(t, file)
 	if v, _ := doc.Get(tag.Artist); len(v) != 1 || v[0] != "Trailing Artist" {
@@ -315,13 +316,13 @@ func TestMatroskaUnknownSizeClusterTrailingTags(t *testing.T) {
 func TestMatroskaHostileGeometry(t *testing.T) {
 	var inf [8]byte
 	binary.BigEndian.PutUint64(inf[:], math.Float64bits(math.Inf(1)))
-	audio := mkEl(idAudio, concat(
-		mkUint(idChannels, 0xFFFFFFFFFFFFFFFF),
-		mkEl(idSampFreq, inf[:]),
-		mkUint(idBitDepth, 0xFFFFFFFFFFFFFFFF),
+	audio := testfile.El(idAudio, concat(
+		testfile.Uint(idChannels, 0xFFFFFFFFFFFFFFFF),
+		testfile.El(idSampFreq, inf[:]),
+		testfile.Uint(idBitDepth, 0xFFFFFFFFFFFFFFFF),
 	))
-	track := mkEl(idTrackEntry, concat(mkUint(idTrackType, 2), mkStr(idCodecID, "A_OPUS"), audio))
-	file := concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkEl(idSegment, mkEl(idTracks, track)))
+	track := testfile.El(testfile.IDTrackEntry, concat(testfile.Uint(testfile.IDTrackType, 2), mkStr(testfile.IDCodecID, "A_OPUS"), audio))
+	file := concat(testfile.EBMLHeader("matroska"), testfile.El(testfile.IDSegment, testfile.El(testfile.IDTracks, track)))
 
 	tr := mustParseBytes(t, file).Properties().First()
 	if tr.Channels != 0 || tr.SampleRate != 0 || tr.BitsPerSample != 0 {
@@ -330,11 +331,11 @@ func TestMatroskaHostileGeometry(t *testing.T) {
 }
 
 func TestMatroskaNestedTagPreserved(t *testing.T) {
-	tags := mkEl(idTags, mkEl(idTag, concat(
-		mkEl(idTargets, nil),
-		concat(mkSimpleNested("PART_NUMBER", "5", mkSimple("TOTAL_PARTS", "20"))),
+	tags := testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(
+		testfile.El(testfile.IDTargets, nil),
+		concat(mkSimpleNested("PART_NUMBER", "5", testfile.SimpleTag("TOTAL_PARTS", "20"))),
 	)))
-	doc := mustParseBytes(t, buildMatroska("matroska", "", tags))
+	doc := mustParseBytes(t, testfile.Matroska("matroska", "", tags))
 	if doc.Fields().TrackNumber != 5 {
 		t.Errorf("TrackNumber = %d, want 5", doc.Fields().TrackNumber)
 	}
@@ -361,11 +362,11 @@ func TestMatroskaRejectsOverLimitTag(t *testing.T) {
 	for i := range big {
 		big[i] = 'x'
 	}
-	tags := mkEl(idTags, mkEl(idTag, concat(
-		mkEl(idTargets, nil),
-		mkEl(idSimpleTag, concat(mkStr(idTagName, "ARTIST"), mkEl(idTagString, big))),
+	tags := testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(
+		testfile.El(testfile.IDTargets, nil),
+		testfile.El(testfile.IDSimpleTag, concat(mkStr(testfile.IDTagName, "ARTIST"), testfile.El(testfile.IDTagString, big))),
 	)))
-	file := buildMatroska("matroska", "", tags)
+	file := testfile.Matroska("matroska", "", tags)
 
 	_, err := wl.Parse(context.Background(), wl.BytesSource(file),
 		wl.WithLimits(wl.Limits{MaxAllocBytes: 1024, MaxDepth: 64}))
@@ -383,14 +384,14 @@ func TestMatroskaRejectsOverLimitTag(t *testing.T) {
 func TestMatroskaNaNDuration(t *testing.T) {
 	var nan [8]byte
 	binary.BigEndian.PutUint64(nan[:], math.Float64bits(math.NaN()))
-	info := mkEl(idInfo, concat(
-		mkStr(idSegTitle, "NaN dur"),
-		mkEl(idDuration, nan[:]),
+	info := testfile.El(testfile.IDInfo, concat(
+		mkStr(testfile.IDSegTitle, "NaN dur"),
+		testfile.El(testfile.IDDuration, nan[:]),
 	))
-	tracks := mkEl(idTracks, mkEl(idTrackEntry, concat(
-		mkUint(idTrackType, 2), mkStr(idCodecID, "A_OPUS"),
+	tracks := testfile.El(testfile.IDTracks, testfile.El(testfile.IDTrackEntry, concat(
+		testfile.Uint(testfile.IDTrackType, 2), mkStr(testfile.IDCodecID, "A_OPUS"),
 	)))
-	file := concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkEl(idSegment, concat(info, tracks)))
+	file := concat(testfile.EBMLHeader("matroska"), testfile.El(testfile.IDSegment, concat(info, tracks)))
 
 	doc := mustParseBytes(t, file)
 	if d := doc.Properties().First().Duration; d != 0 {
@@ -401,12 +402,12 @@ func TestMatroskaNaNDuration(t *testing.T) {
 func TestMatroskaMultiTrackDuration(t *testing.T) {
 	var dur [8]byte // Duration 1000.0 (x 1ms TimestampScale => 1s)
 	binary.BigEndian.PutUint64(dur[:], math.Float64bits(1000))
-	info := mkEl(idInfo, mkEl(idDuration, dur[:]))
+	info := testfile.El(testfile.IDInfo, testfile.El(testfile.IDDuration, dur[:]))
 	mkTrack := func(codec string) []byte {
-		return mkEl(idTrackEntry, concat(mkUint(idTrackType, 2), mkStr(idCodecID, codec)))
+		return testfile.El(testfile.IDTrackEntry, concat(testfile.Uint(testfile.IDTrackType, 2), mkStr(testfile.IDCodecID, codec)))
 	}
-	tracks := mkEl(idTracks, concat(mkTrack("A_FLAC"), mkTrack("A_OPUS")))
-	file := concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkEl(idSegment, concat(info, tracks)))
+	tracks := testfile.El(testfile.IDTracks, concat(mkTrack("A_FLAC"), mkTrack("A_OPUS")))
+	file := concat(testfile.EBMLHeader("matroska"), testfile.El(testfile.IDSegment, concat(info, tracks)))
 
 	pr := mustParseBytes(t, file).Properties()
 	if len(pr.Tracks) != 2 {
@@ -431,12 +432,12 @@ func TestMatroskaPictureTypeNaming(t *testing.T) {
 		{"background.png", wl.PicOther}, // must NOT be a back cover
 	}
 	for _, c := range cases {
-		att := mkEl(idAttachments, mkEl(idAttached, concat(
+		att := testfile.El(idAttachments, testfile.El(idAttached, concat(
 			mkStr(idFileName, c.name),
 			mkStr(idFileMime, "image/png"),
-			mkEl(idFileData, tinyPNG()),
+			testfile.El(idFileData, testfile.PNG()),
 		)))
-		file := concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkEl(idSegment, att))
+		file := concat(testfile.EBMLHeader("matroska"), testfile.El(testfile.IDSegment, att))
 		pics := mustParseBytes(t, file).Pictures()
 		if len(pics) != 1 {
 			t.Fatalf("%s: pictures = %d, want 1", c.name, len(pics))
@@ -498,7 +499,7 @@ func FuzzMatroskaParse(f *testing.F) {
 	// An SBR track: OutputSamplingFrequency and an AudioSpecificConfig CodecPrivate, the two
 	// elements the AAC rate and profile come from.
 	f.Add(mkAudioTrackFile("A_AAC/MPEG4/LC/SBR", []byte{0x2b, 0x92, 0x08, 0x00},
-		mkFloat(idSampFreq, 22050), mkFloat(idOutSampFreq, 44100), mkUint(idChannels, 2)))
+		mkFloat(idSampFreq, 22050), mkFloat(idOutSampFreq, 44100), testfile.Uint(idChannels, 2)))
 	// An Info whose malformed "CRC-32" child has a junk size that clamps to 4 bytes must not be
 	// mistaken for a real CRC; a title edit on it must write a title a re-parse can read back.
 	f.Add([]byte("\x810\x18S\x80gA0\x15I\xa9f\xc9\xbf0000000"))
@@ -506,11 +507,11 @@ func FuzzMatroskaParse(f *testing.F) {
 	// keeps raw; capturing raw at every recursion level would retain roughly
 	// nesting-depth times the subtree size.
 	{
-		node := mkSimple("LEAF", "deep")
+		node := testfile.SimpleTag("LEAF", "deep")
 		for range 40 {
-			node = mkEl(idSimpleTag, concat(mkStr(idTagName, "N"), node))
+			node = testfile.El(testfile.IDSimpleTag, concat(mkStr(testfile.IDTagName, "N"), node))
 		}
-		f.Add(buildMatroska("matroska", "", mkEl(idTags, mkEl(idTag, concat(mkEl(idTargets, nil), node)))))
+		f.Add(testfile.Matroska("matroska", "", testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, nil), node)))))
 	}
 	ctx := context.Background()
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -566,40 +567,17 @@ func FuzzMatroskaParse(f *testing.F) {
 	})
 }
 
-// Test helpers: a minimal EBML writer.
-
-// Element IDs needed by the synth tests (mirroring the unexported codec consts).
+// Element IDs the synth tests use beyond testfile's, mirroring the unexported codec consts.
 const (
-	idEBML         = 0x1A45DFA3
-	idDocType      = 0x4282
-	idSegment      = 0x18538067
-	idInfo         = 0x1549A966
-	idDuration     = 0x4489
-	idSegTitle     = 0x7BA9
-	idTracks       = 0x1654AE6B
-	idTrackEntry   = 0xAE
-	idTrackType    = 0x83
-	idCodecID      = 0x86
 	idAudio        = 0xE1
 	idChannels     = 0x9F
 	idSampFreq     = 0xB5
 	idOutSampFreq  = 0x78B5
 	idBitDepth     = 0x6264
 	idCodecPrivate = 0x63A2
-	idCluster      = 0x1F43B675
-	idTimestamp    = 0xE7
-	idSimpleBlock  = 0xA3
 	idCRC32        = 0xBF
-	idTags         = 0x1254C367
-	idTag          = 0x7373
-	idTargets      = 0x63C0
-	idTgtTypeVal   = 0x68CA
 	idTgtType      = 0x63CA
-	idTagTrackUID  = 0x63C5
 	idTagChapUID   = 0x63C4
-	idSimpleTag    = 0x67C8
-	idTagName      = 0x45A3
-	idTagString    = 0x4487
 	idAttachments  = 0x1941A469
 	idAttached     = 0x61A7
 	idFileName     = 0x466E
@@ -626,65 +604,8 @@ func concat(parts ...[]byte) []byte {
 	return out
 }
 
-// idToBytes emits an EBML element ID's bytes (the ID already carries its
-// length-descriptor bits, so the byte count follows its magnitude).
-func idToBytes(id uint64) []byte {
-	switch {
-	case id <= 0xFF:
-		return []byte{byte(id)}
-	case id <= 0xFFFF:
-		return []byte{byte(id >> 8), byte(id)}
-	case id <= 0xFFFFFF:
-		return []byte{byte(id >> 16), byte(id >> 8), byte(id)}
-	default:
-		return []byte{byte(id >> 24), byte(id >> 16), byte(id >> 8), byte(id)}
-	}
-}
-
-// sizeVINT encodes a data size as a full 8-byte VINT (marker 0x01), which is always valid
-// regardless of the value; the parser accepts any VINT length.
-func sizeVINT(n int) []byte {
-	v := uint64(n)
-	return []byte{0x01, byte(v >> 48), byte(v >> 40), byte(v >> 32), byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)}
-}
-
-func mkEl(id uint64, payload []byte) []byte {
-	return concat(idToBytes(id), sizeVINT(len(payload)), payload)
-}
-
-func mkStr(id uint64, s string) []byte { return mkEl(id, []byte(s)) }
-
-func mkUint(id uint64, v uint64) []byte {
-	var b [8]byte
-	binary.BigEndian.PutUint64(b[:], v)
-	return mkEl(id, b[:])
-}
-
-func mkSimple(name, value string) []byte {
-	return mkEl(idSimpleTag, concat(mkStr(idTagName, name), mkStr(idTagString, value)))
-}
+func mkStr(id uint64, s string) []byte { return testfile.El(id, []byte(s)) }
 
 func mkSimpleNested(name, value string, sub ...[]byte) []byte {
-	return mkEl(idSimpleTag, concat(mkStr(idTagName, name), mkStr(idTagString, value), concat(sub...)))
-}
-
-// mkAudioCluster returns a minimal one-block audio Cluster. Without one the parser flags
-// WarnNoAudioFrames and Editor.Prepare refuses to write a no-audio file.
-func mkAudioCluster() []byte {
-	return mkEl(idCluster, concat(
-		mkUint(idTimestamp, 0),
-		mkEl(idSimpleBlock, []byte{0x81, 0x00, 0x00, 0x00, 0xAA, 0xBB}), // track 1, ts 0, one frame
-	))
-}
-
-// buildMatroska assembles a minimal definite-size file: EBML header + Segment containing an
-// optional Info (with title), a one-block audio Cluster, and the given Tags bytes.
-func buildMatroska(docType, title string, tags []byte) []byte {
-	var seg []byte
-	if title != "" {
-		seg = append(seg, mkEl(idInfo, mkStr(idSegTitle, title))...)
-	}
-	seg = append(seg, mkAudioCluster()...)
-	seg = append(seg, tags...)
-	return concat(mkEl(idEBML, mkStr(idDocType, docType)), mkEl(idSegment, seg))
+	return testfile.El(testfile.IDSimpleTag, concat(mkStr(testfile.IDTagName, name), mkStr(testfile.IDTagString, value), concat(sub...)))
 }

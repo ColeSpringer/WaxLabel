@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // TestLooksLikeID3v1 covers the strict trailing-ID3v1 detection: a genuine ID3v1/v1.1
@@ -108,7 +109,7 @@ func TestProjectWarnsMalformedAPIC(t *testing.T) {
 	}
 
 	// A well-formed APIC still projects a picture with no invalid-picture warning.
-	good := tagWith(4, []Frame{{ID: "APIC", Body: encodeAPIC(core.Picture{Type: core.PicFrontCover, MIME: "image/png", Data: tinyPNGBytes()}, 4)}})
+	good := tagWith(4, []Frame{{ID: "APIC", Body: encodeAPIC(core.Picture{Type: core.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}, 4)}})
 	gp := Project(good)
 	if len(gp.Pictures) != 1 {
 		t.Fatalf("a valid APIC should project one picture, got %d", len(gp.Pictures))
@@ -118,9 +119,4 @@ func TestProjectWarnsMalformedAPIC(t *testing.T) {
 			t.Errorf("a valid APIC must not warn invalid-picture: %v", gp.Warnings)
 		}
 	}
-}
-
-// tinyPNGBytes is a minimal PNG signature + IHDR so the picture sniffer recognizes image/png.
-func tinyPNGBytes() []byte {
-	return []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89")
 }

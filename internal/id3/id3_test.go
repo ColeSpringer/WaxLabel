@@ -9,6 +9,7 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -739,7 +740,7 @@ func TestTXXXCustomDescriptionCasePreserved(t *testing.T) {
 // description and bytes intact. The payload is a real PNG: decodeAPIC sniffs
 // authoritatively, so a declared type only survives when the bytes back it.
 func TestPictureRoundTrip(t *testing.T) {
-	pic := core.Picture{Type: core.PicFrontCover, MIME: "image/png", Description: "front", Data: tinyPNGBytes()}
+	pic := core.Picture{Type: core.PicFrontCover, MIME: "image/png", Description: "front", Data: testfile.PNG()}
 	body := encodeAPIC(pic, 4)
 	got, ok := decodeAPIC(body)
 	if !ok {
@@ -1075,16 +1076,11 @@ func TestSpacePaddedFrameID(t *testing.T) {
 // canonical model, and out of DecodeText.
 func TestNonConformantFrameIDMarkedOpaque(t *testing.T) {
 	frame := func(id, text string) []byte {
-		body := encodeTextFrame(encLatin1, []string{text})
-		h := append([]byte(id), byte(len(body)>>24), byte(len(body)>>16), byte(len(body)>>8), byte(len(body)), 0, 0)
-		return append(h, body...)
+		return testfile.ID3Frame(3, id, encodeTextFrame(encLatin1, []string{text}))
 	}
 	txy := frame("TXY ", "leak?") // non-conformant (trailing space) ID
 	tit2 := frame("TIT2", "Real")
-	var sz [4]byte
-	putSyncSafe(sz[:], int64(len(txy)+len(tit2)))
-	data := append([]byte{'I', 'D', '3', 3, 0, 0}, sz[:]...)
-	data = append(append(data, txy...), tit2...)
+	data := testfile.ID3v2(3, txy, tit2)
 
 	tg, err := ParseTag(data, 0)
 	if err != nil {
@@ -1350,20 +1346,8 @@ func FuzzParseTag(f *testing.F) {
 	f.Add([]byte("ID3\x02\x00\x00\x00\x00\x00\x00")) // empty v2.2 (3-char frame IDs)
 
 	// A tag carrying one TIT2 text frame ("hi", ISO-8859-1) at v2.3 and v2.4.
-	textFrameTag := func(major byte) []byte {
-		body := append([]byte{0x00}, "hi"...) // encoding byte 0x00 (ISO-8859-1) + text
-		var fsz [4]byte
-		putSyncSafe(fsz[:], int64(len(body)))
-		frame := append([]byte("TIT2"), fsz[:]...)
-		frame = append(frame, 0x00, 0x00) // frame flags
-		frame = append(frame, body...)
-		var tsz [4]byte
-		putSyncSafe(tsz[:], int64(len(frame)))
-		out := append([]byte{'I', 'D', '3', major, 0, 0}, tsz[:]...)
-		return append(out, frame...)
-	}
-	f.Add(textFrameTag(4))
-	f.Add(textFrameTag(3))
+	f.Add(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "hi")))
+	f.Add(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "hi")))
 
 	// A v2.4 tag whose frame body needs unsync normalization (0xFF 0x00 stuffing), tag-level unsync.
 	rawBody := []byte{0xFF, 0x00, 0x42, 0xFF, 0x00}
@@ -1416,7 +1400,7 @@ func TestV22CompressionFlagIgnoresTag(t *testing.T) {
 	if tg.Padding() != 0 {
 		t.Errorf("padding = %d, want 0 (the region is unreadable, not free)", tg.Padding())
 	}
-	if n := tg.WithFrames(nil, 0).Ignored(); n != "" {
+	if n := tg.WithFrames(nil).Ignored(); n != "" {
 		t.Errorf("a rewritten tag must not stay ignored: %q", n)
 	}
 	// The same bit on v2.3 is the extended-header flag and must keep working.

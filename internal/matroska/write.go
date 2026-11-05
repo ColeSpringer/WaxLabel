@@ -455,12 +455,7 @@ func renderNonAlbumGroup(g tagGroup, gi int, ed *editDecisions) (out tagGroup, r
 		content = append(content, g.targetsRaw...)
 	}
 	content = append(content, simple...)
-	rendered := masterElement(idTag, content, g.hasCRC)
-	// Carry the rendered bytes, not the input raw that still holds the dropped
-	// SimpleTags, so the returned document's group equals a fresh parse of the output
-	// and a re-edit preserves it verbatim.
-	out.raw = rendered
-	return out, rendered, true
+	return out, masterElement(idTag, content, g.hasCRC), true
 }
 
 // editDecisions carries the value-level outcome of one tag edit across the render
@@ -863,11 +858,8 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 		}
 		for _, v := range vals {
 			// A present empty value (set KEY=) is emitted as a zero-length SimpleTag.
-			stb := simpleTagBytes(name, v)
-			simple = append(simple, stb...)
-			// Carry the freshly rendered bytes as this synthesized tag's raw, so the result
-			// document's album group equals a fresh parse of the output.
-			out.tags = append(out.tags, simpleTag{name: name, value: v, hasValue: true, raw: stb})
+			simple = append(simple, simpleTagBytes(name, v)...)
+			out.tags = append(out.tags, simpleTag{name: name, value: v, hasValue: true})
 		}
 	}
 	if len(simple) == 0 {
@@ -880,9 +872,7 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 	var content []byte
 	content = append(content, out.targetsRaw...)
 	content = append(content, simple...)
-	rendered := masterElement(idTag, content, out.hasCRC)
-	out.raw = rendered
-	return out, rendered
+	return out, masterElement(idTag, content, out.hasCRC)
 }
 
 // reprojectsTo reports whether albumOwn, emit, and the other scopes' contributions
@@ -988,8 +978,8 @@ func renderInfo(ib *infoBlock, title string, present bool) (raw []byte, newTitle
 
 // renderAttachments rebuilds the Attachments element from the preserved
 // non-image attachments and the edited picture set, returning nil when empty (so
-// the element is dropped). It also returns the new attachment list for the result.
-func renderAttachments(d *doc, pics []core.Picture) (raw []byte, atts []attachment) {
+// the element is dropped).
+func renderAttachments(d *doc, pics []core.Picture) []byte {
 	var content []byte
 	// Names used so far, so two same-role, same-MIME covers (both "cover.png") get
 	// distinct FileNames. Seeded with the preserved non-image attachment names.
@@ -999,26 +989,23 @@ func renderAttachments(d *doc, pics []core.Picture) (raw []byte, atts []attachme
 			continue // images are rebuilt from the picture set below
 		}
 		content = append(content, a.raw...)
-		atts = append(atts, a)
 		used[a.name] = true
 	}
 	for _, p := range pics {
 		name := uniqueAttachmentName(coverFileStem(p), imageExt(p.MIME), used)
 		used[name] = true
-		ab, a := attachedFileBytes(p, name)
-		content = append(content, ab...)
-		atts = append(atts, a)
+		content = append(content, attachedFileBytes(p, name)...)
 	}
 	if len(content) == 0 {
-		return nil, nil
+		return nil
 	}
 	hasCRC := d.wb.attach != nil && d.wb.attach.hasCRC
-	return masterElement(idAttachments, content, hasCRC), atts
+	return masterElement(idAttachments, content, hasCRC)
 }
 
 // attachedFileBytes renders one AttachedFile from a picture under an already-unique
 // file name.
-func attachedFileBytes(p core.Picture, name string) ([]byte, attachment) {
+func attachedFileBytes(p core.Picture, name string) []byte {
 	payload := stringElement(idFileName, name)
 	payload = append(payload, stringElement(idFileMime, p.MIME)...)
 	if p.Description != "" {
@@ -1026,10 +1013,7 @@ func attachedFileBytes(p core.Picture, name string) ([]byte, attachment) {
 	}
 	payload = append(payload, encElement(idFileData, p.Data)...)
 	payload = append(payload, uintElement(idFileUID, fileUID())...)
-	// image mirrors the read gate (isCoverAttachment) so the result attachment matches a
-	// fresh reparse: a --force octet-stream cover under a cover name reads back as a picture.
-	a := attachment{name: name, mime: p.MIME, description: p.Description, size: len(p.Data), image: isCoverAttachment(p.MIME, name)}
-	return encElement(idAttached, payload), a
+	return encElement(idAttached, payload)
 }
 
 // fileUID returns a random non-zero AttachedFile UID (per the spec's "as random

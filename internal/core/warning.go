@@ -323,17 +323,6 @@ func WarningsWithCode(ws []Warning, codes ...WarningCode) []Warning {
 	return out
 }
 
-// WarningsWithoutCode drops the listed codes, preserving order. Complement of [WarningsWithCode].
-func WarningsWithoutCode(ws []Warning, codes ...WarningCode) []Warning {
-	var out []Warning
-	for _, w := range ws {
-		if !slices.Contains(codes, w.Code) {
-			out = append(out, w)
-		}
-	}
-	return out
-}
-
 // WarnNativeReduced appends WarnNativeValueReduced for a multi-value native slot.
 func WarnNativeReduced(ws []Warning, key tag.Key, n int, container string) []Warning {
 	return WarnKeyed(ws, WarnNativeValueReduced,

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -49,7 +50,7 @@ func assertChangeOnCanonicalDate(t *testing.T, plan *wl.Plan) {
 // On MP4 an unresolved DATE would be a freeform atom, so the resolved edit must read back as the
 // canonical RECORDINGDATE with no stray custom key.
 func TestEditorSetAliasRoundTripsMP4(t *testing.T) {
-	data := mp4Tagged(mp4Text("\xa9nam", "Book"))
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "Book"))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Key("DATE"), "2021").Prepare()
 	if err != nil {
 		t.Fatal(err)

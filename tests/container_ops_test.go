@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -26,7 +27,7 @@ func opsFor(t *testing.T, data []byte, edit func(*wl.Editor)) []string {
 	return plan.Report().Operations
 }
 
-func addCover(e *wl.Editor) { e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}) }
+func addCover(e *wl.Editor) { e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}) }
 
 // clearing every value the native container holds deletes the container.
 func TestNativeContainerDropIsReported(t *testing.T) {
@@ -34,8 +35,8 @@ func TestNativeContainerDropIsReported(t *testing.T) {
 		name, op string
 		data     []byte
 	}{
-		{"wav", "LIST/INFO drop", wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "T"}), wavData(400))},
-		{"aiff", "native text chunk drop", aiffFile("AIFF", stdCOMM(), aiffText("NAME", "T"), stdSSND())},
+		{"wav", "LIST/INFO drop", testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"INAM", "T"}), testfile.WAVData(400))},
+		{"aiff", "native text chunk drop", testfile.AIFF("AIFF", stdCOMM(), aiffText("NAME", "T"), stdSSND())},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ops := opsFor(t, tc.data, func(e *wl.Editor) { e.Clear(tag.Title) })
@@ -53,8 +54,8 @@ func TestUnchangedNativeContainerReportsNoRewrite(t *testing.T) {
 		name, op string
 		data     []byte
 	}{
-		{"wav", "LIST/INFO rewrite", wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "T"}), wavData(400))},
-		{"aiff", "native text chunk rewrite", aiffFile("AIFF", stdCOMM(), aiffText("NAME", "T"), stdSSND())},
+		{"wav", "LIST/INFO rewrite", testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"INAM", "T"}), testfile.WAVData(400))},
+		{"aiff", "native text chunk rewrite", testfile.AIFF("AIFF", stdCOMM(), aiffText("NAME", "T"), stdSSND())},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if ops := opsFor(t, tc.data, addCover); slices.Contains(ops, tc.op) {
@@ -74,18 +75,18 @@ func TestUnchangedNativeContainerReportsNoRewrite(t *testing.T) {
 func TestContainerRewriteReportedWhenOnlyTheBytesMove(t *testing.T) {
 	// A LIST body whose tail the item walk could not read: the rewrite renders from the items
 	// alone, so those bytes do not come back.
-	infoTail := wavChunk("LIST", slices.Concat(wavInfo([2]string{"INAM", "T"})[8:], []byte{0xFF, 0xFE, 0xFD, 0xFC}))
+	infoTail := testfile.WAVChunk("LIST", slices.Concat(testfile.WAVInfo([2]string{"INAM", "T"})[8:], []byte{0xFF, 0xFE, 0xFD, 0xFC}))
 
 	for _, tc := range []struct {
 		name, op, why string
 		data          []byte
 	}{
 		{"aiff-post-nul-bytes", "native text chunk rewrite", "the rewrite drops what follows the terminator",
-			aiffFile("AIFF", stdCOMM(), aiffChunk("NAME", []byte("T\x00junk")), stdSSND())},
+			testfile.AIFF("AIFF", stdCOMM(), testfile.AIFFChunk("NAME", []byte("T\x00junk")), stdSSND())},
 		{"aiff-split-group", "native text chunk rewrite", "regrouping moves the chunks between them",
-			aiffFile("AIFF", stdCOMM(), aiffText("NAME", "T"), aiffChunk("APPL", []byte("xx")), aiffText("ANNO", "c"), stdSSND())},
+			testfile.AIFF("AIFF", stdCOMM(), aiffText("NAME", "T"), testfile.AIFFChunk("APPL", []byte("xx")), aiffText("ANNO", "c"), stdSSND())},
 		{"wav-unreadable-tail", "LIST/INFO rewrite", "the rewrite renders from the items alone",
-			wavFile(wavFmtPCM(), infoTail, wavData(400))},
+			testfile.WAV(testfile.WAVFmtPCM(), infoTail, testfile.WAVData(400))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if ops := opsFor(t, tc.data, addCover); !slices.Contains(ops, tc.op) {

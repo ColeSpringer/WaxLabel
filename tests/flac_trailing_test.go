@@ -7,13 +7,12 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
 // id3v1Tag is a minimal 128-byte ID3v1 trailer.
-func id3v1Tag() []byte {
-	return append([]byte("TAG"), make([]byte, 125)...)
-}
+func id3v1Tag() []byte { return testfile.ID3v1("", "", "", "", "", 0) }
 
 // withTail returns data with the given regions appended.
 func withTail(data []byte, tails ...[]byte) []byte {
@@ -86,7 +85,7 @@ func TestFLACJunkSurvivesEdit(t *testing.T) {
 		t.Error("edited junk file no longer dedup-matches the clean original")
 	}
 
-	// A chained edit on the returned document (no re-parse) must carry the junk region too.
+	// A chained edit on the returned document must carry the junk region too.
 	plan2, err := res.Edit().Set(tag.Album, "Again").Prepare()
 	if err != nil {
 		t.Fatalf("Prepare(chained): %v", err)

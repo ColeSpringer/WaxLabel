@@ -8,6 +8,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -101,7 +102,7 @@ func TestPlanChangesNoOp(t *testing.T) {
 // pseudo-key (which cannot collide with a real, always-uppercase canonical key).
 func TestPlanChangesPictures(t *testing.T) {
 	doc := mustParseFile(t, "../testdata/notags.flac")
-	plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
+	plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}

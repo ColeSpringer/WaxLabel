@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // 96 kHz ALAC's rate does not fit the sample entry's 16.16 field, so the magic cookie carries it.
@@ -12,7 +13,7 @@ import (
 // in the cookie hash the same.
 func TestMP4ALACSampleRateFromCookie(t *testing.T) {
 	build := func(cookieRate int) []byte {
-		return mp4AssembleStsd(mp4Stsd(mp4StsdEntry("alac", 2, 16, 0, mp4AlacCookie(cookieRate, 2, 24))), nil, nil, nil, 44100)
+		return testfile.MP4AssembleStsd(testfile.MP4Stsd(testfile.MP4StsdEntry("alac", 2, 16, 0, testfile.MP4AlacCookie(cookieRate, 2, 24))), nil, nil, nil, 44100)
 	}
 	doc := mustParseBytes(t, build(96000))
 	tr := doc.Properties().Tracks[0]
@@ -36,7 +37,7 @@ func TestMP4ALACSampleRateFromCookie(t *testing.T) {
 // reports that geometry rather than the entry's.
 func TestMP4FLACSampleRateFromStreamInfo(t *testing.T) {
 	si := mp4StreamInfo(96000, 2, 24, 4096, 4096, 480000)
-	data := mp4AssembleStsd(mp4Stsd(mp4StsdEntry("fLaC", 2, 16, 0, mp4DfLa(si))), nil, nil, nil, 44100)
+	data := testfile.MP4AssembleStsd(testfile.MP4Stsd(testfile.MP4StsdEntry("fLaC", 2, 16, 0, mp4DfLa(si))), nil, nil, nil, 44100)
 	tr := mustParseBytes(t, data).Properties().Tracks[0]
 	if tr.SampleRate != 96000 || tr.Channels != 2 || tr.BitsPerSample != 24 {
 		t.Errorf("track = %d Hz / %d ch / %d bit, want 96000/2/24", tr.SampleRate, tr.Channels, tr.BitsPerSample)
@@ -53,7 +54,7 @@ func TestMP4FLACSampleRateFromStreamInfo(t *testing.T) {
 // geometry stays out of the digest salt, which is zero for such an entry.
 func TestMP4V2SoundEntryGeometry(t *testing.T) {
 	build := func(rate float64) []byte {
-		return mp4AssembleStsd(mp4Stsd(mp4StsdEntryV2("lpcm", rate, 2, 24)), nil, nil, nil, 44100)
+		return testfile.MP4AssembleStsd(testfile.MP4Stsd(mp4StsdEntryV2("lpcm", rate, 2, 24)), nil, nil, nil, 44100)
 	}
 	tr := mustParseBytes(t, build(96000)).Properties().Tracks[0]
 	if tr.SampleRate != 96000 || tr.Channels != 2 || tr.BitsPerSample != 24 {
@@ -70,11 +71,11 @@ func TestMP4V2SoundEntryGeometry(t *testing.T) {
 // same bytes report the same geometry and hash to the same digest whatever limit the caller set.
 func TestMP4StsdPrefixIndependentOfAllocLimit(t *testing.T) {
 	// A second, padded entry pushes the stsd payload past the prefix a small limit allows.
-	stsd := mp4Stsd(
-		mp4StsdEntry("alac", 2, 16, 0, mp4AlacCookie(96000, 2, 24)),
-		mp4StsdEntry("mp4a", 2, 16, 44100, mp4Atom("pad", make([]byte, 500))),
+	stsd := testfile.MP4Stsd(
+		testfile.MP4StsdEntry("alac", 2, 16, 0, testfile.MP4AlacCookie(96000, 2, 24)),
+		testfile.MP4StsdEntry("mp4a", 2, 16, 44100, testfile.MP4Atom("pad", make([]byte, 500))),
 	)
-	data := mp4AssembleStsd(stsd, nil, nil, nil, 44100)
+	data := testfile.MP4AssembleStsd(stsd, nil, nil, nil, 44100)
 
 	want := essenceOf(t, data)
 	for _, limit := range []int64{1 << 20, 400, 64} {

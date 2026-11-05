@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -12,7 +13,7 @@ import (
 // the unknown frame is preserved under a space-padded, non-conformant "TXY " ID.
 func v22WithUnknownFrame(t *testing.T) []byte {
 	t.Helper()
-	return append(id3v2(2,
+	return append(testfile.ID3v2(2,
 		textFrame22("TT2", "V22 Title"),
 		textFrame22("TXY", "unknown-v22-payload"),
 	), mp3Audio(t)...)

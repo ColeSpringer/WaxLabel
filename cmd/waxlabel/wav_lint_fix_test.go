@@ -1,50 +1,21 @@
 package main
 
 import (
-	"encoding/binary"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
-
-// riffChunk wraps a chunk body in its 8-byte header, word-aligning an odd body.
-func riffChunk(id string, body []byte) []byte {
-	h := make([]byte, 4)
-	binary.LittleEndian.PutUint32(h, uint32(len(body)))
-	out := slices.Concat([]byte(id), h, body)
-	if len(body)&1 == 1 {
-		out = append(out, 0)
-	}
-	return out
-}
-
-// riffInfoList builds a LIST/INFO chunk from ordered 4CC/value pairs.
-func riffInfoList(pairs ...[2]string) []byte {
-	body := []byte("INFO")
-	for _, p := range pairs {
-		body = append(body, riffChunk(p[0], append([]byte(p[1]), 0))...)
-	}
-	return riffChunk("LIST", body)
-}
 
 // writeInfoOnlyWAV writes a PCM WAV whose only metadata is a LIST/INFO chunk.
 func writeInfoOnlyWAV(t *testing.T, name string, pairs ...[2]string) string {
 	t.Helper()
-	fmtBody := make([]byte, 16)
-	binary.LittleEndian.PutUint16(fmtBody[0:], 1)      // PCM
-	binary.LittleEndian.PutUint16(fmtBody[2:], 2)      // channels
-	binary.LittleEndian.PutUint32(fmtBody[4:], 44100)  // sample rate
-	binary.LittleEndian.PutUint32(fmtBody[8:], 176400) // byte rate
-	binary.LittleEndian.PutUint16(fmtBody[12:], 4)     // block align
-	binary.LittleEndian.PutUint16(fmtBody[14:], 16)    // bits per sample
-	inner := slices.Concat([]byte("WAVE"), riffChunk("fmt ", fmtBody),
-		riffInfoList(pairs...), riffChunk("data", make([]byte, 4000)))
-	sz := make([]byte, 4)
-	binary.LittleEndian.PutUint32(sz, uint32(len(inner)))
+	data := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo(pairs...), testfile.WAVData(4000))
 	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(path, slices.Concat([]byte("RIFF"), sz, inner), 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return path

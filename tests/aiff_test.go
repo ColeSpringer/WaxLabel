@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -201,7 +202,7 @@ func TestAIFFCoverRoundTrip(t *testing.T) {
 	before := essenceOf(t, src)
 
 	plan, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +274,7 @@ func TestAIFFDifferentialFFmpegDecodes(t *testing.T) {
 	path := copyToTemp(t, sampleAIFF)
 	plan, err := mustParseFile(t, path).Edit().
 		Set(tag.Title, "Valid AIFF").
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}).
 		Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -311,8 +312,8 @@ func TestAIFFSSNDOffsetExcludedFromEssence(t *testing.T) {
 	samples := bytes.Repeat([]byte{0xA7}, 1000*4) // every frame stdCOMM declares
 	align := []byte{0xFF, 0xFF, 0xFF, 0xFF}       // distinct so a leak would change the digest
 
-	off0 := aiffFile("AIFF", stdCOMM(), aiffSSNDOffset(0, nil, samples))
-	off4 := aiffFile("AIFF", stdCOMM(), aiffSSNDOffset(4, align, samples))
+	off0 := testfile.AIFF("AIFF", stdCOMM(), testfile.SSNDOffset(0, nil, samples))
+	off4 := testfile.AIFF("AIFF", stdCOMM(), testfile.SSNDOffset(4, align, samples))
 
 	if d0, d4 := essenceOf(t, off0), essenceOf(t, off4); !d0.Equal(d4) {
 		t.Errorf("offset 0 vs 4 essence differ: alignment bytes leaked into the digest\n off0=%x\n off4=%x", d0.Sum, d4.Sum)
@@ -320,7 +321,7 @@ func TestAIFFSSNDOffsetExcludedFromEssence(t *testing.T) {
 
 	// A corrupt header whose declared offset overruns the body must collapse the
 	// sample range to empty (the no-audio path), not leave AudioStart > AudioEnd.
-	huge := aiffFile("AIFF", stdCOMM(), aiffSSNDOffset(1<<20, nil, samples))
+	huge := testfile.AIFF("AIFF", stdCOMM(), testfile.SSNDOffset(1<<20, nil, samples))
 	doc := mustParseBytes(t, huge) // must not panic
 	_, err := doc.HashAudioEssence(context.Background(), wl.WithHashSource(wl.BytesSource(huge)))
 	if !errors.Is(err, waxerr.ErrInvalidData) {
@@ -328,47 +329,27 @@ func TestAIFFSSNDOffsetExcludedFromEssence(t *testing.T) {
 	}
 }
 
-// metadata edit on an AIFF with a non-zero SSND offset returns a result document whose essence
-// range matches a fresh parse of the written output.
-func TestAIFFSSNDOffsetResultMatchesReparse(t *testing.T) {
+// An edit on an AIFF with a non-zero SSND offset, and a second edit on its output, keep the
+// alignment bytes out of the essence: every output hashes as the source does.
+func TestAIFFSSNDOffsetSurvivesEdits(t *testing.T) {
 	samples := bytes.Repeat([]byte{0xA7}, 1000*4) // every frame stdCOMM declares
 	align := []byte{0xFF, 0xFF, 0xFF, 0xFF}       // distinct: a leak would change the digest
-	data := aiffFile("AIFF", aiffText("NAME", "Old"), stdCOMM(), aiffSSNDOffset(4, align, samples))
+	data := testfile.AIFF("AIFF", aiffText("NAME", "Old"), stdCOMM(), testfile.SSNDOffset(4, align, samples))
+	want := essenceOf(t, data)
 
-	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "New").Prepare()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var w writerTo
-	resDoc, _, err := plan.Execute(context.Background(), wl.WriteTo(&w, wl.BytesSource(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resDigest, err := resDoc.HashAudioEssence(context.Background(), wl.WithHashSource(wl.BytesSource(w.b)))
-	if err != nil {
-		t.Fatalf("hash result essence: %v", err)
-	}
-	if reparse := essenceOf(t, w.b); !resDigest.Equal(reparse) {
-		t.Errorf("result-view essence != reparse essence (SSND offset bytes leaked into the result view)\n result=%x\nreparse=%x", resDigest.Sum, reparse.Sum)
-	}
-
-	// A second edit on the returned document recomputes layout without reparsing, so
-	// ssndAlign must be carried forward.
-	plan2, err := resDoc.Edit().Set(tag.Artist, "Chained").Prepare()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var w2 writerTo
-	res2, _, err := plan2.Execute(context.Background(), wl.WriteTo(&w2, wl.BytesSource(w.b)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	res2Digest, err := res2.HashAudioEssence(context.Background(), wl.WithHashSource(wl.BytesSource(w2.b)))
-	if err != nil {
-		t.Fatalf("hash chained result essence: %v", err)
-	}
-	if reparse := essenceOf(t, w2.b); !res2Digest.Equal(reparse) {
-		t.Errorf("chained result-view essence != reparse (result doc dropped ssndAlign)\n result=%x\nreparse=%x", res2Digest.Sum, reparse.Sum)
+	out := data
+	for _, edit := range []struct {
+		key   tag.Key
+		value string
+	}{{tag.Title, "New"}, {tag.Artist, "Chained"}} {
+		plan, err := mustParseBytes(t, out).Edit().Set(edit.key, edit.value).Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = applyToBytes(t, out, plan)
+		if got := essenceOf(t, out); !got.Equal(want) {
+			t.Errorf("after the %s edit the essence changed (SSND alignment bytes leaked in)\n got=%x\nwant=%x", edit.key, got.Sum, want.Sum)
+		}
 	}
 }
 

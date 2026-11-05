@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/ape"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -37,19 +40,69 @@ func TestWithLimitsZeroFieldUsesDefault(t *testing.T) {
 	}
 }
 
+// A write from a Document whose parse a limit cut short commits and keeps what that parse left
+// unread: Musepack chapters past the packet walk's or the chapter run's cap through a title edit,
+// and an APEv2 cover past the item cap through a no-op copy.
+func TestWriteFromCappedParseCommits(t *testing.T) {
+	ctx := context.Background()
+	audio := testfile.MPCAudio(64)
+	viaSeekTable := testfile.MPCStream(44100, 0, 2, mpcSeekOffset(len(audio)), audio, mpcSeekTable(),
+		testfile.MPCTitled(0, "a"), testfile.MPCTitled(1152, "b"), testfile.MPCTitled(2304, "c"), testfile.MPCEnd())
+	apeTag, err := ape.Render([]ape.Item{{Key: "Title", Value: "T"}, {Key: "Artist", Value: "A"}, {Key: "Album", Value: "B"},
+		{Key: "Cover Art (Front)", Data: append([]byte("cover.png\x00"), testfile.PNG()...), Flags: 2}}, 2000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, title string // title is what the edit sets; empty for a no-op
+		data        []byte
+	}{
+		{"chapters past the walk cap", "Capped", testfile.MPCChaptered()},
+		{"chapters past the run cap", "Capped", viaSeekTable},
+		{"cover past the item cap", "", slices.Concat(readFixture(t, notagsAPE), apeTag)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			doc, err := wl.Parse(ctx, wl.BytesSource(c.data), wl.WithLimits(wl.Limits{MaxElements: 2}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !hasWarning(doc, wl.WarnElementCap) {
+				t.Fatal("setup: the element cap should cut the parse short")
+			}
+			ed := doc.Edit()
+			if c.title != "" {
+				ed.Set(tag.Title, c.title)
+			}
+			plan, err := ed.Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			if _, res, err := plan.Execute(ctx, wl.WriteTo(&out, wl.BytesSource(c.data))); err != nil || !res.Committed {
+				t.Fatalf("Execute = (committed %v, err %v), want it written", res.Committed, err)
+			}
+			src, got := mustParseBytes(t, c.data), mustParseBytes(t, out.Bytes())
+			if !slices.Equal(got.Chapters(), src.Chapters()) || len(got.Pictures()) != len(src.Pictures()) {
+				t.Errorf("output holds %d chapters and %d pictures, want the source's %d and %d",
+					len(got.Chapters()), len(got.Pictures()), len(src.Chapters()), len(src.Pictures()))
+			}
+			if c.title == "" && !bytes.Equal(out.Bytes(), c.data) {
+				t.Error("the no-op copy changed the bytes")
+			}
+			if c.title != "" && got.Fields().Title != c.title {
+				t.Errorf("title = %q, want %q", got.Fields().Title, c.title)
+			}
+		})
+	}
+}
+
 // withTrailingID3v1 appends a 128-byte ID3v1 tag to FLAC bytes.
 func withTrailingID3v1(src []byte) []byte {
-	id3 := make([]byte, 128)
-	copy(id3, "TAG")
-	copy(id3[3:], "Legacy Title")
-	return append(append([]byte{}, src...), id3...)
+	return slices.Concat(src, testfile.ID3v1("Legacy Title", "", "", "", "", 0))
 }
 
 // withLeadingID3v2 prepends a minimal empty ID3v2 tag (10-byte header, size 0).
-func withLeadingID3v2(src []byte) []byte {
-	hdr := []byte{'I', 'D', '3', 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-	return append(hdr, src...)
-}
+func withLeadingID3v2(src []byte) []byte { return append(testfile.ID3v2(4), src...) }
 
 func TestLegacyTrailingID3v1(t *testing.T) {
 	ctx := context.Background()
@@ -96,8 +149,8 @@ func TestLegacyTrailingID3v1(t *testing.T) {
 func TestLegacyLeadingID3v2(t *testing.T) {
 	ctx := context.Background()
 	src := withLeadingID3v2(readFixture(t, sampleFLAC))
-	// A leading-ID3 FLAC is detected by its .flac extension (the fLaC marker is past the sniff window,
-	// and claiming "ID3" would misroute MP3), so write it to a real file and use ParseFile.
+	// Detection looks past the leading ID3v2 to the fLaC marker; a real file lets the strip below
+	// save back.
 	path := writeTempFile(t, "lead.flac", src)
 
 	doc, err := wl.ParseFile(ctx, path)

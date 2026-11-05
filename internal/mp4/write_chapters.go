@@ -75,7 +75,7 @@ func planChapters(d *doc, edited *core.Media, needIlst, picturesChanged bool, op
 	if needIlst {
 		resultItems = newItems
 	}
-	result := buildChapterResult(edited, d, resultItems, reg, delta, total)
+	result := buildChapterResult(edited, d, resultItems, reg, delta)
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 
@@ -118,14 +118,12 @@ func buildChapterUdta(d *doc, edited *core.Media, needIlst, picturesChanged bool
 
 // udtaRegion is the resolved placement of the rewritten user-data box: the source
 // span it replaces (or the insertion point when udta is created), the bytes that
-// replace it, the new udta payload (re-walked to recover child offsets), and the
+// replace it, the new udta payload (re-walked for its text atoms), and the
 // enclosing atoms whose sizes grow.
 type udtaRegion struct {
 	regionStart, regionEnd int64
 	regionBytes            []byte
 	udtaPayload            []byte
-	udtaOff                int64
-	udtaHeaderLen          int64
 	ancestors              []atomRef
 	freeContent            int64
 	paddingClamped         bool
@@ -169,7 +167,7 @@ func buildUdtaRegion(d *doc, w udtaWrite, opts core.WriteOptions) (udtaRegion, e
 		}
 		payload = append(payload, w.appends...)
 		at := d.moov.end()
-		reg := udtaRegion{regionStart: at, regionEnd: at, udtaOff: at, udtaHeaderLen: 8, ancestors: []atomRef{*d.moov}}
+		reg := udtaRegion{regionStart: at, regionEnd: at, ancestors: []atomRef{*d.moov}}
 		if len(payload) == 0 {
 			return reg, nil // nothing to write (e.g. clearing QuickTime-only chapters)
 		}
@@ -234,13 +232,11 @@ func buildUdtaRegion(d *doc, w udtaWrite, opts core.WriteOptions) (udtaRegion, e
 
 	reg := udtaRegion{
 		regionStart: d.udta.offset, regionEnd: d.udta.end(),
-		udtaOff: d.udta.offset, udtaHeaderLen: 8,
 		ancestors: []atomRef{*d.moov}, freeContent: freeContent, paddingClamped: padClamped,
 	}
 	if len(payload) == 0 {
 		// The udta became empty (e.g. ClearChapters on a chpl-only udta): drop the whole
-		// atom, so the result's nil udta matches the bytes and a later edit does not create
-		// a second udta.
+		// atom.
 		return reg, nil
 	}
 	reg.regionBytes = renderAtom(atomName("udta"), payload)
@@ -296,9 +292,7 @@ func ilstRegionRel(d *doc, ups int64) (start, end int64) {
 }
 
 // metaSizeRep returns the replacement that rewrites the meta atom's size field
-// (32- or 64-bit) to newSize, relative to the udta payload start. The field's
-// location and width come from atomRef.sizeField, shared with the result-document
-// splice patch.
+// (32- or 64-bit) to newSize, relative to the udta payload start.
 func metaSizeRep(d *doc, ups, newSize int64) byteRep {
 	off, width := d.meta.sizeField()
 	b := make([]byte, width)
@@ -319,10 +313,10 @@ func fitIlst(newIlst []byte, oldRegionLen int64, pol core.PaddingPolicy) (region
 	case leftover == 0 && pol.Min <= 0:
 		return newIlst, 0, false
 	case leftover >= freeAtomHeaderLen && leftover-freeAtomHeaderLen >= pol.Min:
-		b, _, _, fc := appendFree(newIlst, leftover-freeAtomHeaderLen)
+		b, fc := appendFree(newIlst, leftover-freeAtomHeaderLen)
 		return b, fc, false
 	default:
-		b, _, _, fc := appendFree(newIlst, pad)
+		b, fc := appendFree(newIlst, pad)
 		return b, fc, clamped
 	}
 }
@@ -362,98 +356,39 @@ func chapterOps(d *doc, edited *core.Media, needIlst bool, delta int64) []string
 	return ops
 }
 
-// buildChapterResult constructs the post-write Media for a chapter rewrite.
-func buildChapterResult(edited *core.Media, base *doc, items []item, reg udtaRegion, delta, total int64) *core.Media {
-	// The result's chapter view must equal a fresh parse of the written bytes: the
-	// written chpl round-trips through its 100 ns / 255-byte encoding, and a preserved
-	// QuickTime track still wins the projection (shadowing the edit).
-	resultChapters, chplCount, conflict := chapterResultView(base, edited.Chapters)
-	nd := &doc{
-		size:            total,
-		cfg:             base.cfg,
-		track:           base.track,
-		majorBrand:      base.majorBrand,
-		items:           items,
-		chapters:        resultChapters,
-		chplVersion:     base.chplVersion,
-		chplCount:       chplCount,
-		hasQTChapters:   base.hasQTChapters,
-		chapterConflict: conflict,
-		udtaRaw:         reg.udtaPayload,
-	}
-	shiftStructure(nd, base, reg.regionStart, reg.regionEnd, delta)
-	carryChapterRefs(nd, base, reg.regionEnd, delta)
-
-	applyUdtaRefs(nd, reg)
-
-	tags, pics, families, numericGenre := project(nd)
+// buildChapterResult constructs the plan's result for a chpl-only chapter rewrite.
+func buildChapterResult(edited *core.Media, base *doc, items []item, reg udtaRegion, delta int64) *core.Media {
+	nd := &doc{items: items, udtaTexts: udtaTextsIn(reg)}
+	shiftEssence(nd, base, reg.regionStart, reg.regionEnd, delta)
+	tags, pics, _, _ := project(nd)
 	out := &core.Media{
 		Format:     core.FormatMP4,
 		Properties: edited.Properties.Clone(),
 		Tags:       tags,
 		Pictures:   pics,
-		Chapters:   nd.chapters,
-		Families:   families,
-		Warnings:   chapterWarnings(mediaWarnings(tags, numericGenre), conflict),
-		Native:     nd,
-		Identity:   core.Identity{Size: total},
+		// The written chpl round-trips through its 100 ns / 255-byte encoding, and a preserved
+		// QuickTime track still wins the projection (shadowing the edit).
+		Chapters: chapterResultView(base, edited.Chapters),
 	}
 	setEssence(nd, out)
 	return out
 }
 
-// applyUdtaRefs recovers the rewritten user-data state by re-walking the rendered udta
-// payload: the udta/meta/ilst/free/keys/chpl offsets, the meta handler and keys index,
-// and the decoded QuickTime text atoms.
-func applyUdtaRefs(nd *doc, reg udtaRegion) {
-	if len(reg.udtaPayload) == 0 {
-		return
-	}
-	nd.udta = &atomRef{name: atomName("udta"), offset: reg.udtaOff, headerLen: reg.udtaHeaderLen,
-		size: reg.udtaHeaderLen + int64(len(reg.udtaPayload))}
-	ups := reg.udtaOff + reg.udtaHeaderLen
-	payloadOf := func(n node) []byte {
-		lo, hi := n.offset+n.headerLen, n.offset+n.size
-		if lo < 0 || hi < lo || hi > int64(len(reg.udtaPayload)) {
-			return nil
-		}
-		return reg.udtaPayload[lo:hi]
-	}
-	nd.metaHandler = ""
-	nd.keyNames = nil
-	nd.udtaTexts = nil
+// udtaTextsIn decodes the QuickTime text atoms of a rewritten udta from its rendered payload,
+// as a fresh parse reads them. Their refs are payload-relative: project reads only each atom's
+// name and entries.
+func udtaTextsIn(reg udtaRegion) []udtaText {
+	var texts []udtaText
 	for _, k := range walkUdta(reg.udtaPayload) {
-		ref := atomRefAt(k, ups)
-		nd.udtaKids = append(nd.udtaKids, ref)
-		switch k.id() {
-		case "meta":
-			m := ref
-			nd.meta = &m
-			for _, mk := range k.children {
-				r := atomRefAt(mk, ups)
-				switch mk.id() {
-				case "ilst":
-					nd.ilst = &r
-				case "free":
-					nd.free = &r
-				case "keys":
-					nd.keys = &r
-					nd.keyNames = parseKeys(payloadOf(mk))
-				case "hdlr":
-					if b := payloadOf(mk); len(b) >= 12 {
-						nd.metaHandler = string(b[8:12])
-					}
-				}
-			}
-		case "chpl":
-			r := ref
-			nd.chpl = &r
-		default:
-			if u, ok := decodeUdtaText(ref, payloadOf(k)); ok {
-				nd.udtaTexts = append(nd.udtaTexts, u)
-			}
+		lo, hi := k.offset+k.headerLen, k.offset+k.size
+		if lo < 0 || hi < lo || hi > int64(len(reg.udtaPayload)) {
+			continue
+		}
+		if u, ok := decodeUdtaText(refOf(k), reg.udtaPayload[lo:hi]); ok {
+			texts = append(texts, u)
 		}
 	}
+	return texts
 }
 
 // chplRoundTrip simulates the chpl encode->decode round trip (a start rounded to the
@@ -474,31 +409,17 @@ func chplRoundTrip(chapters []core.Chapter) []core.Chapter {
 	return out
 }
 
-// chapterResultView returns the chapters and source-conflict a fresh parse of a
-// chapter-edited file would yield, plus the chpl-specific count.
-func chapterResultView(base *doc, written []core.Chapter) (chapters []core.Chapter, chplCount int, conflict bool) {
-	chpl := chplRoundTrip(written)
+// chapterResultView returns the chapters a fresh parse of a chpl-only chapter write yields.
+func chapterResultView(base *doc, written []core.Chapter) []core.Chapter {
 	if base.hasQTChapters {
-		qt := core.CloneChapters(base.chapters) // the preserved QuickTime track
-		return qt, len(chpl), len(chpl) > 0 && !chaptersAgree(chpl, qt)
+		return core.CloneChapters(base.chapters) // the preserved QuickTime track
 	}
-	return chpl, len(chpl), false
-}
-
-// chapterWarnings appends the parse-time chapter-source-conflict to a warning set
-// when the written file's chpl and preserved QuickTime track disagree, so the
-// result document's warnings match a fresh parse.
-func chapterWarnings(ws []core.Warning, conflict bool) []core.Warning {
-	if conflict {
-		ws = core.Warn(ws, core.WarnChapterSourceConflict,
-			"the Nero chpl list and the QuickTime chapter text track disagree")
-	}
-	return ws
+	return chplRoundTrip(written)
 }
 
 // walkUdta parses the rendered udta payload (a small in-memory buffer) into its
-// atom tree so the result builder can locate the new meta/ilst/chpl offsets the
-// same way a fresh parse would.
+// atom tree so the result builder can find its text atoms the same way a fresh
+// parse would.
 func walkUdta(payload []byte) []node {
 	nodes, err := walkAtoms(core.BytesSource(payload), 0, int64(len(payload)),
 		bits.NewDepth(bits.DefaultLimits.MaxDepth), maxMetaChunk, true)
@@ -506,12 +427,6 @@ func walkUdta(payload []byte) []node {
 		return nil
 	}
 	return nodes
-}
-
-// atomRefAt converts an in-payload node to an absolute atomRef given the payload
-// start offset.
-func atomRefAt(n node, base int64) atomRef {
-	return atomRef{name: n.name, offset: base + n.offset, headerLen: n.headerLen, size: n.size}
 }
 
 // udtaCleanLen returns the length of a udta payload up to the end of its last complete

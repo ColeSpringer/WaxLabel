@@ -7,6 +7,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -39,9 +40,9 @@ func prepareWith(t *testing.T, src []byte, edit func(*wl.Editor)) *wl.Plan {
 // it stays silent.
 func TestPictureWarningsScopedToAddedPictures(t *testing.T) {
 	t.Parallel()
-	frontA := tinyPNG()
-	frontB := append(slices.Clone(tinyPNG()), 0x01) // distinct bytes, still a valid PNG header
-	back := append(slices.Clone(tinyPNG()), 0x02)
+	frontA := testfile.PNG()
+	frontB := append(slices.Clone(testfile.PNG()), 0x01) // distinct bytes, still a valid PNG header
+	back := append(slices.Clone(testfile.PNG()), 0x02)
 
 	// Adding a second front cover (the set then holds two) warns.
 	oneFront := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
@@ -83,17 +84,10 @@ func TestPictureWarningsScopedToAddedPictures(t *testing.T) {
 	}
 }
 
-// truncatedSSND builds an SSND chunk that declares declaredBody bytes but supplies only
-// presentBody (< declaredBody) and no word-align pad: the on-disk shape of a cut-off AIFF.
-func truncatedSSND(declaredBody, presentBody int) []byte {
-	out := append([]byte("SSND"), aiffBE32(declaredBody)...)
-	return append(out, make([]byte, presentBody)...)
-}
-
-// truncatedSSNDOffset is truncatedSSND with a non-zero SSND `offset` field (the block-alignment
+// truncatedSSNDOffset is testfile.TruncatedSSND with a non-zero SSND `offset` field (the block-alignment
 // bytes that precede the first sample frame), written into the first 4 bytes of the body.
 func truncatedSSNDOffset(declaredBody int, offset uint32, presentBody int) []byte {
-	out := append([]byte("SSND"), aiffBE32(declaredBody)...)
+	out := append([]byte("SSND"), testfile.BE32(declaredBody)...)
 	body := make([]byte, presentBody)
 	binary.BigEndian.PutUint32(body[0:4], offset) // offset field; blockSize stays 0
 	return append(out, body...)
@@ -117,8 +111,8 @@ func TestAIFFTruncatedDurationRecomputed(t *testing.T) {
 	near := func(got, want time.Duration) bool { return withinDuration(got, want, 2*time.Millisecond) }
 
 	// Full reference: every declared frame is present, no truncation.
-	full := mustParseBytes(t, aiffFile("AIFF",
-		aiffCOMM(channels, declaredFrames, sampleSize, rate),
+	full := mustParseBytes(t, testfile.AIFF("AIFF",
+		testfile.COMM(channels, declaredFrames, sampleSize, rate),
 		aiffSSND(declaredFrames*frameSize)))
 	if hasWarning(full, wl.WarnTruncatedAudio) {
 		t.Error("a full AIFF should not flag truncated-audio")
@@ -128,9 +122,9 @@ func TestAIFFTruncatedDurationRecomputed(t *testing.T) {
 	}
 
 	// Truncated PCM: the duration follows the present bytes, not COMM's numFrames.
-	pcm := mustParseBytes(t, aiffFile("AIFF",
-		aiffCOMM(channels, declaredFrames, sampleSize, rate),
-		truncatedSSND(declaredBody, presentBody)))
+	pcm := mustParseBytes(t, testfile.AIFF("AIFF",
+		testfile.COMM(channels, declaredFrames, sampleSize, rate),
+		testfile.TruncatedSSND(declaredBody, presentBody)))
 	if !hasWarning(pcm, wl.WarnTruncatedAudio) {
 		t.Error("a truncated PCM AIFF should flag truncated-audio")
 	}
@@ -141,9 +135,9 @@ func TestAIFFTruncatedDurationRecomputed(t *testing.T) {
 	// Truncated ima4: COMM counts packets of 64 frames in 34 bytes per channel, so the
 	// surviving packets set the duration, exactly as the surviving PCM frames do.
 	const packetBytes = 34 * channels
-	aifc := mustParseBytes(t, aiffFile("AIFC",
-		aiffCOMMC(channels, declaredFrames, sampleSize, rate, "ima4"),
-		truncatedSSND(8+declaredFrames*packetBytes, 8+presentFrames*packetBytes)))
+	aifc := mustParseBytes(t, testfile.AIFF("AIFC",
+		testfile.COMMC(channels, declaredFrames, sampleSize, rate, "ima4"),
+		testfile.TruncatedSSND(8+declaredFrames*packetBytes, 8+presentFrames*packetBytes)))
 	if !hasWarning(aifc, wl.WarnTruncatedAudio) {
 		t.Error("a truncated AIFF-C should still flag truncated-audio")
 	}
@@ -156,9 +150,9 @@ func TestAIFFTruncatedDurationRecomputed(t *testing.T) {
 
 	// A type with no known packet layout keeps its declared count: its bytes cannot be
 	// mapped to frames.
-	unknown := mustParseBytes(t, aiffFile("AIFC",
-		aiffCOMMC(channels, declaredFrames, sampleSize, rate, "QDM2"),
-		truncatedSSND(declaredBody, presentBody)))
+	unknown := mustParseBytes(t, testfile.AIFF("AIFC",
+		testfile.COMMC(channels, declaredFrames, sampleSize, rate, "QDM2"),
+		testfile.TruncatedSSND(declaredBody, presentBody)))
 	if !hasWarning(unknown, wl.WarnTruncatedAudio) {
 		t.Error("a truncated AIFF-C of unknown layout should still flag truncated-audio: it is the only signal")
 	}
@@ -168,9 +162,9 @@ func TestAIFFTruncatedDurationRecomputed(t *testing.T) {
 
 	// SSND body truncated to fewer than the 8-byte sub-header: no sample bytes survive, so 0 frames,
 	// not a phantom frame from counting the partial sub-header as audio.
-	stub := mustParseBytes(t, aiffFile("AIFF",
-		aiffCOMM(channels, declaredFrames, sampleSize, rate),
-		truncatedSSND(declaredBody, 4))) // 4 bytes of body, below ssndHeaderLen (8)
+	stub := mustParseBytes(t, testfile.AIFF("AIFF",
+		testfile.COMM(channels, declaredFrames, sampleSize, rate),
+		testfile.TruncatedSSND(declaredBody, 4))) // 4 bytes of body, below ssndHeaderLen (8)
 	if got := stub.Properties().Duration(); got != 0 {
 		t.Errorf("sub-sub-header SSND duration = %v, want 0 (no decodable frames)", got)
 	}
@@ -180,8 +174,8 @@ func TestAIFFTruncatedDurationRecomputed(t *testing.T) {
 	// frames (40 bytes): the recompute must yield 10 frames, not (64-8)/4 = 14.
 	const align, presentSampleFrames = 16, 10
 	offBody := ssndHeaderLenBytes + align + presentSampleFrames*frameSize
-	withOffset := mustParseBytes(t, aiffFile("AIFF",
-		aiffCOMM(channels, declaredFrames, sampleSize, rate),
+	withOffset := mustParseBytes(t, testfile.AIFF("AIFF",
+		testfile.COMM(channels, declaredFrames, sampleSize, rate),
 		truncatedSSNDOffset(declaredBody, align, offBody)))
 	if got := withOffset.Properties().Duration(); !near(got, dur(presentSampleFrames)) {
 		t.Errorf("truncated PCM with SSND offset: duration = %v, want ~%v (offset bytes excluded)", got, dur(presentSampleFrames))

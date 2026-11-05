@@ -156,7 +156,7 @@ func (c *Cursor) Bytes(n int64) []byte {
 		return nil
 	}
 	buf := make([]byte, n)
-	if _, err := c.r.ReadAt(buf, c.pos); err != nil {
+	if err := ReadFullAt(c.r, buf, c.pos); err != nil {
 		c.fail(fmt.Errorf("%w: read at %d: %v", waxerr.ErrInvalidData, c.pos, err))
 		return nil
 	}
@@ -222,6 +222,20 @@ func (c *Cursor) U64BE() uint64 {
 	return v
 }
 
+// ReadFullAt fills p from r at off. A full read succeeds whatever error comes with it, since
+// io.ReaderAt may return io.EOF with the last bytes; a short read with no error is
+// io.ErrUnexpectedEOF.
+func ReadFullAt(r io.ReaderAt, p []byte, off int64) error {
+	n, err := r.ReadAt(p, off)
+	if n == len(p) {
+		return nil
+	}
+	if err == nil {
+		err = io.ErrUnexpectedEOF
+	}
+	return err
+}
+
 // ReadSlice reads n bytes at off. limit must be positive; caller supplies MaxAllocBytes.
 func ReadSlice(r io.ReaderAt, off, n, limit int64) ([]byte, error) {
 	if n < 0 {
@@ -237,7 +251,7 @@ func ReadSlice(r io.ReaderAt, off, n, limit int64) ([]byte, error) {
 	if n == 0 {
 		return buf, nil // zero-length read may still EOF at end
 	}
-	if _, err := r.ReadAt(buf, off); err != nil {
+	if err := ReadFullAt(r, buf, off); err != nil {
 		return nil, fmt.Errorf("%w: read %d at %d: %v", waxerr.ErrInvalidData, n, off, err)
 	}
 	return buf, nil

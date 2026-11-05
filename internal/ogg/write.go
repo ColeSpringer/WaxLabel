@@ -60,7 +60,7 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// Gain-only: rebuild page 0; copy everything after original page 0 (comment/audio
 	// byte-identical; no header re-pagination).
 	if gainChanged && !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !vendorChanged {
-		return gainOnlyPlan(edited, d, gain, report, d.writeAllocLimit(opts)), nil
+		return gainOnlyPlan(edited, d, gain, report), nil
 	}
 
 	// Rebuild comments: tags, owned chapters/synced lyrics, then picture comments.
@@ -100,21 +100,18 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 
 	// Refuse a comment packet a same-limit reader would reject. Check the whole packet
 	// (covers can jointly overflow). Floor at origCommentPacketLen so already-parsed data
-	// stays writable under a lower write limit. Gate on opts.Limits (--verify re-parse
-	// floors alloc at output size, so this belongs at write time).
+	// stays writable under a lower write limit. Gate on opts.Limits (a write's read-back
+	// floors alloc at the output size, so this belongs at write time).
 	limit := d.writeAllocLimit(opts)
 
 	// Build header-tail packets once so the size guard matches re-pagination output.
 	// Page 0 usually copied; FLAC rebuilds it when header-packet count changes.
-	newBlocks := d.flacBlocks
 	var flacDupContent []core.DuplicateContent
 	page0 := bits.Copy(0, d.page0Len)
 	page0Len := d.page0Len
-	idPacket := d.idPacket
 	var tailPackets [][]byte
 	if d.kind == kindFLAC {
-		var dupDropped bool
-		newBlocks, dupDropped = rebuildFLACBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged || vendorChanged, picturesChanged)
+		newBlocks, dupDropped := rebuildFLACBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged || vendorChanged, picturesChanged)
 		if dupDropped {
 			flacDupContent = d.dupContent
 		}
@@ -122,11 +119,10 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 			return nil, err
 		}
 		tailPackets = flacHeaderPackets(newBlocks)
-		// Rebuild page 0 when id packet bytes change (not just block count), so result
-		// matches a fresh parse even if the declared count was wrong/zero.
+		// Rebuild page 0 whenever the id packet bytes change, not just the block count, so a
+		// wrong or zero declared count is corrected too.
 		if p := flacIDWithCount(d.idPacket, len(newBlocks)); !bytes.Equal(p, d.idPacket) {
-			idPacket = p
-			p0, _ := paginateBOS(d.serial, idPacket)
+			p0, _ := paginateBOS(d.serial, p)
 			page0, page0Len = bits.Lit(p0), int64(len(p0))
 		}
 	} else {
@@ -136,8 +132,7 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 			tailPackets = append(tailPackets, d.setupPacket)
 		}
 		if gainChanged {
-			idPacket = opusHeadWithGain(d.idPacket, gain)
-			p0, _ := paginateBOS(d.serial, idPacket)
+			p0, _ := paginateBOS(d.serial, opusHeadWithGain(d.idPacket, gain))
 			page0, page0Len = bits.Lit(p0), int64(len(p0))
 			report.Operations = append(report.Operations, "OpusHead output gain rewrite")
 		}
@@ -160,15 +155,10 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 
 	segs := []bits.Segment{page0, bits.Lit(tailBytes)}
 
-	newAudioPages := make([]apage, len(d.audioPages))
 	if delta == 0 {
 		// Header page count unchanged: audio page sequence numbers are unaffected,
 		// so the whole audio region copies verbatim.
 		segs = append(segs, bits.Copy(d.audioStart, d.audioEnd-d.audioStart))
-		for i, ap := range d.audioPages {
-			ap.off += shift
-			newAudioPages[i] = ap
-		}
 	} else {
 		// Page count changed: rebase seq and patch CRC in place (bodies unchanged).
 		// One backing slice for all 8-byte patches.
@@ -184,10 +174,6 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 				bits.Lit(p8),                      // sequence number + CRC
 				bits.Copy(ap.off+26, ap.total-26), // segment table + body
 			)
-			ap.off += shift
-			ap.seq = newSeq
-			ap.crc = newCRC
-			newAudioPages[i] = ap
 		}
 		report.Operations = append(report.Operations, fmt.Sprintf("renumbered %d audio pages", len(d.audioPages)))
 	}
@@ -203,7 +189,7 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// Clamp warnings before DowngradeNoOp; clamp keeps result != base.
 	report.Warnings = vorbis.RebuildWarnings(report.Warnings, rebuildInfo)
 
-	result := buildResult(edited, d, newVendor, newComments, newBlocks, newAudioPages, newHeaderPages, idPacket, page0Len, newAudioStart, shift, newSize, limit)
+	result := buildResult(edited, d, newComments, shift)
 	// Only the first Vorbis comment block survives; warn when an extra held content the
 	// written set does not, matching native FLAC.
 	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "Vorbis comment block", result.Tags, flacDupContent)
@@ -231,27 +217,18 @@ func (d *doc) writeAllocLimit(opts core.WriteOptions) int64 {
 }
 
 // gainOnlyPlan: rebuild page 0 for OpusHead gain; copy the rest verbatim.
-func gainOnlyPlan(edited *core.Media, d *doc, gain int, report core.WriteReport, limit int64) *core.WritePlan {
-	idPacket := opusHeadWithGain(d.idPacket, gain)
-	p0, _ := paginateBOS(d.serial, idPacket)
+func gainOnlyPlan(edited *core.Media, d *doc, gain int, report core.WriteReport) *core.WritePlan {
+	p0, _ := paginateBOS(d.serial, opusHeadWithGain(d.idPacket, gain))
 	segs := []bits.Segment{bits.Lit(p0), bits.Copy(d.page0Len, d.audioEnd-d.page0Len)}
 	if d.trailingLen > 0 {
 		segs = append(segs, bits.Copy(d.audioEnd, d.trailingLen))
 	}
 
-	shift := int64(len(p0)) - d.page0Len
-	newAudioPages := make([]apage, len(d.audioPages))
-	for i, ap := range d.audioPages {
-		ap.off += shift
-		newAudioPages[i] = ap
-	}
-	newSize := bits.OutputLen(segs)
 	report.Operations = append(report.Operations, "OpusHead output gain rewrite")
-	report.BytesAfter = newSize
+	report.BytesAfter = bits.OutputLen(segs)
 	report.PaddingAfter = int64(len(d.commentPad))
 
-	result := buildResult(edited, d, d.vendor, d.comments, d.flacBlocks, newAudioPages, d.headerPages,
-		idPacket, int64(len(p0)), d.audioStart+shift, shift, newSize, limit)
+	result := buildResult(edited, d, d.comments, int64(len(p0))-d.page0Len)
 	return &core.WritePlan{Segments: segs, Report: report, Result: result}
 }
 
@@ -270,52 +247,23 @@ func (d *doc) buildCommentPacket(vendor string, comments []vorbis.Comment) []byt
 	return append(pkt, d.commentPad...)
 }
 
-// buildResult builds post-write Media without re-parsing (audio bodies unchanged).
-func buildResult(edited *core.Media, base *doc, newVendor string, newComments []vorbis.Comment, newBlocks []fblock,
-	newAudioPages []apage, newHeaderPages int, idPacket []byte, newPage0Len, newAudioStart, shift, newSize, limit int64) *core.Media {
-
-	nd := &doc{
-		format:      base.format,
-		kind:        base.kind,
-		serial:      base.serial,
-		vendor:      newVendor,
-		comments:    newComments,
-		pictures:    core.ClonePictures(edited.Pictures),
-		flacBlocks:  newBlocks,
-		idPacket:    idPacket,
-		setupPacket: base.setupPacket,
-		commentPad:  base.commentPad,
-		page0Len:    newPage0Len,
-		headerPages: newHeaderPages,
-		audioStart:  newAudioStart,
-		audioPages:  newAudioPages,
-		audioEnd:    base.audioEnd + shift,
-		trailingLen: base.trailingLen,
-		clean:       true,
-	}
-	if base.kind == kindFLAC {
-		// Picture state from written blocks (not source fields) so chained edits match re-parse.
-		_, nd.malformedPictureBlocks, _ = decodeFLACBlockPictures(newBlocks, limit)
-		nd.commentPictures = commentSourcedPictures(newComments, limit)
-	}
-	tags, families := vorbis.Project(newComments)
+// buildResult builds the plan's result: the canonical view a fresh parse of the output reads, and
+// the audio page bodies, which the rewrite moves by shift without changing them.
+func buildResult(edited *core.Media, base *doc, newComments []vorbis.Comment, shift int64) *core.Media {
+	tags, _ := vorbis.Project(newComments)
 	media := &core.Media{
 		Format:       base.format,
 		Properties:   edited.Properties.Clone(),
 		Tags:         tags,
-		Families:     families,
 		Pictures:     core.ClonePictures(edited.Pictures),
 		Chapters:     vorbis.ProjectChapters(newComments),
 		SyncedLyrics: vorbis.ProjectSyncedLyrics(newComments),
-		// Encoder warnings from written vendor/comments; other warnings carry for now.
-		Warnings:   vorbis.CarryEncoderWarnings(edited.Warnings, newVendor, newComments),
-		Native:     nd,
-		Identity:   core.Identity{Size: newSize},
-		AudioStart: newAudioStart,
-		AudioEnd:   nd.audioEnd,
+		AudioStart:   base.audioStart + shift,
+		AudioEnd:     base.audioEnd + shift,
 	}
-	for _, ap := range newAudioPages {
-		media.AudioRanges = append(media.AudioRanges, [2]int64{ap.bodyOff(), ap.bodyOff() + ap.bodyLen})
+	for _, ap := range base.audioPages {
+		start := ap.bodyOff() + shift
+		media.AudioRanges = append(media.AudioRanges, [2]int64{start, start + ap.bodyLen})
 	}
 	return media
 }

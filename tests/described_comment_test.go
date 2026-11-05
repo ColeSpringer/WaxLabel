@@ -6,13 +6,14 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
 // commFrame builds a COMM frame: encoding byte, 3-byte language, NUL-terminated description, then
 // the text. The encoding is UTF-8, which the reader accepts on any version.
 func commFrame(version byte, lang, desc, text string) []byte {
-	return id3Frame(version, "COMM", slices.Concat([]byte{3}, commFields(lang, desc, text)))
+	return testfile.ID3Frame(version, "COMM", slices.Concat([]byte{3}, commFields(lang, desc, text)))
 }
 
 // commFields is a COMM body without its leading encoding byte, for asserting on a frame the
@@ -25,7 +26,7 @@ func commFields(lang, desc, text string) []byte {
 // mp3WithFrames wraps frames in an ID3v2.4 tag on top of the tagless audio fixture.
 func mp3WithFrames(t *testing.T, frames ...[]byte) []byte {
 	t.Helper()
-	return append(id3v2(4, frames...), mp3Audio(t)...)
+	return append(testfile.ID3v2(4, frames...), mp3Audio(t)...)
 }
 
 // A described COMM reads as COMMENT, as ffprobe shows it. Only a machine description stays out.
@@ -139,7 +140,7 @@ func TestAmbiguousCommentMergeWarns(t *testing.T) {
 // source's text.
 func TestCarriedCommentDropsTheDestinationDescription(t *testing.T) {
 	dst := mustParseBytes(t, mp3WithFrames(t, commFrame(4, "eng", "Ripped by EAC", "old comment")))
-	src := mustParseBytes(t, flacWithVendor("ref", "COMMENT=From the source"))
+	src := mustParseBytes(t, testfile.TaggedFLAC("ref", "COMMENT=From the source"))
 
 	plan, report, err := src.PrepareTransfer(dst)
 	if err != nil {

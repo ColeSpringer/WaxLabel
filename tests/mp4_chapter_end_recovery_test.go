@@ -9,19 +9,15 @@ import (
 )
 
 // The QuickTime reader recovers the last chapter's end from the stts running total. An explicit
-// end below the movie duration must survive the round trip, and the in-memory result must equal
-// a fresh reparse.
+// end below the movie duration must survive the round trip.
 func TestMP4ChapterLastEndRecoveredBelowMovieDuration(t *testing.T) {
 	src := readFixture(t, sampleM4B) // movie duration 9 s
-	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
+	re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
 			wl.Chapter{Start: 0, Title: "A"},
 			wl.Chapter{Start: 4 * time.Second, End: 6 * time.Second, Title: "B"},
 		)
 	})
-	if !equalChapterLists(res.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v", res.Chapters(), re.Chapters())
-	}
 	chs := re.Chapters()
 	if len(chs) != 2 {
 		t.Fatalf("got %d chapters, want 2", len(chs))
@@ -38,15 +34,12 @@ func TestMP4ChapterLastEndRecoveredBelowMovieDuration(t *testing.T) {
 // not canonicalized to 0.
 func TestMP4ChapterOpenLastMaterializesMovieDuration(t *testing.T) {
 	src := readFixture(t, sampleM4B) // movie duration 9 s
-	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
+	re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
 			wl.Chapter{Start: 0, Title: "A"},
 			wl.Chapter{Start: 4 * time.Second, Title: "B"}, // open: spans to the 9 s movie end
 		)
 	})
-	if !equalChapterLists(res.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v", res.Chapters(), re.Chapters())
-	}
 	chs := re.Chapters()
 	if len(chs) != 2 {
 		t.Fatalf("got %d chapters, want 2", len(chs))
@@ -60,15 +53,12 @@ func TestMP4ChapterOpenLastMaterializesMovieDuration(t *testing.T) {
 // value, not as null.
 func TestMP4ChapterConcreteEndAtMovieDurationRoundTrips(t *testing.T) {
 	src := readFixture(t, sampleMP4) // movie duration 1000 ms
-	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
+	re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
 			wl.Chapter{Start: 0, End: 500 * time.Millisecond, Title: "A"},
 			wl.Chapter{Start: 500 * time.Millisecond, End: 1000 * time.Millisecond, Title: "B"},
 		)
 	})
-	if !equalChapterLists(res.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v", res.Chapters(), re.Chapters())
-	}
 	chs := re.Chapters()
 	if len(chs) != 2 {
 		t.Fatalf("got %d chapters, want 2", len(chs))
@@ -82,15 +72,12 @@ func TestMP4ChapterConcreteEndAtMovieDurationRoundTrips(t *testing.T) {
 // that isPlaceholderTail recognizes, so it reads back open rather than as a writer-invented end.
 func TestMP4ChapterOpenLastPastMovieDurationReadsOpen(t *testing.T) {
 	src := readFixture(t, sampleM4B) // movie duration 9 s
-	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
+	re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
 			wl.Chapter{Start: 0, Title: "A"},
 			wl.Chapter{Start: 9500 * time.Millisecond, Title: "Epilogue"}, // past the 9 s movie end
 		)
 	})
-	if !equalChapterLists(res.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v (read and write predictor must agree)", res.Chapters(), re.Chapters())
-	}
 	chs := re.Chapters()
 	if len(chs) != 2 {
 		t.Fatalf("got %d chapters, want 2", len(chs))
@@ -109,15 +96,12 @@ func TestMP4ChapterOpenLastPastMovieDurationReadsOpen(t *testing.T) {
 func TestMP4ChapterPlaceholderTailOnUnitGrid(t *testing.T) {
 	src := readFixture(t, sampleM4B) // movie duration 9 s, chapter media timescale 90000
 	const pastDuration = 9000044444 * time.Nanosecond
-	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
+	re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
 			wl.Chapter{Start: 0, Title: "A"},
 			wl.Chapter{Start: pastDuration, Title: "Epilogue"},
 		)
 	})
-	if !equalChapterLists(res.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v (read and write predictor must agree on the unit grid)", res.Chapters(), re.Chapters())
-	}
 	chs := re.Chapters()
 	if len(chs) != 2 {
 		t.Fatalf("got %d chapters, want 2", len(chs))
@@ -133,7 +117,7 @@ func TestMP4ChapterPlaceholderTailOnUnitGrid(t *testing.T) {
 func TestMP4ChapterExactChplStartsOverDriftedQT(t *testing.T) {
 	src := readFixture(t, sampleM4B)
 	// Three coincident starts at 3 s, then two 1 ms apart, kept inside the fixture's 9 s duration.
-	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
+	re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
 			wl.Chapter{Start: 3 * time.Second, Title: "A"},
 			wl.Chapter{Start: 3 * time.Second, Title: "B"},
@@ -142,9 +126,6 @@ func TestMP4ChapterExactChplStartsOverDriftedQT(t *testing.T) {
 			wl.Chapter{Start: 3*time.Second + 2*time.Millisecond, Title: "E"},
 		)
 	})
-	if !equalChapterLists(res.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v", res.Chapters(), re.Chapters())
-	}
 	chs := re.Chapters()
 	if len(chs) != 5 {
 		t.Fatalf("got %d chapters, want 5", len(chs))
@@ -202,15 +183,12 @@ func TestMP4ChapterCopyWithEndConverges(t *testing.T) {
 // corrupting the QuickTime starts, but the exact uint64 Nero chpl survives.
 func TestMP4ChapterGapPastClampPrefersChpl(t *testing.T) {
 	src := readFixture(t, sampleM4B)
-	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
+	re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
 			wl.Chapter{Start: 0, Title: "A"},
 			wl.Chapter{Start: 14 * time.Hour, Title: "B"}, // 14 h > 13.25 h clamps the QuickTime delta
 		)
 	})
-	if !equalChapterLists(res.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v (twins must stay in lockstep)", res.Chapters(), re.Chapters())
-	}
 	chs := re.Chapters()
 	if got := chs[1].Start; got != 14*time.Hour {
 		t.Errorf("second chapter start = %v, want 14h (exact chpl preferred over the clamped QuickTime start)", got)
@@ -231,12 +209,9 @@ func TestMP4ChapterGapPastClampPrefersChpl(t *testing.T) {
 func TestMP4ChapterOversizedStartPrefersChpl(t *testing.T) {
 	src := readFixture(t, sampleM4B) // movie timescale 1000 (1 ms)
 	const farStart = 5_000_000 * time.Second
-	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
+	re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(wl.Chapter{Start: farStart, Title: "Far"})
 	})
-	if !equalChapterLists(res.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v (read and write predictor must agree)", res.Chapters(), re.Chapters())
-	}
 	chs := re.Chapters()
 	if len(chs) != 1 {
 		t.Fatalf("got %d chapters, want 1", len(chs))
@@ -244,9 +219,8 @@ func TestMP4ChapterOversizedStartPrefersChpl(t *testing.T) {
 	if chs[0].Start != farStart {
 		t.Errorf("oversized start = %v, want %v (exact chpl, not the clamped QuickTime edit)", chs[0].Start, farStart)
 	}
-	if chapterWarn(re, wl.WarnChapterSourceConflict) || chapterWarn(res, wl.WarnChapterSourceConflict) {
-		t.Errorf("a clamped-edit saturation is a lossy-representation artifact, not a source conflict; res=%v re=%v",
-			res.Warnings(), re.Warnings())
+	if chapterWarn(re, wl.WarnChapterSourceConflict) {
+		t.Errorf("a clamped-edit saturation is a lossy-representation artifact, not a source conflict; warnings=%v", re.Warnings())
 	}
 }
 
@@ -254,54 +228,13 @@ func TestMP4ChapterOversizedStartPrefersChpl(t *testing.T) {
 // recovered end is a few units short of the movie duration.
 func TestMP4ChapterCoincidentOpenLastMirrors(t *testing.T) {
 	src := readFixture(t, sampleM4B)
-	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
+	re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
 			wl.Chapter{Start: 2 * time.Second, Title: "A"},
 			wl.Chapter{Start: 2 * time.Second, Title: "B"}, // coincident, and the open last chapter
 		)
 	})
-	if !equalChapterLists(res.Chapters(), re.Chapters()) {
-		t.Errorf("result %+v != reparse %+v (mirror must hold even in the coincident-open corner)", res.Chapters(), re.Chapters())
-	}
 	if chs := re.Chapters(); len(chs) != 2 || chs[0].Start != 2*time.Second || chs[1].Start != 2*time.Second {
 		t.Errorf("coincident starts not read exact from the chpl: %+v", re.Chapters())
-	}
-}
-
-// The mirror invariant: for each chapter edit, the in-memory Result.Chapters and the
-// chapter-source-conflict flag must equal a fresh parse of the written bytes.
-func TestMP4ChapterWriteReparseInvariant(t *testing.T) {
-	src := readFixture(t, sampleM4B)
-	sec := func(s int) time.Duration { return time.Duration(s) * time.Second }
-	cases := []struct {
-		name string
-		chs  []wl.Chapter
-	}{
-		{"plain", []wl.Chapter{{Start: 0, Title: "A"}, {Start: sec(3), Title: "B"}}},
-		{"last-end-below-duration", []wl.Chapter{{Start: 0, Title: "A"}, {Start: sec(4), End: sec(6), Title: "B"}}},
-		{"open-last-within-duration", []wl.Chapter{{Start: 0, Title: "A"}, {Start: sec(4), Title: "B"}}},
-		{"open-last-past-duration", []wl.Chapter{{Start: 0, Title: "A"}, {Start: 9500 * time.Millisecond, Title: "Epilogue"}}},
-		// The last start lands on a media unit whose Duration rounds up (4 mod 9 at mts 90000),
-		// where a Duration-grid placeholder test and the unit-grid one disagree.
-		{"open-last-past-duration-unit-grid", []wl.Chapter{{Start: 0, Title: "A"}, {Start: 9000044444 * time.Nanosecond, Title: "Epilogue"}}},
-		{"coincident-open-last", []wl.Chapter{{Start: sec(2), Title: "A"}, {Start: sec(2), Title: "B"}}},
-		{"gap-past-stts-clamp", []wl.Chapter{{Start: 0, Title: "A"}, {Start: 14 * time.Hour, Title: "B"}}}, // stts saturation
-		{"oversized-start", []wl.Chapter{{Start: 5_000_000 * time.Second, Title: "Far"}}},                  // edit-list saturation
-		{"oversized-start-with-open-last", []wl.Chapter{{Start: 5_000_000 * time.Second, Title: "Far"}, {Start: 5_000_001 * time.Second, Title: "Farther"}}},
-		// firstStart lands exactly on the u32 movie-timescale ceiling (4294967295 ms at the 1 ms
-		// movie timescale): the edit's segment_duration stores MaxUint32 without clamping, so the
-		// read and write-predictor saturated flags must agree at that exact boundary (predictor >=).
-		{"firststart-exactly-maxuint32", []wl.Chapter{{Start: 4_294_967_295 * time.Millisecond, Title: "Edge"}}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor { return e.SetChapters(c.chs...) })
-			if !equalChapterLists(res.Chapters(), re.Chapters()) {
-				t.Errorf("Result.Chapters %+v != reparse %+v (read/predictor drift)", res.Chapters(), re.Chapters())
-			}
-			if got, want := chapterWarn(res, wl.WarnChapterSourceConflict), chapterWarn(re, wl.WarnChapterSourceConflict); got != want {
-				t.Errorf("conflict-flag mismatch: result=%v reparse=%v", got, want)
-			}
-		})
 	}
 }

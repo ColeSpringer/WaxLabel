@@ -10,8 +10,7 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// headerWindow bounds the single leading read before the tail peel (padded
-// descriptor plus header).
+// headerWindow bounds the leading read; a header declared past it is read on its own.
 const headerWindow = 4096
 
 // parse reads geometry from the header, tags from APEv2, and legacy ID3v1 into
@@ -28,14 +27,19 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if err != nil {
 		return nil, fmt.Errorf("%w: Monkey's Audio file shorter than its header", waxerr.ErrInvalidData)
 	}
-	h, err := parseHeader(head)
+	// Checked first, so a file refused here costs no read of its tags.
+	version, err := parseVersion(head)
+	if err != nil {
+		return nil, err
+	}
+	// The tags are peeled above the layout's documented header length, and a declared header must
+	// end before them: a rewrite replaces the tags, which would otherwise change the header.
+	trailer, warnings := ape.PeelTrailer(src, size, documentedHeaderLen(version), limit, opts.Limits.MaxElements)
+	h, err := readHeader(src, head, version, trailer.Start, size, limit)
 	if err != nil {
 		return nil, err
 	}
 	d.header = h
-
-	// Floor: a trailing tag must start after the header region (audio description).
-	trailer, warnings := ape.PeelTrailer(src, size, h.headerLen, limit, opts.Limits.MaxElements)
 	d.trailer = trailer
 
 	media := &core.Media{

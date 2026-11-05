@@ -12,6 +12,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -153,7 +154,7 @@ func TestNoFilesNoteSuppressedUnderJSON(t *testing.T) {
 // WAV/AIFF gate container ops on change, like MP3/AAC; tag-only edit emits no spurious ops.
 func TestWAVAIFFStructuralOpsGatedOnChange(t *testing.T) {
 	t.Parallel()
-	cover := writeTempImage(t, "cover.png", minimalPNG())
+	cover := writeTempImage(t, "cover.png", testfile.PNG())
 	for _, tc := range []struct{ name, fixture string }{
 		{"wav", "../../testdata/notags.wav"},
 		{"aiff", "../../testdata/notags.aiff"},
@@ -186,7 +187,7 @@ func TestWAVAIFFStructuralOpsGatedOnChange(t *testing.T) {
 // MP3 picture clear: no "pictures: 0" op (matches chapters/synced-lyrics/WAV/AIFF gate).
 func TestMP3PictureClearOmitsZeroCountOp(t *testing.T) {
 	t.Parallel()
-	cover := writeTempImage(t, "cover.png", minimalPNG())
+	cover := writeTempImage(t, "cover.png", testfile.PNG())
 	f := copyFixture(t, "../../testdata/notags.mp3")
 	// TITLE keeps frame rewrite path, isolating picture-line behavior.
 	if _, errb, code := runCLI(t, "set", f, "--set", "TITLE=Keep", "--add-cover", cover); code != 0 {

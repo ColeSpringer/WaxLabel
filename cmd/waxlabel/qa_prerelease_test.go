@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // TestStrictTrailingEmptyValueDropped: trailing empty in ID3 multi-value warns/fails --strict;
@@ -124,7 +126,7 @@ func TestRemovePictureRoleMiss(t *testing.T) {
 	}
 
 	// Matching role removes cleanly under --strict.
-	png := writeTempImage(t, "back.png", minimalPNG())
+	png := writeTempImage(t, "back.png", testfile.PNG())
 	withPic := filepath.Join(t.TempDir(), "withpic.flac")
 	if _, errb, code := runCLI(t, "set", copyFixture(t, notagsFLAC), "--add-picture", "back-cover="+png, "-o", withPic); code != 0 {
 		t.Fatalf("add-picture exit = %d\n%s", code, errb)
@@ -141,7 +143,7 @@ func TestRemovePictureRoleMiss(t *testing.T) {
 // TestRemovePictureRoleMissPerFile: role-miss attributed to file lacking the role, not bulk bleed.
 func TestRemovePictureRoleMissPerFile(t *testing.T) {
 	t.Parallel()
-	png := writeTempImage(t, "artist.png", minimalPNG())
+	png := writeTempImage(t, "artist.png", testfile.PNG())
 
 	withPic := filepath.Join(t.TempDir(), "a.flac")
 	if _, errb, code := runCLI(t, "set", copyFixture(t, notagsFLAC), "--add-picture", "artist="+png, "-o", withPic); code != 0 {

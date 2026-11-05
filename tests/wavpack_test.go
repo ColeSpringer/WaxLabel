@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -135,7 +136,7 @@ func TestWavPackCoverRoundTrip(t *testing.T) {
 	before := essenceOf(t, src)
 
 	plan, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +145,7 @@ func TestWavPackCoverRoundTrip(t *testing.T) {
 		t.Error("essence changed adding a cover")
 	}
 	got := mustParseBytes(t, out)
-	if pics := got.Pictures(); len(pics) != 1 || pics[0].Type != wl.PicFrontCover || !bytes.Equal(pics[0].Data, tinyPNG()) {
+	if pics := got.Pictures(); len(pics) != 1 || pics[0].Type != wl.PicFrontCover || !bytes.Equal(pics[0].Data, testfile.PNG()) {
 		t.Fatalf("pictures = %+v, want one front cover with the original bytes", got.Pictures())
 	}
 
@@ -161,9 +162,7 @@ func TestWavPackCoverRoundTrip(t *testing.T) {
 // WavPack file can carry a legacy ID3v1 after its APEv2 tag. It stays legacy; surfaced, preserved,
 // never authoritative, and a strip removes it.
 func TestWavPackTrailingID3v1Preserved(t *testing.T) {
-	v1 := make([]byte, 128)
-	copy(v1[0:3], "TAG")
-	copy(v1[3:33], "Legacy Only Title")
+	v1 := testfile.ID3v1("Legacy Only Title", "", "", "", "", 0)
 	src := append(slices.Clone(readFixture(t, sampleWV)), v1...)
 
 	doc := mustParseBytes(t, src)

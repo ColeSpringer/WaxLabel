@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 )
@@ -12,9 +13,9 @@ import (
 // rebuildFLACBlocks drops a PADDING block on every rewrite (Ogg re-paginates the header region),
 // so reporting it as padding would promise slack that no write uses and the next edit deletes.
 func TestOggFLACPaddingBlockNotReported(t *testing.T) {
-	padding := append([]byte{1}, make([]byte, 4096)...)
-	comment := append([]byte{4}, vorbis.RenderCommentList("test", []vorbis.Comment{{Name: "TITLE", Value: "T"}})...)
-	doc := mustParseBytes(t, synthOggFLAC(padding, comment))
+	padding := testfile.FLACBlock(1, make([]byte, 4096))
+	comment := testfile.FLACBlock(4, vorbis.RenderCommentList("test", []vorbis.Comment{{Name: "TITLE", Value: "T"}}))
+	doc := mustParseBytes(t, testfile.OggFLAC(padding, comment))
 
 	found := false
 	for _, e := range doc.Native().Describe() {
@@ -45,7 +46,7 @@ func mp4LargesizeFree(payload int) []byte {
 // its payload; reporting the payload would make Padding() jump by 8 across an in-place save-back.
 func TestMP4PaddingHonorsTheWriterHeaderWidth(t *testing.T) {
 	const payload = 64
-	data := mp4Assemble(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "Original Title")), mp4LargesizeFree(payload))
+	data := testfile.MP4Assemble(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "Original Title")), mp4LargesizeFree(payload))
 	doc := mustParseBytes(t, data)
 	if got, want := doc.Padding(), int64(payload+8); got != want {
 		t.Fatalf("Padding() = %d, want %d (the 16-byte header collapses to 8 on rewrite)", got, want)
@@ -68,7 +69,7 @@ func TestMP4PaddingHonorsTheWriterHeaderWidth(t *testing.T) {
 // chapters-only edit does not rewrite the ilst region, so the file's free atom survives verbatim.
 // Reporting no padding would tell the user a region vanished that the write does not touch.
 func TestMP4ChaptersOnlyEditReportsSurvivingPadding(t *testing.T) {
-	data := mp4Assemble(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T")), mp4Atom("free", make([]byte, 512)))
+	data := testfile.MP4Assemble(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T")), testfile.MP4Atom("free", make([]byte, 512)))
 	doc := mustParseBytes(t, data)
 	if doc.Padding() == 0 {
 		t.Fatal("setup: the fixture should carry a free atom")

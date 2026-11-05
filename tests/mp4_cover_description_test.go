@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // MP4's covr atom stores image bytes only, so adding a front cover that carries a description
@@ -11,7 +12,7 @@ import (
 func TestMP4DescribedCoverWarnsOnWrite(t *testing.T) {
 	base := readFixture(t, "../testdata/notags.m4a")
 	plan, err := mustParseBytes(t, base).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG(), Description: "liner notes"}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG(), Description: "liner notes"}).
 		Prepare()
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
@@ -28,7 +29,7 @@ func TestMP4DescribedCoverWarnsOnWrite(t *testing.T) {
 // Copying a described cover from another file onto an MP4.
 func TestMP4DescribedCoverWarnsOnTransfer(t *testing.T) {
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
-		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG(), Description: "liner notes"})
+		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG(), Description: "liner notes"})
 	})
 	src := mustParseBytes(t, srcBytes)
 	dstBytes := readFixture(t, "../testdata/notags.m4a")

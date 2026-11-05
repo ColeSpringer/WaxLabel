@@ -127,7 +127,10 @@ type SaveResult struct {
 	Doc       *Document
 }
 
-// Execute runs the plan against [SaveBack], [SaveAsFile], or [WriteTo].
+// Execute runs the plan against [SaveBack], [SaveAsFile], or [WriteTo]. The returned Document is a
+// parse of the written bytes: output that would not read back as the same format with audio is
+// refused with [waxerr.ErrInvalidData] (a failed read with its own cause) before it is committed or
+// streamed.
 //
 // Failed write: err != nil AND Committed false.
 //   - err nil, Committed true: bytes written.
@@ -167,14 +170,13 @@ func (p *Plan) resultMedia() *core.Media {
 	return p.doc.media
 }
 
-// resultDocument builds the post-write Document from the codec result. id and info describe
-// the written file; info is nil when there is none (WriteTo).
-func (p *Plan) resultDocument(path string, id core.Identity, info os.FileInfo) *Document {
-	media := p.resultMedia().Clone()
-	media.Identity = id
-	doc := &Document{media: media, path: path, limits: p.doc.limits}
+// resultDocument finishes the Document read back from the written bytes, which keeps the limits it
+// was read under. id and info describe the written file; info is nil when there is none (WriteTo).
+func resultDocument(written *Document, path string, id core.Identity, info os.FileInfo) *Document {
+	written.path = path
+	written.media.Identity = id
 	if info != nil {
-		doc.modTime, doc.hasModTime = info.ModTime(), true
+		written.modTime, written.hasModTime = info.ModTime(), true
 	}
-	return doc
+	return written
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -27,7 +28,7 @@ func mp4Chpl(version byte, starts []time.Duration, titles []string) []byte {
 		body = append(body, byte(len(title)))
 		body = append(body, title...)
 	}
-	return mp4Atom("chpl", body)
+	return testfile.MP4Atom("chpl", body)
 }
 
 func TestMP4ChplReadVersions(t *testing.T) {
@@ -35,7 +36,7 @@ func TestMP4ChplReadVersions(t *testing.T) {
 	titles := []string{"Opening", "Middle", "Finale"}
 	for _, version := range []byte{0, 1} {
 		chpl := mp4Chpl(version, starts, titles)
-		data := mp4AssembleUdta(mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T"))), chpl)
+		data := testfile.MP4AssembleUdta(testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T"))), chpl)
 		doc := mustParseBytes(t, data)
 		chs := doc.Chapters()
 		if len(chs) != 3 {
@@ -62,7 +63,7 @@ func TestMP4ChplReadVersions(t *testing.T) {
 func TestMP4ChapterWriteCreatesChpl(t *testing.T) {
 	// A tagged file with no chpl: writing chapters appends a chpl, shifts the mdat,
 	// and reads back with the same starts/titles.
-	data := mp4Tagged(mp4Text("\xa9nam", "Audiobook"))
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "Audiobook"))
 	doc := mustParseBytes(t, data)
 	if len(doc.Chapters()) != 0 {
 		t.Fatalf("expected no chapters, got %d", len(doc.Chapters()))
@@ -98,7 +99,7 @@ func TestMP4ChapterWriteCreatesChpl(t *testing.T) {
 func TestMP4ChapterEditExistingChpl(t *testing.T) {
 	// A file that already has a chpl: editing the chapters replaces it.
 	chpl := mp4Chpl(1, []time.Duration{0, 60 * time.Second}, []string{"Old A", "Old B"})
-	data := mp4AssembleUdta(mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T"))), chpl)
+	data := testfile.MP4AssembleUdta(testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T"))), chpl)
 	doc := mustParseBytes(t, data)
 	if len(doc.Chapters()) != 2 {
 		t.Fatalf("setup: got %d chapters, want 2", len(doc.Chapters()))
@@ -127,7 +128,7 @@ func TestMP4ChapterEditExistingChpl(t *testing.T) {
 
 func TestMP4ChapterClearRemovesChpl(t *testing.T) {
 	chpl := mp4Chpl(1, []time.Duration{0}, []string{"Solo"})
-	data := mp4AssembleUdta(mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T"))), chpl)
+	data := testfile.MP4AssembleUdta(testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T"))), chpl)
 	plan, err := mustParseBytes(t, data).Edit().ClearChapters().Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +146,7 @@ func TestMP4ChapterTagAndChapterTogether(t *testing.T) {
 	// Editing tags and chapters in one pass: both land, offsets stay valid, and the
 	// audio payload survives verbatim.
 	chpl := mp4Chpl(1, []time.Duration{0}, []string{"First"})
-	data := mp4AssembleUdta(mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "Old"))), chpl)
+	data := testfile.MP4AssembleUdta(testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "Old"))), chpl)
 	plan, err := mustParseBytes(t, data).Edit().
 		Set(tag.Title, "A Much Longer Title Forcing The Region To Grow").
 		SetChapters(wl.Chapter{Start: 0, Title: "First"}, wl.Chapter{Start: 5 * time.Second, Title: "Second"}).
@@ -173,9 +174,9 @@ func TestMP4ChapterTagAndChapterTogether(t *testing.T) {
 func TestMP4ChapterPreservesUnknownUdtaSibling(t *testing.T) {
 	// An unknown udta sibling (here a cprt copyright atom) must survive a chapter rewrite
 	// byte-for-byte; the udta is spliced, not rebuilt from a fixed shape.
-	cprt := mp4Atom("cprt", append([]byte{0, 0, 0, 0}, []byte("PRESERVE-THIS-NOTICE")...))
+	cprt := testfile.MP4Atom("cprt", append([]byte{0, 0, 0, 0}, []byte("PRESERVE-THIS-NOTICE")...))
 	chpl := mp4Chpl(1, []time.Duration{0}, []string{"One"})
-	data := mp4AssembleUdta(mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T"))), cprt, chpl)
+	data := testfile.MP4AssembleUdta(testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T"))), cprt, chpl)
 	plan, err := mustParseBytes(t, data).Edit().
 		SetChapters(wl.Chapter{Start: 0, Title: "Renamed"}).Prepare()
 	if err != nil {
@@ -191,7 +192,7 @@ func TestMP4ChapterPreservesUnknownUdtaSibling(t *testing.T) {
 }
 
 func TestMP4ChapterTooManyRejected(t *testing.T) {
-	data := mp4Tagged(mp4Text("\xa9nam", "T"))
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 	chs := make([]wl.Chapter, 256)
 	for i := range chs {
 		chs[i] = wl.Chapter{Start: time.Duration(i) * time.Second, Title: "c"}
@@ -205,7 +206,7 @@ func TestMP4ChapterTooManyRejected(t *testing.T) {
 func TestMP4ChapterTitleTruncatedTo255(t *testing.T) {
 	// A title longer than the 8-bit chpl length prefix is truncated, and the truncation is warned.
 	long := string(bytes.Repeat([]byte("x"), 300))
-	data := mp4Tagged(mp4Text("\xa9nam", "T"))
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 	plan, err := mustParseBytes(t, data).Edit().SetChapters(wl.Chapter{Start: 0, Title: long}).Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -229,7 +230,7 @@ func TestMP4ChapterStartRoundsNotTruncates(t *testing.T) {
 	// A chapter start is encoded in the chapter track's media timescale. WaxLabel writes that track at
 	// a fixed fine timescale (90,000, so 1 ms = 90 units), decoupled from the coarse movie timescale,
 	// so a sub-millisecond start survives.
-	data := mp4Tagged(mp4Text("\xa9nam", "T"))
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 	start := 2700600 * time.Microsecond // 2700.6 ms, exact at the 90 kHz chapter timescale
 	plan, err := mustParseBytes(t, data).Edit().SetChapters(
 		wl.Chapter{Start: 0, Title: "A"},
@@ -247,10 +248,10 @@ func TestMP4ChapterStartRoundsNotTruncates(t *testing.T) {
 func TestMP4AudiobookFieldsRoundTrip(t *testing.T) {
 	// stik (media kind), desc/ldes descriptions, and a NARRATOR freeform read into
 	// the canonical model and survive an unrelated edit.
-	data := mp4Tagged(
-		mp4Atom("stik", mp4Data(21, []byte{2})), // 2 = audiobook
-		mp4Text("desc", "Short blurb"),
-		mp4Text("ldes", "A longer description of the work."),
+	data := testfile.MP4Tagged(
+		testfile.MP4Atom("stik", testfile.MP4Data(21, []byte{2})), // 2 = audiobook
+		testfile.MP4Text("desc", "Short blurb"),
+		testfile.MP4Text("ldes", "A longer description of the work."),
 		mp4Freeform("com.apple.iTunes", "NARRATOR", "Jane Reader"),
 	)
 	check := func(d *wl.Document) {
@@ -276,7 +277,7 @@ func TestMP4AudiobookFieldsRoundTrip(t *testing.T) {
 }
 
 func TestMP4MediaTypeWriteCreatesStik(t *testing.T) {
-	data := mp4Tagged(mp4Text("\xa9nam", "T"))
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.MediaType, "2").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -292,7 +293,7 @@ func TestMP4MediaTypeWriteCreatesStik(t *testing.T) {
 
 func TestMP4ChapterRoundTripStable(t *testing.T) {
 	// Same input + same edit must yield identical bytes (deterministic).
-	data := mp4Tagged(mp4Text("\xa9nam", "T"))
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 	edit := func() []byte {
 		plan, err := mustParseBytes(t, data).Edit().
 			SetChapters(wl.Chapter{Start: 0, Title: "A"}, wl.Chapter{Start: time.Second, Title: "B"}).Prepare()

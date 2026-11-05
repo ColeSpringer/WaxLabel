@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -28,7 +29,7 @@ func gnreDataAtom(t *testing.T, out []byte) (typ uint32, value []byte) {
 // IMPLICIT-type (class 0) data atom holding the 1-based ID3v1 index, which the parser folds
 // back to the genre name.
 func TestMP4NumericGenreWritesGnre(t *testing.T) {
-	base := mp4Tagged(mp4Text("\xa9nam", "T"))
+	base := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 
 	plan, err := mustParseBytes(t, base).Edit().Set(tag.Genre, "Rock").Prepare(wl.WithNumericGenre())
 	if err != nil {
@@ -52,7 +53,7 @@ func TestMP4NumericGenreWritesGnre(t *testing.T) {
 }
 
 func TestMP4NumericGenreMultiValueAllResolve(t *testing.T) {
-	base := mp4Tagged(mp4Text("\xa9nam", "T"))
+	base := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 	plan, err := mustParseBytes(t, base).Edit().Set(tag.Genre, "Rock", "Jazz").Prepare(wl.WithNumericGenre())
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +65,7 @@ func TestMP4NumericGenreMultiValueAllResolve(t *testing.T) {
 }
 
 func TestMP4GenreTextFallback(t *testing.T) {
-	base := mp4Tagged(mp4Text("\xa9nam", "T"))
+	base := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 
 	// Default: text, no gnre.
 	p1, err := mustParseBytes(t, base).Edit().Set(tag.Genre, "Rock").Prepare()

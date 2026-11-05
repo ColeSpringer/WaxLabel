@@ -4,21 +4,22 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 )
 
 // result-equals-a-fresh-parse promise across two picture edits: the first re-emits the cover set
 // (carrying the undecodable block along), and the second must still see that block.
 func TestOggFLACChainedPictureEditKeepsMalformedBlock(t *testing.T) {
-	junk := append([]byte{6, 0, 0, 4}, []byte{0xFF, 0xFF, 0xFF, 0xFF}...) // PICTURE block, undecodable body
-	comment := append([]byte{4}, vorbis.RenderCommentList("test", nil)...)
-	data := synthOggFLAC(junk, comment)
+	junk := testfile.FLACBlock(6, []byte{0, 0, 4, 0xFF, 0xFF, 0xFF, 0xFF}) // PICTURE block, undecodable body
+	comment := testfile.FLACBlock(4, vorbis.RenderCommentList("test", nil))
+	data := testfile.OggFLAC(junk, comment)
 
 	doc := mustParseBytes(t, data)
 	if len(doc.Pictures()) != 0 {
 		t.Fatalf("setup: the malformed block must not decode, got %+v", doc.Pictures())
 	}
-	plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
+	plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +31,7 @@ func TestOggFLACChainedPictureEditKeepsMalformedBlock(t *testing.T) {
 
 	// A second picture edit, once off the returned document and once off a fresh parse.
 	second := func(d *wl.Document, src []byte) int {
-		p2, err := d.Edit().AddPicture(wl.Picture{Type: wl.PicBackCover, Data: tinyPNG()}).Prepare()
+		p2, err := d.Edit().AddPicture(wl.Picture{Type: wl.PicBackCover, Data: testfile.PNG()}).Prepare()
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -6,11 +6,14 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os/exec"
 	"slices"
+	"strings"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -111,14 +114,14 @@ func TestMonkeysAudioNoOpWritesNothing(t *testing.T) {
 func TestMonkeysAudioCoverRoundTrip(t *testing.T) {
 	src := readFixture(t, sampleAPE)
 	plan, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicBackCover, Data: tinyPNG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicBackCover, Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
 	out := applyToBytes(t, src, plan)
 	pics := mustParseBytes(t, out).Pictures()
 	// The APE convention names front and back covers, so a back cover keeps its role.
-	if len(pics) != 1 || pics[0].Type != wl.PicBackCover || !bytes.Equal(pics[0].Data, tinyPNG()) {
+	if len(pics) != 1 || pics[0].Type != wl.PicBackCover || !bytes.Equal(pics[0].Data, testfile.PNG()) {
 		t.Fatalf("pictures = %+v, want one back cover with the original bytes", pics)
 	}
 }
@@ -183,11 +186,94 @@ func TestMonkeysAudioLegacyBitDepthFlags(t *testing.T) {
 	}
 }
 
-func TestMonkeysAudioAncientVersionRefused(t *testing.T) {
-	data := append(legacyAPEHeader(3320, 2000, 0, 2, 44100, 1, 100), make([]byte, 64)...)
-	_, err := wl.Parse(context.Background(), wl.BytesSource(data))
-	if !errors.Is(err, waxerr.ErrUnsupportedFormat) {
-		t.Errorf("err = %v, want ErrUnsupportedFormat", err)
+// descriptorAPEFile is a 3.98+ Monkey's Audio file whose APE_DESCRIPTOR declares descLen bytes
+// (at least 52), zero past the documented ones, then the header (one 1000-sample frame, 44.1 kHz
+// stereo 16-bit) and audio zero bytes standing in for the frames.
+func descriptorAPEFile(descLen uint32, audio int) []byte {
+	b := make([]byte, int(descLen)+24+audio)
+	copy(b, "MAC ")
+	binary.LittleEndian.PutUint16(b[4:6], 3990)
+	binary.LittleEndian.PutUint32(b[8:12], descLen)
+	binary.LittleEndian.PutUint32(b[12:16], 24)
+	h := b[descLen : descLen+24]
+	binary.LittleEndian.PutUint16(h[0:2], 2000)    // compression level
+	binary.LittleEndian.PutUint32(h[4:8], 73728)   // blocks per frame
+	binary.LittleEndian.PutUint32(h[8:12], 1000)   // final frame blocks
+	binary.LittleEndian.PutUint32(h[12:16], 1)     // total frames
+	binary.LittleEndian.PutUint16(h[16:18], 16)    // bits per sample
+	binary.LittleEndian.PutUint16(h[18:20], 2)     // channels
+	binary.LittleEndian.PutUint32(h[20:24], 44100) // sample rate
+	return b
+}
+
+// A 3.98+ header follows the descriptor's declared length, so a 64-byte descriptor puts it at 64,
+// where it is read and where a tag edit leaves it; so does one past the parser's leading read.
+func TestMonkeysAudioHeaderAtTheDeclaredDescriptorLength(t *testing.T) {
+	for _, descLen := range []uint32{64, 5000} {
+		t.Run(fmt.Sprint(descLen), func(t *testing.T) {
+			src := append(descriptorAPEFile(descLen, 512), apeTagText(map[string]string{"Title": "Before"})...)
+			doc := mustParseBytes(t, src)
+			want := doc.Properties().First()
+			if want.TotalSamples != 1000 || want.SampleRate != 44100 || want.Channels != 2 || want.BitsPerSample != 16 {
+				t.Fatalf("track = %+v, want the header at %d: 1000 samples, 44.1 kHz stereo 16-bit", want, descLen)
+			}
+			plan, err := doc.Edit().Set(tag.Title, "After").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			re := mustParseBytes(t, applyToBytes(t, src, plan))
+			if got := re.Properties().First(); got != want {
+				t.Errorf("after the tag edit the track reads %+v, want %+v", got, want)
+			}
+			if got := re.Fields().Title; got != "After" {
+				t.Errorf("title after the edit = %q, want After", got)
+			}
+		})
+	}
+}
+
+// A declared header that does not end before the trailing tags is refused, naming why, instead of
+// being read from elsewhere: a tag edit rewrites the bytes it would reach into.
+func TestMonkeysAudioHeaderPastTheAudioRefused(t *testing.T) {
+	at64 := descriptorAPEFile(64, 0) // header at 64..88
+	for _, c := range []struct {
+		name, cause string
+		data        []byte
+	}{
+		{"into the tag", "into the trailing tag", slices.Concat(at64[:80], apeTagText(nil))}, // footer at 80
+		{"past the end", "past the end of the file", descriptorAPEFile(200, 0)[:200]},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := wl.Parse(context.Background(), wl.BytesSource(c.data))
+			if !errors.Is(err, waxerr.ErrInvalidData) || !strings.Contains(err.Error(), c.cause) {
+				t.Errorf("err = %v, want ErrInvalidData saying the header runs %s", err, c.cause)
+			}
+		})
+	}
+}
+
+// readExtent records how far into its source a parse reads.
+type readExtent struct {
+	wl.ReaderAtSized
+	end int64
+}
+
+func (r *readExtent) ReadAt(p []byte, off int64) (int, error) {
+	r.end = max(r.end, off+int64(len(p)))
+	return r.ReaderAtSized.ReadAt(p, off)
+}
+
+// The marker and version are checked before the trailing tags are peeled, so a file this reader
+// refuses costs no read of its tag, however large.
+func TestMonkeysAudioVersionCheckedBeforeTheTag(t *testing.T) {
+	audio := append(legacyAPEHeader(3320, 2000, 0, 2, 44100, 1, 100), make([]byte, 8<<10)...)
+	tagged := append(slices.Clip(audio), apeTagText(map[string]string{"Comment": strings.Repeat("x", 1<<20)})...)
+	src := &readExtent{ReaderAtSized: wl.BytesSource(tagged)}
+	if _, err := wl.Parse(context.Background(), src); !errors.Is(err, waxerr.ErrUnsupportedFormat) {
+		t.Fatalf("err = %v, want ErrUnsupportedFormat", err)
+	}
+	if src.end > int64(len(audio)) {
+		t.Errorf("the refused parse read up to offset %d, into the tag at %d", src.end, len(audio))
 	}
 }
 

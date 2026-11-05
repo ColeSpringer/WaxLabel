@@ -2,7 +2,6 @@ package aiff
 
 import (
 	"slices"
-	"strconv"
 	"testing"
 
 	"github.com/colespringer/waxlabel/tag"
@@ -15,17 +14,11 @@ func titem(id, val string) textItem {
 	return it
 }
 
-// chunkStrings renders the fields the rewrite depends on, including the role: assemble
-// records a chunk in the result's text index by role alone, so a chunk that lost
-// roleText writes the right bytes and only this catches it.
+// chunkStrings renders the fields the rewrite depends on.
 func chunkStrings(out []outChunk) []string {
 	s := make([]string, len(out))
 	for i, c := range out {
-		role := "text"
-		if c.role != roleText {
-			role = "role" + strconv.Itoa(int(c.role))
-		}
-		s[i] = role + ":" + string(c.id[:]) + "=" + string(c.body)
+		s[i] = string(c.id[:]) + "=" + string(c.body)
 	}
 	return s
 }
@@ -38,7 +31,7 @@ func TestRebuildTextKeepsUntouchedChunksVerbatim(t *testing.T) {
 	edited.Set(tag.Comment, "a1", "a2")
 	edited.Set(tag.Artist, "Art")
 	got := rebuildText(orig, edited, map[tag.Key]bool{tag.Artist: true})
-	want := []string{"text:NAME=Aiff Title", "text:NAME=Second", "text:ANNO=a1", "text:ANNO=a2", "text:AUTH=Art"}
+	want := []string{"NAME=Aiff Title", "NAME=Second", "ANNO=a1", "ANNO=a2", "AUTH=Art"}
 	if !slices.Equal(chunkStrings(got), want) {
 		t.Errorf("rebuildText = %v, want %v", chunkStrings(got), want)
 	}
@@ -50,7 +43,7 @@ func TestRebuildTextChangedKeyCollapsesToEditedValues(t *testing.T) {
 	edited.Set(tag.Title, "New")
 	edited.Set(tag.Comment, "y", "z")
 	got := rebuildText(orig, edited, map[tag.Key]bool{tag.Title: true, tag.Comment: true})
-	want := []string{"text:NAME=New", "text:ANNO=y", "text:ANNO=z"}
+	want := []string{"NAME=New", "ANNO=y", "ANNO=z"}
 	if !slices.Equal(chunkStrings(got), want) {
 		t.Errorf("rebuildText = %v, want %v", chunkStrings(got), want)
 	}

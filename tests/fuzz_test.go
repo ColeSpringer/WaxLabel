@@ -11,6 +11,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
@@ -53,8 +54,8 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte(flacTail + "\xff\xf8\x19\x18\x00\xed\x00\x12"))                                                              // frame cut behind its header
 	f.Add([]byte("OggS\x00\x02"))                                                                                             // Ogg capture pattern, truncated header
 	f.Add([]byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\xff"))         // page header claiming a 255-byte body it lacks
-	f.Add(synthOggFLAC(append([]byte{4}, vorbis.RenderCommentList("v", nil)...)))                                             // Ogg FLAC, comment block only
-	f.Add(synthOggFLAC(append([]byte{6}, 0xFF, 0xFF, 0xFF, 0xFF)))                                                            // Ogg FLAC, undecodable PICTURE block
+	f.Add(testfile.OggFLAC(testfile.FLACBlock(4, vorbis.RenderCommentList("v", nil))))                                        // Ogg FLAC, comment block only
+	f.Add(testfile.OggFLAC(testfile.FLACBlock(6, []byte{0xFF, 0xFF, 0xFF, 0xFF})))                                            // Ogg FLAC, undecodable PICTURE block
 	f.Add([]byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x05\x7fFLAC")) // Ogg FLAC signature, identification packet truncated
 	f.Add([]byte("wvpk\x18\x00\x00\x00\x10\x04"))                                                                             // wvpk marker, block header truncated
 	f.Add(append([]byte("wvpk\x18\x00\x00\x00\x10\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x18\xbc\x54\x00\x00\x00\x00"),
@@ -63,19 +64,21 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("MAC \x96\x0f\x00\x00"))                                                                  // MAC marker, descriptor truncated
 	f.Add(append(legacyAPEHeader(3970, 2000, 0, 2, 44100, 1, 100), make([]byte, 64)...))                   // pre-3.98 inline header
 	f.Add([]byte("MAC \x96\x0f\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff"))
-	f.Add([]byte("MAC 0000\xe6\x00\x00\x00" + strings.Repeat("0", 136)))                                                                                  // descriptor length landing exactly on the rewritten file's end; the seed above declares absurd region sizes
-	f.Add(asfFile(asfStreamProperties(0x0161, 2, 44100, 16), asfContentDescription("T", "A", "", "", "")))                                                // minimal ASF
-	f.Add(asfFile(asfStreamPropertiesRaw(asfWaveFormatEx(0x0163, 2, 44100, 16, asfLosslessExtra(24)))))                                                   // WMA Lossless, depth behind the structure
-	f.Add(asfFile(asfExtContentDescription(asfDescriptor{"WM/Picture", 1, []byte{3, 0xFF, 0xFF, 0xFF, 0xFF}})))                                           // WM/Picture declaring an absurd image length
-	f.Add(asfFile(asfHeaderExtension(asfDescriptor{"WM/AlbumTitle", 0, asfUTF16("x")})))                                                                  // nested Metadata record
-	f.Add([]byte("RF640000WAVEds64\x1c\x00\x00\x00000000000000000\xdd0000000000\x00\x00data\xff\xff\xff\xff"))                                            // ds64 dataSize above MaxInt64
-	f.Add(mpcSV8(44100, 0, 0, 2))                                                                                                                         // Musepack SV8, keyed packets
-	f.Add(mpcSV7(100, 0))                                                                                                                                 // Musepack SV7, fixed header
-	f.Add(append([]byte("MPCK"), mpcPacket("SH", []byte{0, 0, 0, 0, 8, 0xFF, 0xFF, 0xFF, 0xFF})...))                                                      // SH whose varlen sample count never terminates
-	f.Add(append(id3v2(4, textFrame(4, "TIT2", "x")), mpcSV7(4, 0)...))                                                                                   // SV7 behind a leading ID3v2
-	f.Add(mpcChaptered())                                                                                                                                 // SV8 with a chapter run before the end marker
-	f.Add(mpcSV8Stream(44100, 0, 2, mpcAudio(8), mpcPacket("CT", []byte{0xFF, 0xFF}), mpcChapter(0, []byte("junk")), mpcEnd()))                           // chapter packets with a never-ending start sample and a short tag
-	f.Add(mpcSV8Stream(44100, 0, 2, mpcSeekOffset(0), mpcAudio(8), mpcSeekTable(), mpcTitled(0, "x"), mpcEnd()))                                          // seek offset landing on the audio packet, chapters after the table
+	f.Add([]byte("MAC 0000\xe6\x00\x00\x00" + strings.Repeat("0", 136)))                                        // descriptor declared past the file's end, where a tag rewrite would end it: refused at parse; the seed above declares absurd region sizes
+	f.Add([]byte("MAC 0000\xeb\x00\x00\x00" + strings.Repeat("0", 166)))                                        // descriptor declared past the file's end, into where a rewrite would append the tag: refused at parse
+	f.Add(asfFile(asfStreamProperties(0x0161, 2, 44100, 16), asfContentDescription("T", "A", "", "", "")))      // minimal ASF
+	f.Add(asfFile(asfStreamPropertiesRaw(asfWaveFormatEx(0x0163, 2, 44100, 16, asfLosslessExtra(24)))))         // WMA Lossless, depth behind the structure
+	f.Add(asfFile(asfExtContentDescription(asfDescriptor{"WM/Picture", 1, []byte{3, 0xFF, 0xFF, 0xFF, 0xFF}}))) // WM/Picture declaring an absurd image length
+	f.Add(asfFile(asfHeaderExtension(asfDescriptor{"WM/AlbumTitle", 0, asfUTF16("x")})))                        // nested Metadata record
+	f.Add([]byte("RF640000WAVEds64\x1c\x00\x00\x00000000000000000\xdd0000000000\x00\x00data\xff\xff\xff\xff"))  // ds64 dataSize above MaxInt64
+	f.Add(mpcSV8(44100, 0, 0, 2))                                                                               // Musepack SV8, keyed packets
+	f.Add(mpcSV7(100, 0))                                                                                       // Musepack SV7, fixed header
+	f.Add(append([]byte("MPCK"), testfile.MPCPacket("SH", []byte{0, 0, 0, 0, 8, 0xFF, 0xFF, 0xFF, 0xFF})...))   // SH whose varlen sample count never terminates
+	f.Add(append(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "x")), mpcSV7(4, 0)...))                       // SV7 behind a leading ID3v2
+	f.Add(testfile.MPCChaptered())                                                                              // SV8 with a chapter run before the end marker
+	f.Add(testfile.MPCStream(44100, 0, 2, testfile.MPCAudio(8),                                                 // chapter packets with a never-ending start sample and a short tag
+		testfile.MPCPacket("CT", []byte{0xFF, 0xFF}), testfile.MPCChapter(0, []byte("junk")), testfile.MPCEnd()))
+	f.Add(testfile.MPCStream(44100, 0, 2, mpcSeekOffset(0), testfile.MPCAudio(8), mpcSeekTable(), testfile.MPCTitled(0, "x"), testfile.MPCEnd()))         // seek offset landing on the audio packet, chapters after the table
 	f.Add(asfFile(asfFileProperties(time.Minute, 3000), asfMarkers("m", asfMarker{at: time.Second, desc: "x"})))                                          // Marker Object inside the preroll
 	f.Add(asfFile(truncatedObject(asfMarkers("m", asfMarker{at: time.Second, desc: "x"}), 60)))                                                           // Marker Object truncated inside its first entry
 	f.Add([]byte("RIFF\x04\x00\x00\x00WAVE"))                                                                                                             // RIFF/WAVE, no chunks
@@ -83,8 +86,8 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("RIFF\x10\x00\x00\x00WAVELIST\x04\x00\x00\x00INFO"))                                                                                     // empty INFO list
 	f.Add([]byte("RF64\x04\x00\x00\x00WAVE"))                                                                                                             // RF64 with no ds64 chunk: reject, not panic
 	f.Add([]byte("RF64\xff\xff\xff\xffWAVEds64\x1c\x00\x00\x00"))                                                                                         // RF64 whose ds64 body is entirely missing
-	f.Add(rf64File("RF64", 1<<40, wavFmtPCM(), wavData(8)))                                                                                               // well-formed RF64 with an absurd sample count
-	f.Add(rf64File("BW64", 4, wavFmtPCM(), wavInfo([2]string{"INAM", "x"}), wavData(8)))                                                                  // BW64 with a tag chunk
+	f.Add(rf64File("RF64", 1<<40, testfile.WAVFmtPCM(), testfile.WAVData(8)))                                                                             // well-formed RF64 with an absurd sample count
+	f.Add(rf64File("BW64", 4, testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"INAM", "x"}), testfile.WAVData(8)))                                       // BW64 with a tag chunk
 	f.Add([]byte("\x00\x00\x00\x10ftypM4A \x00\x00\x00\x00"))                                                                                             // ftyp only, no moov
 	f.Add([]byte("\x00\x00\x00\x08ftyp\x00\x00\x00\x08moov"))                                                                                             // empty moov, no tracks
 	f.Add([]byte("\x00\x00\x00\x08ftyp\x00\x00\x00\x01moov\xff\xff\xff\xff\xff\xff\xff\xff"))                                                             // 64-bit atom, absurd size
@@ -96,13 +99,13 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("\x00\x00\x00\x1cftyp00000000000000000000\x00\x00\x00\x11moov\x00\x00\x00\x00udta\x00"))                                                 // ftyp(28)+moov(17){udta zero-body}: a created tag must not append past the stray zero
 	f.Add([]byte("\x00\x00\x00\x10ftypM4A \x00\x00\x00\x00\x00\x00\x00\xffmoov\x00\x00\x00\bfree\x00\x00\x00\x00"))                                       // truncated moov (declares 255, clamps to EOF) with a gap after its free child: reject, not write 2x-size
 	f.Add(mp4AllITunesAtoms())                                                                                                                            // every owned iTunes structured atom
-	f.Add(mp4Tagged(                                                                                                                                      // malformed structured atoms: must stay preserved-not-owned, no panic
-		mp4Atom("rtng", mp4Data(21, nil)),                   // empty integer value
-		mp4Atom("pgap", mp4Data(21, []byte{0, 1})),          // 2-byte boolean
-		mp4Atom("tmpo", mp4Data(21, []byte{0, 0, 0, 0, 1})), // 5-byte integer
+	f.Add(testfile.MP4Tagged(                                                                                                                             // malformed structured atoms: must stay preserved-not-owned, no panic
+		testfile.MP4Atom("rtng", testfile.MP4Data(21, nil)),                   // empty integer value
+		testfile.MP4Atom("pgap", testfile.MP4Data(21, []byte{0, 1})),          // 2-byte boolean
+		testfile.MP4Atom("tmpo", testfile.MP4Data(21, []byte{0, 0, 0, 0, 1})), // 5-byte integer
 	))
 	if b, err := os.ReadFile(notagsMP3); err == nil {
-		f.Add(append(id3v2(3, textFrame(3, "MVIN", "ab/cd/12")), b...)) // garbage MVIN pair: projects verbatim, round-trips, no panic
+		f.Add(append(testfile.ID3v2(3, testfile.TextFrame(3, "MVIN", "ab/cd/12")), b...)) // garbage MVIN pair: projects verbatim, round-trips, no panic
 	}
 	f.Add([]byte("\x1a\x45\xdf\xa3\x84\x42\x82\x81m"))                                                                                    // EBML magic + truncated DocType
 	f.Add([]byte("\x1a\x45\xdf\xa3\xff"))                                                                                                 // EBML magic, unknown-size header
@@ -114,7 +117,7 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("FORM\x00\x00\x00\x14AIFFSSND\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00"))                                         // SSND-only, header but no frames
 	f.Add([]byte("FORM\x00\x00\x00\x1eAIFCCOMM\x00\x00\x00\x12\x00\x02\x00\x00\x00\x01\x00\x10\x7f\xff\x80\x00\x00\x00\x00\x00\x00\x00")) // AIFF-C 18-byte COMM, 0x7FFF-exponent Inf/NaN rate decoded
 	f.Add([]byte("FORM\x00\x00\x00\x0eAIFFANNO\x00\x00\x00\x06hello\x00"))                                                                // lone ANNO comment chunk
-	f.Add(aiffFile("AIFC", aiffCOMMCFrames(1, math.MaxUint32, 4, 44100, "ima4"), aiffSSND(68)))                                           // ima4 declaring 2^32-1 packets of 64 frames
+	f.Add(testfile.AIFF("AIFC", testfile.COMMCFrames(1, math.MaxUint32, 4, 44100, "ima4"), aiffSSND(68)))                                 // ima4 declaring 2^32-1 packets of 64 frames
 	f.Add([]byte{0xFF, 0xF1, 0x50, 0x40, 0x01, 0x00, 0xFC})                                                                               // valid ADTS header, frame_length 8 but only 7 bytes present (short payload)
 	f.Add([]byte{0xFF, 0xF1, 0x50, 0x00, 0x00, 0x00, 0x00})                                                                               // ADTS sync but frame_length 0 (below header)
 	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), 0xFF, 0xF1, 0x50, 0x40, 0x01, 0x5F, 0xFC))                                    // empty front ID3 then a bare ADTS frame
@@ -237,7 +240,7 @@ func FuzzChainedMP4ChapterWrite(f *testing.F) {
 		if err != nil || doc.Format() != wl.FormatMP4 {
 			return // only the MP4 chained-write path is under test here
 		}
-		// 1. Grow ilst and return a document without reparsing.
+		// 1. Grow ilst; the returned document is the base of the chained edit.
 		p1, err := doc.Edit().Set(tag.Title, "a substantially longer title that grows the ilst region").Prepare()
 		if err != nil {
 			if accept(err) {

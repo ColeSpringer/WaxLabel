@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -13,9 +14,9 @@ import (
 // is the only home for ALBUM, RECORDINGDATE, COMMENT and GENRE.
 func legacyOnlyMP3(t *testing.T) []byte {
 	t.Helper()
-	data := id3v2(3, textFrame(3, "TIT2", "V2 Title"), textFrame(3, "TPE1", "V2 Artist"))
+	data := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "V2 Title"), testfile.TextFrame(3, "TPE1", "V2 Artist"))
 	data = append(data, mp3Audio(t)...)
-	return append(data, id3v1("", "", "Legacy Album", "1999", "legacy comment", 17)...)
+	return append(data, testfile.ID3v1("", "", "Legacy Album", "1999", "legacy comment", 17)...)
 }
 
 // warningFor returns the plan warning with the given code, and whether it was present.
@@ -80,9 +81,9 @@ func TestLegacyStripJudgesTheEditedTags(t *testing.T) {
 // could read as "held only in the legacy container".
 func TestLegacyStripIgnoresKeysTheEditRemoved(t *testing.T) {
 	// Both containers carry the same TITLE, so clearing it loses nothing either strips.
-	data := id3v2(3, textFrame(3, "TIT2", "Same Title"))
+	data := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Same Title"))
 	data = append(data, mp3Audio(t)...)
-	data = append(data, id3v1("Same Title", "", "", "", "", 255)...)
+	data = append(data, testfile.ID3v1("Same Title", "", "", "", "", 255)...)
 	plan, err := mustParseBytes(t, data).Edit().Clear(tag.Title).
 		Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
 	if err != nil {
@@ -110,9 +111,9 @@ func TestLegacyStripStillReportsGenuinelyLegacyOnly(t *testing.T) {
 }
 
 func TestLegacyStripSilentWhenNothingIsLost(t *testing.T) {
-	data := id3v2(3, textFrame(3, "TIT2", "Same Title"))
+	data := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Same Title"))
 	data = append(data, mp3Audio(t)...)
-	data = append(data, id3v1("Same Title", "", "", "", "", 255)...)
+	data = append(data, testfile.ID3v1("Same Title", "", "", "", "", 255)...)
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Artist, "A").
 		Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
 	if err != nil {
@@ -133,16 +134,16 @@ func TestLintFixNeverTripsLegacyStripWarning(t *testing.T) {
 	}{
 		{"legacy-only values", legacyOnlyMP3},
 		{"redundant container", func(t *testing.T) []byte {
-			data := id3v2(3, textFrame(3, "TIT2", "Same Title"))
+			data := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Same Title"))
 			data = append(data, mp3Audio(t)...)
-			return append(data, id3v1("Same Title", "", "", "", "", 255)...)
+			return append(data, testfile.ID3v1("Same Title", "", "", "", "", 255)...)
 		}},
 		{"legacy container echoing a stamped ENCODER", func(t *testing.T) []byte {
 			// PlanLintFix clears the stamped ENCODER, so the ID3v1 comment carrying the same stamp reads as
 			// legacy-only against the edited set. Nothing is lost: the canonical set held it too.
-			data := id3v2(3, textFrame(3, "TIT2", "Song"), textFrame(3, "TSSE", "Lavf62.3.100"))
+			data := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Song"), testfile.TextFrame(3, "TSSE", "Lavf62.3.100"))
 			data = append(data, mp3Audio(t)...)
-			return append(data, id3v1("Song", "", "", "", "", 255)...)
+			return append(data, testfile.ID3v1("Song", "", "", "", "", 255)...)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -162,7 +163,7 @@ func TestLintFixNeverTripsLegacyStripWarning(t *testing.T) {
 // WAV and AIFF reuse LegacyStrip to mean "consolidate into the id3 chunk", where the values move
 // rather than die, and they never mark a family Legacy.
 func TestLegacyStripSilentOnWAV(t *testing.T) {
-	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Song"}, [2]string{"ICOP", "ACME"}), wavData(400))
+	data := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"INAM", "Song"}, [2]string{"ICOP", "ACME"}), testfile.WAVData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "New").
 		Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
 	if err != nil {
@@ -180,8 +181,8 @@ func TestLegacyStripSilentOnWAV(t *testing.T) {
 // canonical key (IKEY, ISBJ) has no frame to move into, so the chunk drop destroys it and must
 // warn.
 func TestWAVLegacyStripWarnsAboutUnmappedItems(t *testing.T) {
-	data := wavFile(wavFmtPCM(),
-		wavInfo([2]string{"INAM", "Song"}, [2]string{"IKEY", "Alice"}, [2]string{"ISBJ", "Subj"}), wavData(400))
+	data := testfile.WAV(testfile.WAVFmtPCM(),
+		testfile.WAVInfo([2]string{"INAM", "Song"}, [2]string{"IKEY", "Alice"}, [2]string{"ISBJ", "Subj"}), testfile.WAVData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "New").
 		Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -14,27 +15,7 @@ import (
 // audio and no VORBIS_COMMENT block, so editing it exercises the "create a
 // comment block where none existed" path.
 func synthFLAC() []byte {
-	streamInfo := make([]byte, 34)
-	streamInfo[0], streamInfo[1] = 0x10, 0x00 // min block 4096
-	streamInfo[2], streamInfo[3] = 0x10, 0x00 // max block 4096
-	streamInfo[10] = 0x0A                     // sample rate 44100, ...
-	streamInfo[11] = 0xC4
-	streamInfo[12] = 0x40 | (1 << 1) // rate low nibble | (channels-1)<<1
-	streamInfo[13] = 15 << 4         // (bps-1)&0xf << 4
-
-	block := func(code byte, last bool, body []byte) []byte {
-		h := []byte{code, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}
-		if last {
-			h[0] |= 0x80
-		}
-		return append(h, body...)
-	}
-
-	out := []byte("fLaC")
-	out = append(out, block(0, false, streamInfo)...)     // STREAMINFO
-	out = append(out, block(1, true, make([]byte, 8))...) // PADDING, last
-	out = append(out, []byte{0xFF, 0xF8, 0x00, 0x00}...)  // pretend audio frame
-	return out
+	return append(testfile.FLAC(testfile.FLACBlock(1, make([]byte, 8))), 0, 0)
 }
 
 func TestEditFileWithoutVorbisBlock(t *testing.T) {
@@ -115,7 +96,7 @@ func TestDocumentAccessorsAndEditorSurface(t *testing.T) {
 	// Editor mutators: Add, Clear, picture add/remove/clear, native entries.
 	ed := doc.Edit()
 	ed.Add(tag.Genre, "Rock").Clear(tag.Comment)
-	ed.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()})
+	ed.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()})
 	ed.RemovePictures(func(p wl.Picture) bool { return p.Type == wl.PicBackCover }) // removes nothing
 	if entries := ed.Native().Entries(); len(entries) == 0 {
 		t.Error("Native().Entries() should be non-empty")
@@ -144,32 +125,10 @@ func TestDocumentAccessorsAndEditorSurface(t *testing.T) {
 // builds a FLAC carrying an APPLICATION block (the same preserve-verbatim path used for CUESHEET
 // and SEEKTABLE) and confirms a tag edit leaves that block byte-for-byte intact.
 func TestPreservesUnknownBlocks(t *testing.T) {
-	streamInfo := make([]byte, 34)
-	streamInfo[0], streamInfo[1] = 0x10, 0x00
-	streamInfo[2], streamInfo[3] = 0x10, 0x00
-	streamInfo[10] = 0x0A
-	streamInfo[11] = 0xC4
-	streamInfo[12] = 0x40 | (1 << 1)
-	streamInfo[13] = 15 << 4
-
-	block := func(code byte, last bool, body []byte) []byte {
-		h := []byte{code, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}
-		if last {
-			h[0] |= 0x80
-		}
-		return append(h, body...)
-	}
-
 	marker := []byte("CUESHEET-STYLE-PRESERVE-ME-0xABCDEF")
 	appBody := append([]byte("WAXX"), marker...) // APPLICATION: 4-byte id + data
-	vorbis := renderVC("TITLE=Keep")
-
-	data := []byte("fLaC")
-	data = append(data, block(0, false, streamInfo)...) // STREAMINFO
-	data = append(data, block(2, false, appBody)...)    // APPLICATION
-	data = append(data, block(4, false, vorbis)...)     // VORBIS_COMMENT
-	data = append(data, block(1, true, make([]byte, 4))...)
-	data = append(data, []byte{0xFF, 0xF8}...) // audio
+	data := testfile.FLAC(testfile.FLACBlock(2, appBody), testfile.CommentBlock("test", "TITLE=Keep"),
+		testfile.FLACBlock(1, make([]byte, 4)))
 
 	doc := mustParseBytes(t, data)
 	if doc.Fields().Title != "Keep" {
@@ -197,20 +156,6 @@ func TestPreservesUnknownBlocks(t *testing.T) {
 	if !foundApp {
 		t.Error("APPLICATION block missing from native view after edit")
 	}
-}
-
-// renderVC builds a Vorbis comment block body (little-endian lengths, no
-// framing bit) for the synthetic-FLAC tests.
-func renderVC(entries ...string) []byte {
-	le := func(n int) []byte { return []byte{byte(n), byte(n >> 8), byte(n >> 16), byte(n >> 24)} }
-	const vendor = "test"
-	b := append(le(len(vendor)), vendor...)
-	b = append(b, le(len(entries))...)
-	for _, e := range entries {
-		b = append(b, le(len(e))...)
-		b = append(b, e...)
-	}
-	return b
 }
 
 func TestEnumStrings(t *testing.T) {

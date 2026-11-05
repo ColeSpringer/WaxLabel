@@ -241,8 +241,7 @@ func (d *doc) streamInfo() []byte {
 func (b fblock) clone() fblock { return fblock{code: b.code, body: slices.Clone(b.body)} }
 
 // decodeFLACBlockPictures splits a FLAC block list into the covers it holds and the
-// PICTURE bodies that would not decode. The parser and the post-write result both use
-// it, so a rewritten document reports the same picture set a fresh parse would.
+// PICTURE bodies that would not decode.
 func decodeFLACBlockPictures(blocks []fblock, limit int64) (pics []core.Picture, malformed [][]byte, warnings []core.Warning) {
 	for _, b := range blocks {
 		if b.code != flacBlkPicture {
@@ -257,22 +256,6 @@ func decodeFLACBlockPictures(blocks []fblock, limit int64) (pics []core.Picture,
 		pics = append(pics, p)
 	}
 	return pics, malformed, warnings
-}
-
-// commentSourcedPictures decodes the covers a comment list still carries as
-// METADATA_BLOCK_PICTURE entries. The post-write document re-derives the parser's field
-// with it, so a verbatim comment block keeps its covers and a re-rendered one has none.
-func commentSourcedPictures(comments []vorbis.Comment, limit int64) []core.Picture {
-	var out []core.Picture
-	for _, cm := range comments {
-		if !vorbis.IsPictureComment(cm.Name) {
-			continue
-		}
-		if p, err := vorbis.DecodePictureComment(cm.Value, limit); err == nil {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 // origMaxHeaderPacket is the largest header packet this document was parsed with: the

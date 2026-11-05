@@ -5,6 +5,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // checks the Matroska/WebM warning for replacing ended chapters with open-ended ones.
@@ -41,7 +42,7 @@ func TestChapterEndsDroppedWarning(t *testing.T) {
 	}
 
 	// 4. Faithful transfer is suppressed by the carried flag.
-	endless := buildMatroskaCh("matroska", "Src", mkEl(idChapters, mkEdition(true, nil,
+	endless := buildMatroskaCh("matroska", "Src", testfile.El(idChapters, mkEdition(true, nil,
 		mkAtom(1, 0, 0, "Alpha"),
 		mkAtom(2, uint64(100*time.Millisecond), 0, "Beta"),
 	)), nil)

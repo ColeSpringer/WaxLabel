@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -431,10 +432,10 @@ func TestDiffPictureContentsDiffer(t *testing.T) {
 	dir := t.TempDir()
 	pngA := filepath.Join(dir, "a.png")
 	pngB := filepath.Join(dir, "b.png")
-	if err := os.WriteFile(pngA, minimalPNG(), 0o644); err != nil {
+	if err := os.WriteFile(pngA, testfile.PNG(), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(pngB, append(minimalPNG(), 0x00), 0o644); err != nil {
+	if err := os.WriteFile(pngB, append(testfile.PNG(), 0x00), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -466,25 +467,6 @@ func TestDiffPictureContentsDiffer(t *testing.T) {
 	}
 	if jd.Pictures.A != 1 || jd.Pictures.B != 1 || !jd.Pictures.Changed {
 		t.Errorf("pictures = %+v, want {A:1 B:1 Changed:true} (equal count, contents differ)", jd.Pictures)
-	}
-}
-
-// minimalPNG: 1x1 PNG, enough to sniff as image/png.
-func minimalPNG() []byte {
-	return []byte{
-		0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A,
-		0x00, 0x00, 0x00, 0x0D, 'I', 'H', 'D', 'R',
-		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
-	}
-}
-
-// minimalJPEG: minimal JPEG header, distinct MIME from minimalPNG (last-wins cover tests).
-func minimalJPEG() []byte {
-	return []byte{
-		0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08,
-		0x00, 0x05, 0x00, 0x03, 0x03,
-		0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
 	}
 }
 

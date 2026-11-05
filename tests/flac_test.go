@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
@@ -279,7 +280,7 @@ func TestAddAndReadPicture(t *testing.T) {
 	path := copyToTemp(t, sampleFLAC)
 	doc := mustParseFile(t, path)
 
-	png := tinyPNG()
+	png := testfile.PNG()
 	pic := wl.Picture{Type: wl.PicFrontCover, Data: png}
 	plan, err := doc.Edit().AddPicture(pic).Prepare()
 	if err != nil {
@@ -399,29 +400,6 @@ func TestParseNoTags(t *testing.T) {
 	// Must still expose valid audio properties.
 	if doc.Properties().First().SampleRate != 44100 {
 		t.Errorf("SampleRate = %d, want 44100", doc.Properties().First().SampleRate)
-	}
-}
-
-// tinyPNG returns a 1x1 RGBA PNG header (no IDAT; enough for header sniffing
-// and round-trip byte preservation).
-func tinyPNG() []byte {
-	return []byte{
-		0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A,
-		0x00, 0x00, 0x00, 0x0D, 'I', 'H', 'D', 'R',
-		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
-	}
-}
-
-// tinyJPEG returns a minimal complete JPEG header: SOI followed by a 3x5 SOF0.
-func tinyJPEG() []byte {
-	return []byte{
-		0xFF, 0xD8, // SOI
-		0xFF, 0xC0, 0x00, 0x11, 0x08, // SOF0, length 17, precision 8
-		0x00, 0x05, // height 5
-		0x00, 0x03, // width 3
-		0x03, // components
-		0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
 	}
 }
 

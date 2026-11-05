@@ -20,13 +20,29 @@ All notable changes to this project are documented here.
 - A metadata fingerprint the save cannot re-read refuses the write, naming the read error,
   instead of skipping the check, and fingerprints stream, so a metadata region over the
   allocation limit is still covered.
-- A read error during the copy keeps its cause (`io`, exit 6) instead of reporting
+- A read error during the copy, while a write reads its output back, or in `verify`
+  (`HashAudioEssence`, `HashFile`) keeps its cause (`io`, exit 6) instead of reporting
   corrupt data.
+- A source whose `ReadAt` returns `io.EOF` together with a full read at the end of the input
+  no longer makes `Parse` drop a tag that ends there or `HashAudioEssence` fail; a short read
+  that reports no error is now an error instead of zero-filled bytes.
 - `--preserve-mtime` (`WithPreserveModTime`) keeps an mtime of exactly the epoch and
   dates outside 1678-2262, leaves the access time alone, and fails the save when it
   cannot set the time. On standard input it notes there is nothing to keep.
 - `export-picture -o` writes atomically: `--overwrite` replaces a read-only target, or
   one hard-linked elsewhere, without touching the other links.
+- The Document a write returns is parsed from the written bytes, so its warnings, padding
+  and lint findings always match a fresh parse. Every write reads its output back first and
+  refuses as `invalid-data` (exit 4), committing nothing, when the output would no longer
+  be recognized as the same format, would not parse, would hold no audio, or would hold a
+  different number of chapters, pictures or synced lyrics than planned (not checked for a
+  Document parsed under limits below the defaults); `WriteTo` checks before streaming a byte.
+- `--verify` (`WithVerifyEssence`) hashes the output once, over the audio a fresh parse
+  finds, and refuses when that digest differs from the source's or the audio is not where
+  the plan placed it. `WriteTo` now verifies too instead of skipping the check.
+- A Monkey's Audio header is read where its descriptor declares it, and one that would run
+  into the trailing tags or past the end of the file is refused as `invalid-data` instead of
+  read from a guessed offset, which gave wrong audio properties or let a tag edit change them.
 
 ### Changed
 

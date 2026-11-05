@@ -875,7 +875,7 @@ func isCoverName(name string) bool {
 }
 
 // isCoverAttachment reports whether an AttachedFile projects as a cover picture. The
-// read gate, the write attachment record, and the result reprojection all use it.
+// read gate, the write refusal and the result reprojection all use it.
 func isCoverAttachment(mime, name string) bool {
 	return isImageMIME(mime) || (mime == core.UnrecognizedMIME && isCoverName(name))
 }

@@ -360,8 +360,7 @@ func FramesNote(t *Tag) string {
 // FrontTagPadding reports the free padding inside a front ID3v2 region, or 0 for a file
 // with no front tag. ID3 padding lives inside the tag's declared size and has no block of
 // its own, so this is what Document.Padding reports for the ID3-fronted codecs. The number
-// is [Tag.Padding]: measured at parse, and restamped by RenderFrontTag on a rewrite, so a
-// read of the written file and the plan that wrote it report the same region.
+// is [Tag.Padding], measured at parse.
 func FrontTagPadding(t *Tag) int64 {
 	if t == nil {
 		return 0

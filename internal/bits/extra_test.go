@@ -140,3 +140,33 @@ func (r eofAtEnd) ReadAt(p []byte, off int64) (int, error) {
 	}
 	return k, err
 }
+
+// shortNoError breaks the io.ReaderAt contract: half of every read, and no error.
+type shortNoError struct{}
+
+func (shortNoError) ReadAt(p []byte, _ int64) (int, error) { return len(p) / 2, nil }
+
+// TestFullReadWithEOF: ReadFullAt, ReadSlice and a Cursor accept a read that fills the buffer and
+// reports io.EOF with it; a short read fails, even one that reports no error.
+func TestFullReadWithEOF(t *testing.T) {
+	p := make([]byte, 4)
+	if err := ReadFullAt(eofAtEnd{8}, p, 4); err != nil {
+		t.Errorf("ReadFullAt of the last 4 bytes: %v, want nil", err)
+	}
+	if err := ReadFullAt(endsAt{6}, p, 4); !errors.Is(err, io.EOF) {
+		t.Errorf("ReadFullAt past the end: %v, want io.EOF", err)
+	}
+	if err := ReadFullAt(shortNoError{}, p, 0); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("ReadFullAt short without an error: %v, want io.ErrUnexpectedEOF", err)
+	}
+	if b, err := ReadSlice(eofAtEnd{8}, 4, 4, 1<<20); err != nil || len(b) != 4 {
+		t.Errorf("ReadSlice of the last 4 bytes = (%d bytes, %v), want 4 bytes", len(b), err)
+	}
+	if _, err := ReadSlice(shortNoError{}, 0, 4, 1<<20); !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("ReadSlice short without an error: %v, want ErrInvalidData", err)
+	}
+	c := NewCursorAt(eofAtEnd{8}, 4, 4, 1<<20)
+	if c.U32BE(); c.Err() != nil {
+		t.Errorf("Cursor read of the last 4 bytes: %v, want nil", c.Err())
+	}
+}

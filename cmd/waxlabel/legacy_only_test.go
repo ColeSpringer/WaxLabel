@@ -4,20 +4,16 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // id3v1Block builds a valid 128-byte ID3v1 tag. Parameterized fields share one offset table.
 func id3v1Block(title, album, comment string, genre byte) []byte {
-	b := make([]byte, 128)
-	copy(b[0:3], "TAG")
-	copy(b[3:33], title)
-	copy(b[63:93], album)
-	copy(b[93:97], "2020") // year
-	copy(b[97:127], comment)
-	b[127] = genre
-	return b
+	return testfile.ID3v1(title, "", album, "2020", comment, genre)
 }
 
 // stackedID3v1MP3 appends n contiguous ID3v1 tags to notags.mp3.
@@ -94,59 +90,16 @@ func TestLegacyStripRemovesStackedID3v1(t *testing.T) {
 	}
 }
 
-// flacBodyEmptyVorbis: minimal FLAC with empty Vorbis comment for legacy-only metadata tests.
-func flacBodyEmptyVorbis() []byte {
-	le := func(n int) []byte { return []byte{byte(n), byte(n >> 8), byte(n >> 16), byte(n >> 24)} }
-	block := func(code byte, last bool, body []byte) []byte {
-		h := []byte{code, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}
-		if last {
-			h[0] |= 0x80
-		}
-		return append(h, body...)
-	}
-	si := make([]byte, 34) // STREAMINFO: 44100 Hz, 2ch, 16-bit
-	si[0], si[1], si[2], si[3] = 0x10, 0x00, 0x10, 0x00
-	si[10], si[11] = 0x0A, 0xC4
-	si[12] = 0x40 | (1 << 1)
-	si[13] = 15 << 4
-	vc := append(le(len("test")), "test"...)
-	vc = append(vc, le(0)...) // empty comment list
-	out := []byte("fLaC")
-	out = append(out, block(0, false, si)...)
-	out = append(out, block(4, false, vc)...)
-	out = append(out, block(1, true, make([]byte, 4))...)
-	return append(out, 0xFF, 0xF8) // a little audio
-}
-
 // legacyOnlyFLAC: title only in trailing ID3v1; canonical tags empty.
 func legacyOnlyFLAC() []byte {
-	v1 := make([]byte, 128)
-	copy(v1[0:3], "TAG")
-	copy(v1[3:33], "Trailing Only Title")
-	v1[127] = 255
-	return append(flacBodyEmptyVorbis(), v1...)
+	return slices.Concat(testfile.TaggedFLAC("test"), testfile.ID3v1("Trailing Only Title", "", "", "", "", 255))
 }
 
 // leadingTitlePictureFLAC: leading ID3v2 has legacy-only title plus cover.
 func leadingTitlePictureFLAC() []byte {
-	syncsafe := func(n int) []byte {
-		return []byte{byte(n>>21) & 0x7f, byte(n>>14) & 0x7f, byte(n>>7) & 0x7f, byte(n) & 0x7f}
-	}
-	frame := func(id string, body []byte) []byte {
-		out := append([]byte(id), byte(len(body)>>24), byte(len(body)>>16), byte(len(body)>>8), byte(len(body)), 0, 0)
-		return append(out, body...)
-	}
-	tbody := append([]byte{0}, "Lead Title"...) // Latin-1 encoding byte + text
-	abody := []byte{0}                          // Latin-1 encoding byte
-	abody = append(abody, "image/png"...)
-	abody = append(abody, 0)                        // MIME terminator
-	abody = append(abody, 3)                        // picture type: front cover
-	abody = append(abody, 0)                        // empty description terminator
-	abody = append(abody, "\x89PNG dummy cover"...) // image data (unvalidated by the decoder)
-	body := append(frame("TIT2", tbody), frame("APIC", abody)...)
-	id3 := append([]byte{'I', 'D', '3', 3, 0, 0}, syncsafe(len(body))...)
-	id3 = append(id3, body...)
-	return append(id3, flacBodyEmptyVorbis()...)
+	id3 := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Lead Title"),
+		testfile.FrontCover("image/png", []byte("\x89PNG dummy cover"))) // cover bytes the decoder does not validate
+	return slices.Concat(id3, testfile.TaggedFLAC("test"))
 }
 
 // TestDumpAndLintSurfaceLegacyOnly: dump legacy note and lint legacy-only-tags for legacy-only tag.

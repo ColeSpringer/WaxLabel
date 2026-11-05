@@ -5,13 +5,14 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // chapterUIDsByStart independently decodes the output's Chapters tree and returns each top-level
 // ChapterAtom's start time and ChapterUID.
 func chapterUIDsByStart(t *testing.T, data []byte) map[time.Duration]uint64 {
 	t.Helper()
-	_, segData, segEnd, ok := elemRange(data, 0, len(data), idSegment, nil)
+	_, segData, segEnd, ok := elemRange(data, 0, len(data), testfile.IDSegment, nil)
 	if !ok {
 		t.Fatal("no Segment in output")
 	}
@@ -83,7 +84,7 @@ type chapterTitleUID struct {
 // order, so a test can confirm which chapter a UID landed on when several share a start.
 func chapterTitleUIDs(t *testing.T, data []byte) []chapterTitleUID {
 	t.Helper()
-	_, segData, segEnd, ok := elemRange(data, 0, len(data), idSegment, nil)
+	_, segData, segEnd, ok := elemRange(data, 0, len(data), testfile.IDSegment, nil)
 	if !ok {
 		t.Fatal("no Segment in output")
 	}
@@ -172,7 +173,7 @@ func eachChildField(data []byte, start, end int, fn func(id uint64, ds, de int))
 
 // two chapters with the same start: the first originally UID-less and the second carrying UID 22.
 func TestMatroskaChapterUIDsDuplicateStart(t *testing.T) {
-	chapters := mkEl(idChapters, mkEdition(true, nil,
+	chapters := testfile.El(idChapters, mkEdition(true, nil,
 		mkAtom(0, uint64(ms(100)), uint64(ms(200)), "First"),   // file order: UID-less first
 		mkAtom(22, uint64(ms(100)), uint64(ms(300)), "Second"), // same start, real UID 22
 	))
@@ -202,7 +203,7 @@ func TestMatroskaChapterUIDsDuplicateStart(t *testing.T) {
 
 // inserting a chapter keeps each survivor matched to its own ChapterUID by start time.
 func TestMatroskaChapterUIDsInsertMiddle(t *testing.T) {
-	chapters := mkEl(idChapters, mkEdition(true, nil,
+	chapters := testfile.El(idChapters, mkEdition(true, nil,
 		mkAtom(11, 0, uint64(ms(200)), "First"),
 		mkAtom(22, uint64(ms(400)), uint64(ms(600)), "Third"),
 	))
@@ -231,7 +232,7 @@ func TestMatroskaChapterUIDsInsertMiddle(t *testing.T) {
 
 // deleting the middle chapter leaves the first and third chapters with their own UIDs.
 func TestMatroskaChapterUIDsDeleteMiddle(t *testing.T) {
-	chapters := mkEl(idChapters, mkEdition(true, nil,
+	chapters := testfile.El(idChapters, mkEdition(true, nil,
 		mkAtom(11, 0, uint64(ms(200)), "First"),
 		mkAtom(22, uint64(ms(200)), uint64(ms(400)), "Second"),
 		mkAtom(33, uint64(ms(400)), uint64(ms(600)), "Third"),

@@ -9,6 +9,7 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // nonLyricSYLTFrame builds a SYLT frame body with a non-lyric content type (2 =
@@ -34,8 +35,8 @@ func TestWAVSyncedLyricsOpCountsModelSetsNotSYLTFrames(t *testing.T) {
 	id3Body := id3.Render(4, []id3.Frame{nonLyricSYLTFrame()}, 0)
 	chunks := bytes.Join([][]byte{
 		wavFmtChunk(),
-		wavChunk("data", bytes.Repeat([]byte{0x11, 0x22}, 16)),
-		wavChunk("id3 ", id3Body),
+		testfile.WAVChunk("data", bytes.Repeat([]byte{0x11, 0x22}, 16)),
+		testfile.WAVChunk("id3 ", id3Body),
 	}, nil)
 	src := riffWrap(chunks, nil, nil)
 
