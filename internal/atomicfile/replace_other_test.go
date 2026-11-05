@@ -1,6 +1,6 @@
 //go:build unix
 
-package waxlabel
+package atomicfile
 
 import (
 	"errors"

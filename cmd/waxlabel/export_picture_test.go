@@ -3,10 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/atomicfile"
 )
 
 // TestExportPictureRoundTrip: exported bytes match source image; JSON reports picture metadata.
@@ -156,6 +160,104 @@ func TestExportPictureOverwriteGate(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(out); !bytes.Equal(got, minimalPNG()) {
 		t.Errorf("--overwrite did not write the cover bytes")
+	}
+}
+
+// coveredFLAC is a FLAC fixture carrying minimalPNG as its front cover.
+func coveredFLAC(t *testing.T) string {
+	t.Helper()
+	f := copyFixture(t, notagsFLAC)
+	if _, errb, code := runCLI(t, "set", f, "--add-cover", writeTempImage(t, "cover.png", minimalPNG())); code != 0 {
+		t.Fatalf("authoring exit %d: %s", code, errb)
+	}
+	return f
+}
+
+// TestExportPictureReplacesAtomically: --overwrite replaces the target's directory entry, so a
+// hard link to the old file keeps its bytes, a read-only target is replaced with its mode kept,
+// and no temp is left behind.
+func TestExportPictureReplacesAtomically(t *testing.T) {
+	t.Parallel()
+	f := coveredFLAC(t)
+	dir := t.TempDir()
+
+	alias := filepath.Join(dir, "alias.png")
+	if err := os.WriteFile(alias, []byte("alias"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(dir, "linked.png")
+	if err := os.Link(alias, linked); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	if _, errb, code := runCLI(t, "export-picture", f, "-o", linked, "--overwrite"); code != 0 {
+		t.Fatalf("export over a hard link exit %d: %s", code, errb)
+	}
+	if got, _ := os.ReadFile(linked); !bytes.Equal(got, minimalPNG()) {
+		t.Error("the export did not write the cover bytes")
+	}
+	if got, _ := os.ReadFile(alias); string(got) != "alias" {
+		t.Errorf("the hard link alias changed to %q", got)
+	}
+
+	ro := filepath.Join(dir, "ro.png")
+	if err := os.WriteFile(ro, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(ro, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(ro, 0o666) })
+	if _, errb, code := runCLI(t, "export-picture", f, "-o", ro, "--overwrite"); code != 0 {
+		t.Fatalf("export over a read-only file exit %d: %s", code, errb)
+	}
+	if got, _ := os.ReadFile(ro); !bytes.Equal(got, minimalPNG()) {
+		t.Error("the read-only target was not replaced")
+	}
+	if info, err := os.Stat(ro); err != nil || info.Mode().Perm() != 0o444 {
+		t.Errorf("read-only target mode = %v (%v), want 0444", info.Mode().Perm(), err)
+	}
+	assertNoTempsIn(t, dir)
+}
+
+// TestExportPictureCommittedThenStepFailed: an export whose file is in place but whose directory
+// fsync failed is a written export with a warning, as set reports it, not a failed one.
+func TestExportPictureCommittedThenStepFailed(t *testing.T) {
+	f := coveredFLAC(t)
+	stepErr := errors.New("directory fsync: input/output error")
+	writeAtomic = func(path string, write func(*os.File) error, o atomicfile.Options) (bool, os.FileInfo, error) {
+		committed, info, err := atomicfile.Write(path, write, o)
+		if err != nil {
+			return committed, info, err
+		}
+		return true, info, stepErr
+	}
+	t.Cleanup(func() { writeAtomic = atomicfile.Write })
+
+	out := filepath.Join(t.TempDir(), "cover.png")
+	_, errb, code := runCLI(t, "export-picture", f, "-o", out)
+	if code != 0 || !strings.Contains(errb, "written, but a step after the write failed") {
+		t.Errorf("exit = %d, stderr = %q; want 0 and the post-write warning", code, errb)
+	}
+	if got, _ := os.ReadFile(out); !bytes.Equal(got, minimalPNG()) {
+		t.Error("the cover is not at the output")
+	}
+	jsonOut, _, code := runCLI(t, "--json", "export-picture", f, "-o", out, "--overwrite")
+	var jp jsonExportPicture
+	if err := json.Unmarshal([]byte(jsonOut), &jp); err != nil || code != 0 || jp.PostWriteWarning == "" {
+		t.Errorf("--json: exit %d, postWriteWarning %q (%v); want 0 and the warning", code, jp.PostWriteWarning, err)
+	}
+}
+
+func assertNoTempsIn(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if wl.IsTempFileName(e.Name()) {
+			t.Errorf("temp left behind: %s", e.Name())
+		}
 	}
 }
 

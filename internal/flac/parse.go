@@ -190,7 +190,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 
 	media.Warnings = warnings
 	media.Identity = core.Identity{Size: size}
-	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media, limit)
+	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media)
 	return media, nil
 }
 

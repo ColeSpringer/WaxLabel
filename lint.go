@@ -114,11 +114,12 @@ func lintWarnings(ws []core.Warning) []Finding {
 		case core.WarnStrayLeadingID3, core.WarnTrailingID3v1, core.WarnLegacyAPE,
 			core.WarnInheritedEncoder, core.WarnInvalidPicture, core.WarnTruncatedAudio,
 			core.WarnInvalidTagKey, core.WarnChainedStream, core.WarnTrailingBytes,
-			core.WarnOversizedChunk, core.WarnMalformedTagEntry:
+			core.WarnOversizedChunk, core.WarnMalformedTagEntry, core.WarnTrailingLyrics3,
+			core.WarnLeadingBytes, core.WarnPageGap:
 			out = append(out, Finding{Severity: LintWarning, Code: w.Code.String(), Message: w.Message})
 		case core.WarnMultipleVorbisComment, core.WarnDuplicateTagBlock, core.WarnNoAudioFrames:
 			out = append(out, Finding{Severity: LintError, Code: w.Code.String(), Message: w.Message})
-		case core.WarnNumericGenre, core.WarnUnknownChunkSize:
+		case core.WarnNumericGenre, core.WarnUnknownChunkSize, core.WarnMultiplexedStream:
 			// Info only (README: dump+lint report; must not fail clean exit / piped WAV).
 			out = append(out, Finding{Severity: LintInfo, Code: w.Code.String(), Message: w.Message})
 		}

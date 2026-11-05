@@ -23,6 +23,10 @@ var (
 	// Ogg comment header that holds base64 cover art). The input file is
 	// well-formed; only the write is refused. Distinct from ErrInvalidData.
 	ErrPictureTooLarge = errors.New("picture too large")
+	// ErrContentTooLarge means a write would exceed a format's structural limit for
+	// non-picture content (a comment count or block size, an APEv2 tag, an MP4 item).
+	// Writer-only: a parser reports an oversized declared length as ErrSizeTooLarge.
+	ErrContentTooLarge = errors.New("content too large")
 	// ErrSizeTooLarge means a declared length would exceed the bounded
 	// allocation limit for untrusted input.
 	ErrSizeTooLarge = errors.New("declared size too large")

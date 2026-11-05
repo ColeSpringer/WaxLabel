@@ -140,6 +140,14 @@ const (
 	WarnOutputGainUnsupported
 	// WarnOutputGainR128Tags: R128 tags not rebased after gain edit ([WriteOptions.KeepR128Gains]). Advisory.
 	WarnOutputGainR128Tags
+	// WarnTrailingLyrics3: Lyrics3 block at the tail; preserved, never projected. Read; keyless.
+	WarnTrailingLyrics3
+	// WarnLeadingBytes: bytes between a leading tag and the first frame; preserved. Read; keyless.
+	WarnLeadingBytes
+	// WarnPageGap: bytes between Ogg pages; preserved. Read; keyless.
+	WarnPageGap
+	// WarnMultiplexedStream: concurrent Ogg logical streams; read, write refused. Read; keyless.
+	WarnMultiplexedStream
 )
 
 func (c WarningCode) String() string {
@@ -270,6 +278,14 @@ func (c WarningCode) String() string {
 		return "output-gain-unsupported"
 	case WarnOutputGainR128Tags:
 		return "output-gain-r128-tags"
+	case WarnTrailingLyrics3:
+		return "trailing-lyrics3"
+	case WarnLeadingBytes:
+		return "leading-bytes"
+	case WarnPageGap:
+		return "page-gap"
+	case WarnMultiplexedStream:
+		return "multiplexed-stream"
 	default:
 		return "unknown"
 	}

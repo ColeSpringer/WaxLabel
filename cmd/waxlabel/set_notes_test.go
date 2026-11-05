@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -132,4 +134,21 @@ func TestUnknownKeyNotesAreCapped(t *testing.T) {
 			t.Errorf("the strict key list should not be truncated:\n%s", errb)
 		}
 	})
+}
+
+// --preserve-mtime on standard input has nothing to preserve: the buffered copy's mtime is the
+// time it was read.
+func TestPreserveMtimeOnStdinNotes(t *testing.T) {
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "out.flac")
+	_, stderr, code := runCLIStdin(t, string(data), "set", "-", "-o", out, "--set", "TITLE=x", "--preserve-mtime")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "--preserve-mtime has no effect") {
+		t.Errorf("stderr = %q, want a note that --preserve-mtime has no effect on standard input", stderr)
+	}
 }

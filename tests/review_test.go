@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -330,28 +328,4 @@ func TestExtraVorbisBlocksCollapsedOnAnyEdit(t *testing.T) {
 			t.Error("tag edit lost the new title")
 		}
 	})
-}
-
-// SaveAsFile to a new path should produce a conventional 0644 file, not the 0600 that
-// os.CreateTemp leaves.
-func TestSaveAsFilePermissions(t *testing.T) {
-	doc := mustParseFile(t, sampleFLAC)
-	out := filepath.Join(t.TempDir(), "out.flac")
-	plan, _ := doc.Edit().Set(tag.Title, "x").Prepare()
-	if _, _, err := plan.Execute(context.Background(), wl.SaveAsFile(out)); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Windows has no POSIX mode: os.Stat reports 0666 for any writable file and 0444 for one carrying
-	// the read-only attribute, so 0644 is unreachable there.
-	want := os.FileMode(0o644)
-	if runtime.GOOS == "windows" {
-		want = 0o666
-	}
-	if perm := info.Mode().Perm(); perm != want {
-		t.Errorf("new file mode = %o, want %o", perm, want)
-	}
 }

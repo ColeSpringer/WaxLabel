@@ -77,6 +77,33 @@ func TestKeyKnown(t *testing.T) {
 	}
 }
 
+// TestTVKeys: the TV vocabulary is canonical and single-valued; the season and episode
+// numbers are single tokens, so an edit trims them, while the names stay free text.
+func TestTVKeys(t *testing.T) {
+	known := KnownKeys()
+	for _, k := range []Key{"SHOW", "SHOWSORT", "EPISODEID", "EPISODENUMBER", "SEASONNUMBER", "NETWORK"} {
+		if !k.Known() || !slices.Contains(known, k) {
+			t.Errorf("%s: Known()=%v, in KnownKeys()=%v, want both true", k, k.Known(), slices.Contains(known, k))
+		}
+		if k.Description() == "" {
+			t.Errorf("%s has no Description()", k)
+		}
+		if k.Multivalued() {
+			t.Errorf("%s: Multivalued()=true, want false", k)
+		}
+	}
+	for _, k := range []Key{"EPISODENUMBER", "SEASONNUMBER"} {
+		if got := TrimTokenValue(k, " 5 "); got != "5" {
+			t.Errorf("TrimTokenValue(%s, %q) = %q, want %q", k, " 5 ", got, "5")
+		}
+	}
+	for _, k := range []Key{"SHOW", "SHOWSORT", "EPISODEID", "NETWORK"} {
+		if IsTrimmableKey(k) {
+			t.Errorf("IsTrimmableKey(%s) = true, want false (free text)", k)
+		}
+	}
+}
+
 // The presence-aware contract: absent, present-empty, and present-with-values
 // are three distinct states.
 func TestTagSetPresenceStates(t *testing.T) {

@@ -57,7 +57,7 @@ type Chapter struct {
 type ChapterLoss uint8
 
 const (
-	// ChapterLossNone: end times, language, hidden/disabled preserved (Matroska/WebM).
+	// ChapterLossNone: end times, language, hidden/disabled preserved (Matroska).
 	ChapterLossNone ChapterLoss = iota
 	// ChapterLossStartTitleOnly: start+title only (Nero chpl, Vorbis CHAPTERxxx).
 	ChapterLossStartTitleOnly
@@ -66,6 +66,9 @@ const (
 	// ChapterLossInteriorEndsLangFlags: like start+title but keeps the final chapter's end
 	// (MP4 QuickTime text track; WaxLabel's MP4 writer).
 	ChapterLossInteriorEndsLangFlags
+	// ChapterLossFlagsOnly: start, end, title, and language survive; hidden/disabled do not (WebM,
+	// whose subset has no such flags).
+	ChapterLossFlagsOnly
 )
 
 // ChaptersLoseMetadata reports whether writing chs with loss drops metadata they carry.
@@ -77,6 +80,8 @@ const (
 // [ChapterLossLangFlags]: start/end/title survive; language and flags do not.
 //
 // [ChapterLossInteriorEndsLangFlags]: [ChapterLossStartTitleOnly] except the last chapter's End.
+//
+// [ChapterLossFlagsOnly]: only the hidden/disabled flags are lost.
 func ChaptersLoseMetadata(chs []Chapter, loss ChapterLoss) bool {
 	for i := range chs {
 		if ChapterLosesMetadata(chs, i, loss) {
@@ -97,6 +102,8 @@ func ChapterLosesMetadata(chs []Chapter, i int, loss ChapterLoss) bool {
 		return chapterLosesStartTitle(chs, i, false)
 	case ChapterLossInteriorEndsLangFlags:
 		return chapterLosesStartTitle(chs, i, true)
+	case ChapterLossFlagsOnly:
+		return chs[i].Hidden || chs[i].Disabled
 	default:
 		return false
 	}
@@ -175,6 +182,8 @@ func ChapterMetadataDroppedMessage(loss ChapterLoss) string {
 		return "ID3 chapters store start, end, and title only; per-chapter language and hidden/disabled flags are dropped"
 	case ChapterLossInteriorEndsLangFlags:
 		return "MP4 chapters store start, title, and the final chapter's end; interior gapped end times, per-chapter language, and hidden/disabled flags are dropped"
+	case ChapterLossFlagsOnly:
+		return "WebM chapters store no hidden or disabled flags; those chapters are written visible and enabled"
 	default:
 		return "chapters store start and title only; gapped end times, per-chapter language, and hidden/disabled flags are dropped"
 	}

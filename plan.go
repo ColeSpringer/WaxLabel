@@ -3,6 +3,7 @@ package waxlabel
 import (
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -132,7 +133,8 @@ type SaveResult struct {
 //   - err nil, Committed true: bytes written.
 //   - err nil, Committed false: no-op (writes nothing); not a failure.
 //   - err non-nil, Committed true: bytes written, later step failed; further Execute refused.
-//   - err non-nil, Committed false: nothing written; Document is nil.
+//   - err non-nil, Committed false: nothing committed; Document is nil. A failed [WriteTo]
+//     may have streamed part of the output, which the caller must discard.
 //
 // Reusable until an execution writes over the source path.
 func (p *Plan) Execute(ctx context.Context, dst Destination) (*Document, SaveResult, error) {
@@ -157,21 +159,22 @@ func (p *Plan) Execute(ctx context.Context, dst Destination) (*Document, SaveRes
 	}
 }
 
-// resultDocument builds the post-write Document from the codec result.
-func (p *Plan) resultDocument(path string, src core.ReaderAtSized, id core.Identity) *Document {
-	res := p.plan.Result
-	if res == nil {
-		res = p.doc.media
+// resultMedia is the media the plan writes: the codec result, or the source for a plan without one.
+func (p *Plan) resultMedia() *core.Media {
+	if p.plan.Result != nil {
+		return p.plan.Result
 	}
-	media := res.Clone()
-	if path != "" && !id.HasFinger {
-		if fSrc, err := openFileSource(path); err == nil {
-			if fp, ok := core.Fingerprint(fSrc, media, p.doc.fingerprintLimit()); ok {
-				id.Fingerprint, id.HasFinger = fp, true
-			}
-			fSrc.Close()
-		}
-	}
+	return p.doc.media
+}
+
+// resultDocument builds the post-write Document from the codec result. id and info describe
+// the written file; info is nil when there is none (WriteTo).
+func (p *Plan) resultDocument(path string, id core.Identity, info os.FileInfo) *Document {
+	media := p.resultMedia().Clone()
 	media.Identity = id
-	return &Document{media: media, path: path, src: src, limits: p.doc.limits}
+	doc := &Document{media: media, path: path, limits: p.doc.limits}
+	if info != nil {
+		doc.modTime, doc.hasModTime = info.ModTime(), true
+	}
+	return doc
 }

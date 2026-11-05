@@ -1030,8 +1030,7 @@ func touchedKeys(p tag.TagPatch) map[tag.Key]bool {
 }
 
 // trimTokenValues applies [tag.TrimTokenValue] to the trimmable keys
-// ([tag.IsTrimmableKey]: numeric, date, MP4-integer, BPM, ReplayGain, R128 gain,
-// release-country) this edit touches, so stored values match the form the
+// ([tag.IsTrimmableKey]) this edit touches, so stored values match the form the
 // validators accept. Carried source values are not rewritten.
 func trimTokenValues(ts *tag.TagSet, patch tag.TagPatch) {
 	for _, k := range patch.Keys() {

@@ -2,6 +2,57 @@
 
 All notable changes to this project are documented here.
 
+## [1.9.0]
+
+### Fixed
+
+- A save refuses a source that changed while it ran, not only since parse: bytes
+  appended or cut off during the copy, an in-place edit that kept the size and mtime
+  (the change time catches it on Unix), and a competitor that renamed its own file over
+  the path before the commit. Concurrent saves of one file take an advisory `flock` and
+  run one at a time; `set`, `copy` and `lint --fix` say when another process's lock holds
+  up a save. A deleted source, or a path that no longer names a file, is `source-changed`
+  (exit 5), and a parse records the identity of the file it read, not whatever the path
+  names afterwards.
+- `HashAudioEssence` and `HashFile` (and so `verify`) refuse a file that changed since
+  the parse as `source-changed` instead of hashing it with the parsed file's layout; a
+  deleted file reads `source-changed` (exit 5) rather than `not-found` (exit 6).
+- A metadata fingerprint the save cannot re-read refuses the write, naming the read error,
+  instead of skipping the check, and fingerprints stream, so a metadata region over the
+  allocation limit is still covered.
+- A read error during the copy keeps its cause (`io`, exit 6) instead of reporting
+  corrupt data.
+- `--preserve-mtime` (`WithPreserveModTime`) keeps an mtime of exactly the epoch and
+  dates outside 1678-2262, leaves the access time alone, and fails the save when it
+  cannot set the time. On standard input it notes there is nothing to keep.
+- `export-picture -o` writes atomically: `--overwrite` replaces a read-only target, or
+  one hard-linked elsewhere, without touching the other links.
+
+### Changed
+
+- New files take their mode from the umask (0644 under the usual 022, 0600 under 077)
+  instead of a fixed 0644. A rewrite keeps the replaced file's owner and group where the
+  caller may set them and, on Linux, its `user.*` attributes and POSIX access ACL, or its
+  lack of one where the directory's default ACL would add one. Windows replaces through
+  `ReplaceFileW`, which keeps the file's ACL and attributes, and falls back to a plain
+  rename on a share that refuses it.
+- `-o` without `--overwrite` also refuses a target created while the write runs, except at
+  the last moment on a filesystem without hard links (FAT, exFAT, some network shares).
+
+### Added
+
+- `ErrContentTooLarge` (`content-too-large`, exit 3), for a write that would exceed a
+  format's size or count limit for content other than a picture.
+- Warning codes `trailing-lyrics3` (a Lyrics3 block), `leading-bytes` (bytes between a
+  leading tag and the first frame), `page-gap` (bytes between Ogg pages) and
+  `multiplexed-stream` (concurrent Ogg streams). `lint` reports the first three as warnings
+  and the last at info severity.
+- Canonical keys `SHOW`, `SHOWSORT`, `EPISODEID`, `EPISODENUMBER`, `SEASONNUMBER` and
+  `NETWORK`. An edit trims the two numbers like other single-token values.
+- `WithNoReplace()`, a write option that makes `SaveAsFile` refuse an existing file with
+  an error matching `fs.ErrExist`, and `WithLockWait(fn)`, called when an in-place save
+  waits on another process's lock.
+
 ## [1.8.0]
 
 ### Fixed

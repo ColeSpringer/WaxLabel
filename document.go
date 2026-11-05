@@ -1,6 +1,8 @@
 package waxlabel
 
 import (
+	"time"
+
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
 )
@@ -17,6 +19,11 @@ type Document struct {
 
 	// Parse limits, reused for WithVerifyEssence re-parse. Zero = defaults.
 	limits Limits
+
+	// modTime is the file's modification time as stat'ed, for WithPreserveModTime; hasModTime is
+	// false for a document with no file behind it.
+	modTime    time.Time
+	hasModTime bool
 }
 
 // zero reports whether d is nil or has no media. Safe on a nil receiver.

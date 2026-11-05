@@ -114,6 +114,8 @@ type Media struct {
 	Pictures     []Picture
 	Chapters     []Chapter
 	SyncedLyrics []SyncedLyrics
+	Comments     []TextItem // qualifiers for the COMMENT values, one-to-one ([SyncTextItems])
+	Lyrics       []TextItem // qualifiers for the LYRICS values, one-to-one
 	Families     []FamilyValue
 	Warnings     []Warning
 	Native       NativeDoc
@@ -150,6 +152,8 @@ func (m *Media) Clone() *Media {
 		Pictures:     ClonePictures(m.Pictures),
 		Chapters:     CloneChapters(m.Chapters),
 		SyncedLyrics: CloneSyncedLyrics(m.SyncedLyrics),
+		Comments:     slices.Clone(m.Comments),
+		Lyrics:       slices.Clone(m.Lyrics),
 		Families:     cloneFamilies(m.Families),
 		Warnings:     CloneWarnings(m.Warnings),
 		Identity:     m.Identity,

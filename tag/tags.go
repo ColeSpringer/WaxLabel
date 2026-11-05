@@ -573,13 +573,16 @@ func EmptyNumberWithTotal(k Key, v string) bool {
 }
 
 // IsTrimmableKey reports whether k holds a single-token value whose surrounding whitespace is
-// never meaningful: a numeric, date, MP4-integer, BPM, ReplayGain, R128 gain, or release-country
-// key. [TrimTokenValue], the editor's per-key trim gate, and the transfer grade all use it, so
-// adding a key here updates all three.
+// never meaningful: a numeric, date, MP4-integer, BPM, ReplayGain, R128 gain, release-country,
+// or TV season/episode number key. [TrimTokenValue], the editor's per-key trim gate, and the
+// transfer grade all use it, so adding a key here updates all three.
 func IsTrimmableKey(k Key) bool {
 	return numericKeys[k] || dateKeySet[k] || IsMP4IntKey(k) || IsBPMKey(k) ||
-		IsReplayGainKey(k) || IsReleaseCountryKey(k) || IsR128GainKey(k)
+		IsReplayGainKey(k) || IsReleaseCountryKey(k) || IsR128GainKey(k) || tvNumberKeys[k]
 }
+
+// tvNumberKeys is the TV season and episode numbers. They trim but carry no validator.
+var tvNumberKeys = map[Key]bool{EpisodeNumber: true, SeasonNumber: true}
 
 // TrimTokenValue removes surrounding whitespace from a trimmable value (see [IsTrimmableKey]) and
 // leaves other values unchanged. The editor and CLI advisories share it, so stored values match

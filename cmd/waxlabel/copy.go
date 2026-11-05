@@ -78,7 +78,7 @@ func newCopyCmd() *cobra.Command {
 				return err
 			}
 
-			plan, report, err := srcDoc.PrepareTransfer(dstDoc, opts...)
+			plan, report, err := srcDoc.PrepareTransfer(dstDoc, append(opts, lockWaitNote(errOut, dstPath))...)
 			// Labels distinguish WebM from Matroska (same Format).
 			srcLabel := transferFormatLabel(srcDoc.Format(), srcDoc.Properties().Container)
 			dstLabel := transferFormatLabel(dstDoc.Format(), dstDoc.Properties().Container)

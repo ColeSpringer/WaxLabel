@@ -510,6 +510,13 @@ func (j *jsonPostWrite) setPostWrite(err error) {
 	}
 }
 
+// lockWaitNote tells the user a save of path is waiting for another process's lock on the file.
+func lockWaitNote(w io.Writer, path string) wl.WriteOption {
+	return wl.WithLockWait(func() {
+		fmt.Fprintf(w, "waxlabel: %s: another process holds a lock on the file; waiting for it\n", displayName(path))
+	})
+}
+
 // postWriteReason renders post-commit failure for stderr/JSON. Not perFileReason:
 // post-commit steps name directories, not the printed file path.
 func postWriteReason(err error) string { return cleanMessage(err.Error()) }
@@ -588,6 +595,9 @@ func classifyError(err error) classifiedError {
 		// Supplied cover too large for destination block/atom/frame. File reads fine;
 		// write refusal not corrupt file. Above invalid-data (switch order).
 		c.exitCode, c.code = 3, "picture-too-large"
+	case errors.Is(err, waxerr.ErrContentTooLarge):
+		// Same refusal for non-picture content over a format's size or count limit.
+		c.exitCode, c.code = 3, "content-too-large"
 	case errors.Is(err, waxerr.ErrSourceChanged):
 		c.exitCode, c.code, c.hint = 5, "source-changed",
 			"the file changed since it was read; re-run to pick up the new contents"
@@ -617,8 +627,8 @@ func isUsageError(err error) bool {
 // codes do not follow this order (numeric-max would let not-found 6 beat invalid-data 4).
 // Unknown code ranks 0. Keep in sync with README precedence.
 //
-// picture-too-large last among exit-3 classes (same exit code; rank picks reported
-// message; unwritable file beats cover-too-large-only).
+// picture-too-large and content-too-large last among exit-3 classes (same exit code; rank
+// picks reported message; unwritable file beats a too-large write).
 var errClassRank = map[string]int{
 	"canceled":                  100, // exit 130
 	"timeout":                   100, // exit 130
@@ -631,6 +641,7 @@ var errClassRank = map[string]int{
 	"unsupported-alignment":     63,  // exit 3: non-page-aligned Ogg
 	"unsupported-fragmentation": 62,  // exit 3: fragmented MP4
 	"picture-too-large":         61,  // exit 3: cover too large for destination
+	"content-too-large":         61,  // exit 3: other content over a format limit
 	"io":                        60,  // exit 6
 	"not-found":                 55,  // exit 6
 	"usage":                     20,  // exit 2

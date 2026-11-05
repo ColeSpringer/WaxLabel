@@ -261,6 +261,11 @@ const (
 
 	WarnOutputGainUnsupported = core.WarnOutputGainUnsupported
 	WarnOutputGainR128Tags    = core.WarnOutputGainR128Tags
+
+	WarnTrailingLyrics3   = core.WarnTrailingLyrics3
+	WarnLeadingBytes      = core.WarnLeadingBytes
+	WarnPageGap           = core.WarnPageGap
+	WarnMultiplexedStream = core.WarnMultiplexedStream
 )
 
 // IsDiscardWarning reports whether the edit's content was thrown away rather

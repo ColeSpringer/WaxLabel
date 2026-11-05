@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/colespringer/waxlabel/internal/atomicfile"
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/waxerr"
@@ -18,8 +19,8 @@ import (
 
 // TempFilePrefix and TempFileSuffix name atomic-write temps beside the target.
 const (
-	TempFilePrefix = ".waxlabel-"
-	TempFileSuffix = ".tmp"
+	TempFilePrefix = atomicfile.TempPrefix
+	TempFileSuffix = atomicfile.TempSuffix
 )
 
 // IsTempFileName reports a ".waxlabel-*.tmp" (or CLI writecheck) leftover name.
@@ -44,53 +45,74 @@ type Destination struct {
 }
 
 // SaveBack rewrites the original file in place (temp, fsync, rename). Requires
-// [ParseFile]; checks [waxerr.ErrSourceChanged]; no-op writes nothing.
-// Close any caller-held handle on the path before saving (Windows).
+// [ParseFile]; checks [waxerr.ErrSourceChanged] before and after the copy and before the
+// rename; no-op writes nothing. A save that writes takes an advisory flock on the file where
+// available and waits, until ctx is done, while another descriptor holds one, so release your
+// own first; [WithLockWait] reports the wait. Close any caller-held handle on the path before
+// saving (Windows).
 func SaveBack() Destination { return Destination{kind: destSaveBack} }
 
 // SaveAsFile writes a complete file at path atomically, even for a no-op plan.
-// Overwrites without refusing (the caller or CLI checks clobber). A path resolving
+// Overwrites an existing file unless [WithNoReplace]. A path resolving
 // to the source commits the plan like SaveBack. [ParseFile] checks the source is
 // unchanged; [Parse] needs [WriteTo] with an explicit source.
 func SaveAsFile(path string) Destination { return Destination{kind: destSaveAsFile, path: path} }
 
 // WriteTo streams complete output to w. source required for detached [Parse];
-// nil uses ParseFile/OpenSource's own. Reopened ParseFile source is verified unchanged.
+// nil uses ParseFile/OpenSource's own. Reopened ParseFile source is verified unchanged,
+// before and after the copy. On error w may hold part of the output: discard it.
 func WriteTo(w io.Writer, source ReaderAtSized) Destination {
 	return Destination{kind: destWriteTo, w: w, source: source}
 }
 
-// verifySourceUnchanged checks the on-disk source since parse.
-// samePath true: mtime-inclusive Matches; false: MatchesContent (ignore benign touch).
-func (p *Plan) verifySourceUnchanged(src core.ReaderAtSized, samePath bool) (core.Identity, error) {
-	current, err := fileIdentity(p.doc.path)
+// verifySource compares current, the source as it is now, and the fingerprint read through src
+// with the parse identity. samePath true: Matches (times included); false: MatchesContent
+// (ignore a benign touch). File and size are compared before the fingerprint is read, so a
+// refusal names the most specific change.
+func (d *Document) verifySource(src core.ReaderAtSized, current core.Identity, samePath bool) error {
+	parsed := d.media.Identity
+	if ok, why := parsed.MatchesContent(current); !ok {
+		return fmt.Errorf("%w: %s", waxerr.ErrSourceChanged, why)
+	}
+	if parsed.HasFinger {
+		fp, ok, err := core.ReadFingerprint(src, d.media)
+		if err != nil {
+			return fmt.Errorf("%w: the metadata fingerprint could not be re-read (%w)", waxerr.ErrSourceChanged, err)
+		}
+		if !ok {
+			return fmt.Errorf("%w: the metadata fingerprint could not be re-read", waxerr.ErrSourceChanged)
+		}
+		current.Fingerprint, current.HasFinger = fp, true
+	}
+	match := parsed.Matches
+	if !samePath {
+		match = parsed.MatchesContent
+	}
+	if ok, why := match(current); !ok {
+		return fmt.Errorf("%w: %s", waxerr.ErrSourceChanged, why)
+	}
+	return nil
+}
+
+// checkHeldSource verifies a reopened source before a read of it and returns its identity, the
+// baseline [fileSource.checkStable] compares afterwards.
+func (d *Document) checkHeldSource(src *fileSource, samePath bool) (core.Identity, error) {
+	before, err := src.identity(d.path)
 	if err != nil {
 		return core.Identity{}, err
 	}
-	match := p.doc.media.Identity.Matches
-	if !samePath {
-		match = p.doc.media.Identity.MatchesContent
-	}
-	if ok, why := match(current); !ok {
-		return current, fmt.Errorf("%w: %s", waxerr.ErrSourceChanged, why)
-	}
-	if p.doc.media.Identity.HasFinger {
-		if fp, ok := core.Fingerprint(src, p.doc.media, p.doc.fingerprintLimit()); ok {
-			current.Fingerprint, current.HasFinger = fp, true
-			if ok, why := match(current); !ok {
-				return current, fmt.Errorf("%w: %s", waxerr.ErrSourceChanged, why)
-			}
-		}
-	}
-	return current, nil
+	return before, d.verifySource(src, before, samePath)
 }
 
-// fingerprintLimit is the save-time fingerprint alloc ceiling (parse limit, or default).
-func (d *Document) fingerprintLimit() int64 {
-	if d.limits.MaxAllocBytes > 0 {
-		return d.limits.MaxAllocBytes
+// recheckPath re-checks the source through its path just before a rename replaces it. The held
+// descriptor reads the parsed file even after a competitor renames its own file over the path.
+func (p *Plan) recheckPath() error {
+	fresh, err := reopenFileSource(p.doc.path)
+	if err != nil {
+		return err
 	}
-	return bits.DefaultLimits.MaxAllocBytes
+	defer fresh.Close()
+	return p.doc.verifySource(fresh, core.FileIdentity(p.doc.path, fresh.info), true)
 }
 
 func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
@@ -98,25 +120,32 @@ func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
 		return nil, SaveResult{}, fmt.Errorf("%w: SaveBack needs a file; use SaveAsFile or WriteTo", waxerr.ErrNeedsFile)
 	}
 	// Execute holds the already-committed guard, so this plan has not yet written.
-	src, err := openFileSource(p.doc.path)
+	src, err := reopenFileSource(p.doc.path)
 	if err != nil {
 		return nil, SaveResult{}, err
 	}
 	defer src.Close()
-
-	// An in-place save uses the full mtime-inclusive check.
-	if current, err := p.verifySourceUnchanged(src, true); err != nil {
-		return nil, SaveResult{Dest: current}, err
+	// Held from before the check until after the rename, so concurrent saves of this file run
+	// one at a time and the later one sees the earlier one's rename. A no-op writes nothing to
+	// guard.
+	if !p.plan.NoOp {
+		unlock, err := atomicfile.Lock(ctx, src.f, p.opts.LockWait)
+		if err != nil {
+			return nil, SaveResult{}, err
+		}
+		defer unlock()
 	}
 
+	before, err := p.doc.checkHeldSource(src, true)
+	if err != nil {
+		return nil, SaveResult{Dest: before}, err
+	}
 	// Contract: a no-op SaveBack writes nothing.
 	if p.plan.NoOp {
 		return p.doc, SaveResult{Committed: false, Dest: p.doc.media.Identity, Doc: p.doc}, nil
 	}
 
-	// The hook closes src before the rename replaces its path; a double Close is harmless.
-	committed, werr := p.writeFile(ctx, p.doc.path, src, func() { src.Close() })
-	destID, _ := fileIdentity(p.doc.path)
+	committed, destID, info, werr := p.writeFile(ctx, p.doc.path, src, before, fileWrite{inPlace: true})
 	if !committed {
 		// No post-write file to describe, so no Document.
 		return nil, SaveResult{Committed: false, Dest: destID}, werr
@@ -124,7 +153,7 @@ func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
 	// The rename succeeded, so the bytes are in place even if the directory fsync
 	// failed. Mark the plan so a second SaveBack is refused.
 	p.committed = true
-	resDoc := p.resultDocument(p.doc.path, nil, destID)
+	resDoc := p.resultDocument(p.doc.path, destID, info)
 	return resDoc, SaveResult{Committed: true, Dest: destID, Doc: resDoc}, werr
 }
 
@@ -138,25 +167,31 @@ func (p *Plan) saveAsFile(ctx context.Context, path string) (*Document, SaveResu
 	// A ParseFile document reopens its source, so a change since parse would copy the
 	// wrong bytes. An OpenSource document reads stable bytes; a detached Parse
 	// document failed above.
-	if p.doc.reopensFileSource() {
-		if current, err := p.verifySourceUnchanged(src, sameFileTarget(path, p.doc.path)); err != nil {
-			return nil, SaveResult{Dest: current}, err
+	inPlace := sameFileTarget(path, p.doc.path)
+	var before core.Identity
+	if held, ok := src.(*fileSource); ok {
+		if inPlace {
+			unlock, err := atomicfile.Lock(ctx, held.f, p.opts.LockWait)
+			if err != nil {
+				return nil, SaveResult{}, err
+			}
+			defer unlock()
+		}
+		if before, err = p.doc.checkHeldSource(held, inPlace); err != nil {
+			return nil, SaveResult{Dest: before}, err
 		}
 	}
 
-	// The closer is the release hook: the target may resolve to the source, which
-	// the rename replaces. It is idempotent.
-	committed, werr := p.writeFile(ctx, path, src, closer)
-	destID, _ := fileIdentity(path)
+	committed, destID, info, werr := p.writeFile(ctx, path, src, before, fileWrite{inPlace: inPlace, noReplace: p.opts.NoReplace})
 	if !committed {
 		return nil, SaveResult{Committed: false, Dest: destID}, werr
 	}
-	if sameFileTarget(path, p.doc.path) {
+	if inPlace {
 		// This replaced the plan's source, so mark it committed as SaveBack does. Matched
 		// by resolved path, not inode: a rename onto a hardlink alias leaves the source.
 		p.committed = true
 	}
-	resDoc := p.resultDocument(path, nil, destID)
+	resDoc := p.resultDocument(path, destID, info)
 	return resDoc, SaveResult{Committed: true, Dest: destID, Doc: resDoc}, werr
 }
 
@@ -193,42 +228,104 @@ func (p *Plan) writeTo(ctx context.Context, dst Destination) (*Document, SaveRes
 	}
 	defer closer()
 
-	if dst.source == nil && p.doc.reopensFileSource() {
-		if current, err := p.verifySourceUnchanged(src, false); err != nil {
-			return nil, SaveResult{Dest: current}, err
+	held, reopened := src.(*fileSource)
+	var before core.Identity
+	if reopened {
+		if before, err = p.doc.checkHeldSource(held, false); err != nil {
+			return nil, SaveResult{Dest: before}, err
 		}
 	}
 
-	if _, err := bits.Write(ctx, dst.w, src, p.plan.Segments, nil); err != nil {
+	atSaveStage("copy")
+	_, err = bits.Write(ctx, dst.w, src, p.plan.Segments, nil)
+	atSaveStage("copied")
+	if reopened {
+		if serr := held.checkStable(p.doc.path, before, false); serr != nil {
+			return nil, SaveResult{}, serr
+		}
+	}
+	if err != nil {
 		return nil, SaveResult{}, err
 	}
 	id := core.Identity{Size: bits.OutputLen(p.plan.Segments)}
-	resDoc := p.resultDocument("", nil, id)
+	resDoc := p.resultDocument("", id, nil)
 	return resDoc, SaveResult{Committed: true, Dest: id, Doc: resDoc}, nil
 }
 
-// writeFile atomically writes the plan to path. Owns release (close before Windows rename).
-func (p *Plan) writeFile(ctx context.Context, path string, src core.ReaderAtSized, release func()) (bool, error) {
+// saveHook, when set, runs at each named stage of a write: "copy" before the source copy,
+// "copied" after it, "commit" before the final checks and the rename. Test-only.
+var saveHook func(stage string)
+
+func atSaveStage(stage string) {
+	if saveHook != nil {
+		saveHook(stage)
+	}
+}
+
+// fileWrite says how a file destination relates to the source.
+type fileWrite struct {
+	inPlace   bool // the write replaces the parsed source: re-check its path before the rename
+	noReplace bool // refuse a file already at the destination
+}
+
+// writeFile atomically writes the plan to path and returns the written file's identity and stat.
+// A reopened source is checked again after the copy.
+func (p *Plan) writeFile(ctx context.Context, path string, src core.ReaderAtSized, before core.Identity, mode fileWrite) (bool, core.Identity, os.FileInfo, error) {
+	held, reopened := src.(*fileSource)
 	var srcEssence []byte
+	var fp [32]byte
+	var hasFinger bool
 	write := func(f *os.File) error {
+		atSaveStage("copy")
 		sum, err := p.streamCopy(ctx, f, src)
-		// Release before rename: Windows MoveFileEx fails if this process still holds the path.
-		release()
+		atSaveStage("copied")
+		if reopened {
+			if serr := held.checkStable(p.doc.path, before, mode.inPlace); serr != nil {
+				return serr
+			}
+			if atomicfile.OpenFilesBlockRename {
+				held.Close()
+			}
+		}
 		srcEssence = sum
 		return err
 	}
 	verify := func(f *os.File) error {
-		return p.verifyOutput(ctx, f, srcEssence)
+		if err := p.verifyOutput(ctx, f, srcEssence); err != nil {
+			return err
+		}
+		out := sizedReaderAt{ReaderAt: f, size: bits.OutputLen(p.plan.Segments)}
+		fp, hasFinger = core.Fingerprint(out, p.resultMedia())
+		return nil
 	}
-	return writeAtomic(path, write, verify, p.preserveModTimeUnixNano())
+	preCommit := func() error {
+		atSaveStage("commit")
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if mode.inPlace {
+			return p.recheckPath()
+		}
+		return nil
+	}
+	opts := atomicfile.Options{Verify: verify, PreCommit: preCommit, ModTime: p.preserveModTime(), NoReplace: mode.noReplace, KeepOpen: true}
+	committed, info, err := atomicfile.Write(path, write, opts)
+	var id core.Identity
+	if info != nil {
+		id = core.FileIdentity(path, info)
+		id.Fingerprint, id.HasFinger = fp, hasFinger
+	} else if !committed {
+		id, _ = fileIdentity(path)
+	}
+	return committed, id, info, err
 }
 
-// preserveModTimeUnixNano is the mtime to stamp, or 0 for write time.
-func (p *Plan) preserveModTimeUnixNano() int64 {
-	if !p.opts.PreserveModTime {
-		return 0
+// preserveModTime is the mtime to stamp, or nil for write time.
+func (p *Plan) preserveModTime() *time.Time {
+	if !p.opts.PreserveModTime || !p.doc.hasModTime {
+		return nil
 	}
-	return p.doc.media.Identity.ModTimeUnixNano
+	return &p.doc.modTime
 }
 
 // streamCopy writes plan segments to dst, optionally tapping essence for verify.
@@ -302,102 +399,9 @@ func (p *Plan) essenceExtent() (string, []byte) {
 	return "audio-extent-v1", nil
 }
 
-// tempCreateError names the destination directory, not the internal temp pattern.
-type tempCreateError struct {
-	dir string
-	err error // usually *os.PathError
-}
-
-func (e *tempCreateError) Error() string {
-	reason := e.err.Error()
-	if pe, ok := e.err.(*os.PathError); ok {
-		reason = pe.Err.Error() // the bare cause, without the random temp name
-	}
-	return fmt.Sprintf("create temp file in %s: %s", e.dir, reason)
-}
-
-func (e *tempCreateError) Unwrap() error { return e.err }
-
-// renameError names the target; unwraps LinkError for I/O classification.
-type renameError struct {
-	target string
-	err    error // usually *os.LinkError
-}
-
-func (e *renameError) Error() string {
-	reason := e.err.Error()
-	if le, ok := e.err.(*os.LinkError); ok {
-		reason = le.Err.Error() // the bare cause, without the random temp name
-	}
-	return fmt.Sprintf("replace %s: %s", e.target, reason)
-}
-
-func (e *renameError) Unwrap() error { return e.err }
-
-// NewTempCreateError matches writeAtomic's temp-create failure (CLI -o probe).
-func NewTempCreateError(dir string, err error) error {
-	return &tempCreateError{dir: dir, err: err}
-}
+// NewTempCreateError matches the error a save returns when it cannot create its temp (CLI -o
+// probe).
+func NewTempCreateError(dir string, err error) error { return atomicfile.NewTempCreateError(dir, err) }
 
 // ResolveWriteTarget is the path an atomic write renames over (symlink-resolved).
-func ResolveWriteTarget(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		return resolved
-	}
-	return path
-}
-
-// writeAtomic: temp in dest dir, fsync, optional verify, rename, dir fsync.
-// committed=true once rename succeeds.
-func writeAtomic(path string, write, verify func(*os.File) error, preserveModTimeUnixNano int64) (bool, error) {
-	target := ResolveWriteTarget(path)
-	dir := filepath.Dir(target)
-	tmp, err := os.CreateTemp(dir, TempFilePrefix+"*"+TempFileSuffix)
-	if err != nil {
-		return false, &tempCreateError{dir: dir, err: err}
-	}
-	tmpName := tmp.Name()
-	committed := false
-	defer func() {
-		if !committed {
-			tmp.Close()
-			os.Remove(tmpName)
-		}
-	}()
-
-	if err := write(tmp); err != nil {
-		return false, err
-	}
-	if err := tmp.Sync(); err != nil {
-		return false, err
-	}
-	if verify != nil {
-		if err := verify(tmp); err != nil { // runs before commit; temp discarded on failure
-			return false, err
-		}
-	}
-	if err := tmp.Close(); err != nil {
-		return false, err
-	}
-
-	// Mode/mtime best-effort (FAT has no chmod). Existing mode carried; new file 0644.
-	info, statErr := os.Stat(target)
-	if statErr == nil {
-		_ = os.Chmod(tmpName, info.Mode())
-	} else {
-		_ = os.Chmod(tmpName, 0o644)
-	}
-	if preserveModTimeUnixNano != 0 {
-		mt := time.Unix(0, preserveModTimeUnixNano)
-		_ = os.Chtimes(tmpName, mt, mt)
-	}
-
-	restoreReadOnly := clearTargetReadOnly(target, info)
-	defer restoreReadOnly()
-
-	if err := renameReplace(tmpName, target); err != nil {
-		return false, &renameError{target: target, err: err}
-	}
-	committed = true
-	return true, fsyncDir(dir)
-}
+func ResolveWriteTarget(path string) string { return atomicfile.ResolveTarget(path) }

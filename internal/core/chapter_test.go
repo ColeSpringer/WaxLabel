@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -41,5 +42,36 @@ func TestFormatChapterTimeRounds(t *testing.T) {
 		if got := FormatChapterTime(in); got != want {
 			t.Errorf("FormatChapterTime(%v) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestChapterLossFlagsOnly: a store that keeps ends and language loses only the
+// hidden/disabled flags, and its warning names only those.
+func TestChapterLossFlagsOnly(t *testing.T) {
+	sec := func(s int) time.Duration { return time.Duration(s) * time.Second }
+	cases := []struct {
+		name string
+		chs  []Chapter
+		want bool
+	}{
+		{"plain", []Chapter{{Title: "A"}, {Start: sec(5), Title: "B"}}, false},
+		{"gapped-end", []Chapter{{End: sec(3)}, {Start: sec(5), End: sec(9)}}, false},
+		{"language", []Chapter{{Language: "eng", LanguageIETF: "en-US"}}, false},
+		{"hidden", []Chapter{{Hidden: true}}, true},
+		{"disabled", []Chapter{{Disabled: true}}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ChapterLosesMetadata(c.chs, len(c.chs)-1, ChapterLossFlagsOnly); got != c.want {
+				t.Errorf("ChapterLosesMetadata(FlagsOnly) = %v, want %v", got, c.want)
+			}
+		})
+	}
+	msg := ChapterMetadataDroppedMessage(ChapterLossFlagsOnly)
+	if !strings.Contains(msg, "hidden") || !strings.Contains(msg, "disabled") {
+		t.Errorf("message %q should name the hidden and disabled flags", msg)
+	}
+	if strings.Contains(msg, "end") || strings.Contains(msg, "language") {
+		t.Errorf("message %q claims ends or language are dropped; this store keeps them", msg)
 	}
 }

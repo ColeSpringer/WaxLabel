@@ -110,6 +110,10 @@ type WriteOptions struct {
 	PaddingExplicit bool
 	Legacy          LegacyPolicy
 	PreserveModTime bool
+	// NoReplace: SaveAsFile refuses a file already at its path.
+	NoReplace bool
+	// LockWait runs once when an in-place save has waited a while on another process's lock.
+	LockWait func()
 	// VerifyEssence verifies audio hash on copy.
 	VerifyEssence bool
 	// NumericGenre writes recognized genre as numeric ID3 TCON reference.

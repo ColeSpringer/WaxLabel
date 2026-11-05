@@ -196,7 +196,7 @@ func runLintFix(cmd *cobra.Command, paths []string, pathErrors map[string]error)
 	errOut, asJSON := cmd.ErrOrStderr(), jsonMode(cmd)
 	// Post-commit failure is a note on the outcome, not the error return.
 	fixOne := func(ctx context.Context, path string) (fixOutcome, error) {
-		o, err := lintFixOne(ctx, path)
+		o, err := lintFixOne(ctx, path, lockWaitNote(errOut, path))
 		warnPostCommit(errOut, asJSON, path, o.postWrite)
 		return o, err
 	}
@@ -223,7 +223,7 @@ type fixOutcome struct {
 
 // lintFixOne parses, applies safe remediation, saves, re-lints.
 // Re-lint keeps "remaining" accurate (e.g. an encoder stamp in a vendor string survives Clear).
-func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
+func lintFixOne(ctx context.Context, path string, extra ...wl.WriteOption) (fixOutcome, error) {
 	doc, err := wl.ParseFile(ctx, path)
 	if err != nil {
 		return fixOutcome{}, err
@@ -236,7 +236,7 @@ func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 		}
 	}
 	fix := doc.PlanLintFix()
-	plan, err := doc.Edit().Apply(fix.Patch).Prepare(fix.Options...)
+	plan, err := doc.Edit().Apply(fix.Patch).Prepare(slices.Concat(fix.Options, extra)...)
 	if err != nil {
 		return fixOutcome{}, err
 	}

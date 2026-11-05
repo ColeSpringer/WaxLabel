@@ -2,6 +2,7 @@ package bits
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -68,8 +69,12 @@ func Write(ctx context.Context, dst io.Writer, src io.ReaderAt, segs []Segment, 
 				return total, err
 			}
 			chunk := min(remaining, int64(len(buf)))
-			if _, err := src.ReadAt(buf[:chunk], off); err != nil {
-				return total, fmt.Errorf("%w: copy read at %d: %v", waxerr.ErrInvalidData, off, err)
+			// io.ReaderAt may report EOF with a full read; only a short read fails.
+			if n, err := src.ReadAt(buf[:chunk], off); int64(n) < chunk {
+				if err == nil || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+					return total, fmt.Errorf("%w: copy read at %d: source ends early", waxerr.ErrInvalidData, off)
+				}
+				return total, fmt.Errorf("copy read at %d: %w", off, err)
 			}
 			if tap != nil {
 				tap.Observe(off, buf[:chunk])

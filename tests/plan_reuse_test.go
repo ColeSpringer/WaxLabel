@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -208,18 +211,86 @@ func appendByte(t *testing.T, path string) {
 	}
 }
 
+// flipAudioByte changes the file's last byte, which sample.flac's audio frames own, and restores
+// the mtime: only the change time records the edit.
+func flipAudioByte(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data[len(data)-1] ^= 0xFF
+	if err := os.WriteFile(path, data, info.Mode()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func removeFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // changedSourceCase is one way a source can change under a parsed document, plus the substring the
-// ErrSourceChanged reason must cite.
+// ErrSourceChanged reason must cite. inPlaceOnly cases leave the planned offsets valid, so only a
+// write over the source refuses them; notExist refusals also wrap fs.ErrNotExist.
 type changedSourceCase struct {
-	name   string
-	tamper func(t *testing.T, path string)
-	reason string
+	name        string
+	tamper      func(t *testing.T, path string)
+	reason      string
+	inPlaceOnly bool
+	notExist    bool
 }
 
 func changedSourceCases() []changedSourceCase {
-	return []changedSourceCase{
-		{"size change", appendByte, "size changed"},
-		{"fingerprint only", func(t *testing.T, path string) { tamperFlip(t, path, "Original Title") }, "fingerprint"},
+	cases := []changedSourceCase{
+		{name: "size change", tamper: appendByte, reason: "size changed"},
+		{name: "fingerprint only", tamper: func(t *testing.T, path string) { tamperFlip(t, path, "Original Title") }, reason: "fingerprint"},
+		{name: "source deleted", tamper: removeFile, reason: "no longer exists", notExist: true},
+	}
+	// Windows reports no change time, so an audio edit that restores the mtime goes unseen there.
+	if runtime.GOOS != "windows" {
+		cases = append(cases, changedSourceCase{name: "audio byte, mtime restored", tamper: flipAudioByte, reason: "change time", inPlaceOnly: true})
+	}
+	return cases
+}
+
+// checkSourceChanged fails unless err refuses the write for tc's reason.
+func checkSourceChanged(t *testing.T, what string, tc changedSourceCase, err error) {
+	t.Helper()
+	if !errors.Is(err, waxerr.ErrSourceChanged) || !strings.Contains(err.Error(), tc.reason) {
+		t.Fatalf("%s after %s: err=%v, want ErrSourceChanged citing %q", what, tc.name, err, tc.reason)
+	}
+	if tc.notExist && !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("%s after %s: err=%v, want it to wrap fs.ErrNotExist", what, tc.name, err)
+	}
+}
+
+// checks the guard on SaveBack: every change since parse refuses the in-place write.
+func TestSaveBackGuardsChangedSource(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range changedSourceCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			work := copyToTemp(t, sampleFLAC)
+			plan, err := mustParseFile(t, work).Edit().Set(tag.Title, "Changed").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.tamper(t, work)
+			_, res, err := plan.Execute(ctx, wl.SaveBack())
+			checkSourceChanged(t, "SaveBack", tc, err)
+			if res.Committed {
+				t.Error("a refused SaveBack reports Committed")
+			}
+		})
 	}
 }
 
@@ -229,6 +300,9 @@ func TestSaveAsFileGuardsChangedSource(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range changedSourceCases() {
 		t.Run(tc.name+"/other path", func(t *testing.T) {
+			if tc.inPlaceOnly {
+				t.Skip("a derived write copies the current bytes; the planned offsets still hold")
+			}
 			work := copyToTemp(t, sampleFLAC)
 			plan, err := mustParseFile(t, work).Edit().Set(tag.Title, "Changed").Prepare()
 			if err != nil {
@@ -237,9 +311,7 @@ func TestSaveAsFileGuardsChangedSource(t *testing.T) {
 			tc.tamper(t, work)
 			other := filepath.Join(t.TempDir(), "out.flac")
 			_, _, err = plan.Execute(ctx, wl.SaveAsFile(other))
-			if !errors.Is(err, waxerr.ErrSourceChanged) || !strings.Contains(err.Error(), tc.reason) {
-				t.Fatalf("SaveAsFile(other) after %s: err=%v, want ErrSourceChanged citing %q", tc.name, err, tc.reason)
-			}
+			checkSourceChanged(t, "SaveAsFile(other)", tc, err)
 			if _, statErr := os.Stat(other); statErr == nil {
 				t.Error("a refused SaveAsFile still wrote an output file")
 			}
@@ -251,9 +323,8 @@ func TestSaveAsFileGuardsChangedSource(t *testing.T) {
 				t.Fatal(err)
 			}
 			tc.tamper(t, work)
-			if _, _, err := plan.Execute(ctx, wl.SaveAsFile(work)); !errors.Is(err, waxerr.ErrSourceChanged) {
-				t.Fatalf("SaveAsFile(source) after %s: err=%v, want ErrSourceChanged", tc.name, err)
-			}
+			_, _, err = plan.Execute(ctx, wl.SaveAsFile(work))
+			checkSourceChanged(t, "SaveAsFile(source)", tc, err)
 		})
 	}
 }
@@ -265,6 +336,9 @@ func TestWriteToGuardsChangedSource(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range changedSourceCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.inPlaceOnly {
+				t.Skip("a derived write copies the current bytes; the planned offsets still hold")
+			}
 			work := copyToTemp(t, sampleFLAC)
 			plan, err := mustParseFile(t, work).Edit().Set(tag.Title, "Changed").Prepare()
 			if err != nil {
@@ -273,9 +347,7 @@ func TestWriteToGuardsChangedSource(t *testing.T) {
 			tc.tamper(t, work)
 			var buf bytes.Buffer
 			_, _, err = plan.Execute(ctx, wl.WriteTo(&buf, nil))
-			if !errors.Is(err, waxerr.ErrSourceChanged) || !strings.Contains(err.Error(), tc.reason) {
-				t.Fatalf("WriteTo(w, nil) after %s: err=%v, want ErrSourceChanged citing %q", tc.name, err, tc.reason)
-			}
+			checkSourceChanged(t, "WriteTo(w, nil)", tc, err)
 			if buf.Len() != 0 {
 				t.Errorf("a refused WriteTo still streamed %d bytes", buf.Len())
 			}
@@ -416,4 +488,26 @@ func TestGuardBypassedForStableSources(t *testing.T) {
 			t.Fatalf("SaveAsFile on an OpenSource document: err=%v committed=%v", err, res.Committed)
 		}
 	})
+}
+
+// The Document a save returns describes the file as renamed into place, so editing it again saves
+// without a re-parse, in place or through SaveAsFile onto the same path.
+func TestChainedSavesFromReturnedDocument(t *testing.T) {
+	ctx := context.Background()
+	work := copyToTemp(t, sampleFLAC)
+	doc := mustParseFile(t, work)
+	for i, dst := range []wl.Destination{wl.SaveBack(), wl.SaveAsFile(work), wl.SaveBack()} {
+		plan, err := doc.Edit().Set(tag.Title, fmt.Sprint("chain ", i)).Prepare(wl.WithPreserveModTime())
+		if err != nil {
+			t.Fatal(err)
+		}
+		next, res, err := plan.Execute(ctx, dst)
+		if err != nil || !res.Committed {
+			t.Fatalf("save %d off the returned document: err=%v committed=%v", i, err, res.Committed)
+		}
+		doc = next
+	}
+	if got := mustParseFile(t, work).Fields().Title; got != "chain 2" {
+		t.Errorf("title on disk = %q, want %q", got, "chain 2")
+	}
 }

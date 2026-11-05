@@ -71,6 +71,20 @@ func WithPreserveModTime() WriteOption {
 	return func(o *core.WriteOptions) { o.PreserveModTime = true }
 }
 
+// WithNoReplace makes [SaveAsFile] refuse to replace a file at its path, including one that
+// appears while the write runs: the error satisfies errors.Is(err, fs.ErrExist). On a filesystem
+// without hard links (FAT, exFAT, some network shares) a file that appears in the last moment
+// before the rename can still be replaced.
+func WithNoReplace() WriteOption {
+	return func(o *core.WriteOptions) { o.NoReplace = true }
+}
+
+// WithLockWait runs fn once when an in-place save has waited about a second for another process
+// to release its lock on the file, so a caller can say why the save is not done.
+func WithLockWait(fn func()) WriteOption {
+	return func(o *core.WriteOptions) { o.LockWait = fn }
+}
+
 // WithVerifyEssence hashes audio during copy and compares the written output.
 // SaveBack/SaveAsFile re-read the temp before commit. WriteTo verifies only
 // bytes copied from the source (stream cannot be re-read).

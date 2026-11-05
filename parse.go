@@ -62,21 +62,26 @@ func ParseFile(ctx context.Context, path string, opts ...ParseOption) (*Document
 	if err != nil {
 		return nil, err
 	}
-	defer fs.Close()
-
 	doc, err := parseSource(ctx, fs, path, resolveParseOptions(opts))
+	fs.Close()
 	if err != nil {
 		return nil, err
 	}
-	doc.path = path
-
-	if id, err := fileIdentity(path); err == nil {
-		id.Fingerprint = doc.media.Identity.Fingerprint
-		id.HasFinger = doc.media.Identity.HasFinger
-		doc.media.Identity = id
+	if afterParseHook != nil {
+		afterParseHook()
 	}
+	doc.path = path
+	doc.modTime, doc.hasModTime = fs.info.ModTime(), true
+
+	id := core.FileIdentity(path, fs.info)
+	id.Fingerprint = doc.media.Identity.Fingerprint
+	id.HasFinger = doc.media.Identity.HasFinger
+	doc.media.Identity = id
 	return doc, nil
 }
+
+// afterParseHook runs after ParseFile parses and before it records the identity. Test-only.
+var afterParseHook func()
 
 // parseSource detects format and dispatches to the codec.
 func parseSource(ctx context.Context, src ReaderAtSized, path string, opts core.ParseOptions) (*Document, error) {

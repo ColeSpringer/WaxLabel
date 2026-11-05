@@ -279,6 +279,14 @@ const (
 	MovementName   Key = "MOVEMENTNAME"
 	Movement       Key = "MOVEMENT"
 	MovementTotal  Key = "MOVEMENTTOTAL"
+
+	// TV episode fields.
+	Show          Key = "SHOW"
+	ShowSort      Key = "SHOWSORT"
+	EpisodeID     Key = "EPISODEID"
+	EpisodeNumber Key = "EPISODENUMBER"
+	SeasonNumber  Key = "SEASONNUMBER"
+	Network       Key = "NETWORK"
 )
 
 // vocabulary maps every known key to its description. KnownKeys derives its
@@ -360,6 +368,12 @@ var vocabulary = map[Key]string{
 	MovementName:        "movement name within the work",
 	Movement:            "movement number within the work",
 	MovementTotal:       "total movements in the work",
+	Show:                "TV show name",
+	ShowSort:            "TV show sort name",
+	EpisodeID:           "TV episode identifier (production code)",
+	EpisodeNumber:       "episode number within the season",
+	SeasonNumber:        "TV season number",
+	Network:             "TV network or channel",
 }
 
 // multivalued is the set of canonical keys that hold a list of values. It matches the

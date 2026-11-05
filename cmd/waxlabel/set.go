@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/atomicfile"
 	"github.com/spf13/cobra"
 )
 
@@ -76,6 +77,11 @@ func newSetCmd() *cobra.Command {
 			if overwrite && output == "" {
 				fmt.Fprintln(cmd.ErrOrStderr(), "note: --overwrite has no effect without -o")
 			}
+			// A stream has no modification time; the buffered copy's is the time it was read.
+			if preserveMtime && slices.Contains(args, stdinArg) {
+				fmt.Fprintln(cmd.ErrOrStderr(), "note: --preserve-mtime has no effect on standard input; the output gets the write time")
+				preserveMtime = false
+			}
 			var extra []wl.WriteOption
 			if verify {
 				extra = append(extra, wl.WithVerifyEssence())
@@ -109,6 +115,11 @@ func newSetCmd() *cobra.Command {
 			if output != "" {
 				if err := checkOutputTarget(output, realOf(inputs[0]), overwrite); err != nil {
 					return err
+				}
+				// The check above can race another writer; the commit then refuses the target too.
+				if !overwrite && !sameWriteTarget(output, realOf(inputs[0])) {
+					ce.opts = append(ce.opts, wl.WithNoReplace())
+					ce.noReplace = true
 				}
 			}
 			// Defer notes until a path exists; avoids claiming a write on an abort.
@@ -154,7 +165,7 @@ func checkOutputTarget(output, inputReal string, overwrite bool) error {
 		// Exists but is not a directory.
 		return usagef("-o target directory %q is not a directory", parent)
 	}
-	// Resolve once (writeAtomic's way) for both checks below.
+	// Resolve once (as the atomic write does) for both checks below.
 	resolved := wl.ResolveWriteTarget(output)
 	// Refuse FIFO/device/socket/dangling symlink; --overwrite means replace a regular file.
 	if err := checkOutputRegular(output, resolved); err != nil {
@@ -167,12 +178,26 @@ func checkOutputTarget(output, inputReal string, overwrite bool) error {
 			// Canonical path, not inode: hardlink shares inode but rename would break it.
 			// Missing input falls through to input parse not-found.
 			if _, ierr := os.Stat(inputReal); ierr == nil && !sameWriteTarget(output, inputReal) {
-				return usagef("-o target %q already exists; pass --overwrite to replace the existing file", output)
+				return existingOutputError(output)
 			}
 		}
 	}
-	// Same temp create as writeAtomic; unwritable destination fails before plan preview.
+	// Same temp create as the atomic write; unwritable destination fails before plan preview.
 	return checkOutputDirWritable(resolved)
+}
+
+// existingOutputError refuses an -o target that exists, absent --overwrite.
+func existingOutputError(output string) error {
+	return usagef("-o target %q already exists; pass --overwrite to replace the existing file", output)
+}
+
+// outputCommitError reports a no-replace commit that found a file at -o (one created after the
+// up-front check) as that check would have.
+func outputCommitError(output string, noReplace bool, err error) error {
+	if noReplace && atomicfile.IsTargetExists(err) {
+		return existingOutputError(output)
+	}
+	return err
 }
 
 // sameWriteTarget reports whether -o and the input resolve to the same write target
@@ -195,7 +220,7 @@ func absOrClean(path string) string {
 }
 
 // checkOutputRegular refuses -o targets that are not regular files (or symlinks to one).
-// writeAtomic renames temp over resolved; special nodes would be replaced, dangling links
+// The atomic write renames over resolved: a special node would be replaced, a dangling link
 // would leave a stray file. Missing target is allowed.
 func checkOutputRegular(output, resolved string) error {
 	li, err := os.Lstat(output)
@@ -220,7 +245,7 @@ func checkOutputRegular(output, resolved string) error {
 	return nil
 }
 
-// checkOutputDirWritable probes the target directory with writeAtomic's temp create.
+// checkOutputDirWritable probes the target directory with the atomic write's temp create.
 // Returns wl.NewTempCreateError so up-front and late errors match.
 func checkOutputDirWritable(resolved string) error {
 	dir := filepath.Dir(resolved)
@@ -287,7 +312,7 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 			fail(path, e)
 			continue
 		}
-		doc, plan, err := ce.prepare(cmd.Context(), realOf(path), path)
+		doc, plan, err := ce.prepare(cmd.Context(), realOf(path), path, lockWaitNote(errOut, path))
 		if err != nil {
 			fail(path, err)
 			continue
@@ -323,6 +348,9 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 		_, res, err := plan.Execute(cmd.Context(), dst)
 		// Outcome follows res.Committed, not err (post-commit failure != writeFailed).
 		if writeFailed(res, err) {
+			if output != "" {
+				err = outputCommitError(output, ce.noReplace, err)
+			}
 			fail(path, err)
 			continue
 		}

@@ -558,6 +558,8 @@ type compiledEdit struct {
 	// outputGain is Q7.8 integer; outputGainSet true when flag given (0 is valid).
 	outputGain    int
 	outputGainSet bool
+	// noReplace: set -o asked the save to refuse a target that appears meanwhile.
+	noReplace bool
 }
 
 // compile resolves edit flags before any file is parsed. extra adds save-only options.
@@ -1015,7 +1017,7 @@ func keyList(keys []tag.Key) string {
 
 // prepare parses realPath (errors use origPath display name), applies compiledEdit, returns plan.
 // Removals before adds. --add-cover replaces front cover (clears existing front covers first).
-func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string) (*wl.Document, *wl.Plan, error) {
+func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string, extra ...wl.WriteOption) (*wl.Document, *wl.Plan, error) {
 	doc, err := parseInput(ctx, realPath, origPath)
 	if err != nil {
 		return nil, nil, err
@@ -1079,7 +1081,7 @@ func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string) 
 	if ce.outputGainSet {
 		ed.SetOutputGain(ce.outputGain)
 	}
-	plan, err := ed.Prepare(ce.opts...)
+	plan, err := ed.Prepare(slices.Concat(ce.opts, extra)...)
 	if err != nil {
 		return nil, nil, err
 	}

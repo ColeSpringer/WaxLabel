@@ -49,6 +49,8 @@ type Capability struct {
 	SyncedLyricsLoss SyncedLyricsLoss
 	// SyncedLyricsTimeMax line timestamp cap; 0 = none (SYLT/LRC).
 	SyncedLyricsTimeMax time.Duration
+	// TextLoss on the COMMENT and LYRICS field capabilities only.
+	TextLoss TextItemLoss
 	// PictureMIMEs allowed cover MIMEs; nil = unrestricted. Pictures capability only.
 	PictureMIMEs []string
 

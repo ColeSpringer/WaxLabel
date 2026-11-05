@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/atomicfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/spf13/cobra"
 )
@@ -81,13 +82,19 @@ func newExportPictureCmd() *cobra.Command {
 			if err := checkOutputTarget(output, realOf(inPath), overwrite); err != nil {
 				return err
 			}
-			if err := os.WriteFile(output, pic.Data, 0o644); err != nil {
-				return err
+			write := func(f *os.File) error { _, err := f.Write(pic.Data); return err }
+			committed, _, err := writeAtomic(output, write, atomicfile.Options{NoReplace: !overwrite})
+			// As in set: once the file is in place, a later step's failure is a warning.
+			if err != nil && !committed {
+				return outputCommitError(output, !overwrite, err)
 			}
+			warnPostCommit(errOut, asJSON, output, err)
 
 			out := cmd.OutOrStdout()
 			if asJSON {
-				return writeJSON(out, toJSONExportPicture(inPath, output, pic))
+				jp := toJSONExportPicture(inPath, output, pic)
+				jp.setPostWrite(err)
+				return writeJSON(out, jp)
 			}
 			fmt.Fprintf(out, "%s: exported %s (%s, %s) to %s\n",
 				displayName(inPath), tag.SanitizeLine(pic.Type.String()), tag.SanitizeLine(pic.MIME),
@@ -100,6 +107,9 @@ func newExportPictureCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "allow -o to replace an existing output file (by default an existing target is refused)")
 	return cmd
 }
+
+// writeAtomic is the export's write; tests replace it.
+var writeAtomic = atomicfile.Write
 
 // resolveExportPicture picks exactly one picture from pics (dump order). Selector is a
 // 1-based index or role; zero or many matches are errors (unlike resolveRemovals, where a
@@ -154,6 +164,7 @@ func picturesOfType(pics []wl.Picture, pt wl.PictureType) []int {
 
 // jsonExportPicture is the machine-readable export result.
 type jsonExportPicture struct {
+	jsonPostWrite
 	SchemaVersion int         `json:"schemaVersion"`
 	File          string      `json:"file"`
 	Output        string      `json:"output"`

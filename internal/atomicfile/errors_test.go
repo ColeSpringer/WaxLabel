@@ -1,4 +1,4 @@
-package waxlabel
+package atomicfile
 
 import (
 	"errors"

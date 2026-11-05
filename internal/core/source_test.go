@@ -1,7 +1,10 @@
 package core
 
 import (
+	"crypto/sha256"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -41,5 +44,66 @@ func TestIdentityMatches(t *testing.T) {
 	}
 	if ok, _ := base.Matches(Identity{Size: 100, ModTimeUnixNano: 5, INode: 8, Device: 1}); ok {
 		t.Error("inode change should not match")
+	}
+	// A change time differs only when both sides know it; a derived write ignores it.
+	ct := base
+	ct.ChangeTimeUnixNano = 9
+	moved := ct
+	moved.ChangeTimeUnixNano = 10
+	if ok, _ := ct.Matches(moved); ok {
+		t.Error("change time change should not match")
+	}
+	if ok, _ := ct.MatchesContent(moved); !ok {
+		t.Error("MatchesContent should ignore the change time")
+	}
+	if ok, _ := ct.Matches(base); !ok {
+		t.Error("an unknown change time should not block a match")
+	}
+}
+
+// zeros is an endless reader of zero bytes.
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+
+// sizedFile adapts an *os.File to ReaderAtSized.
+type sizedFile struct {
+	*os.File
+	size int64
+}
+
+func (f sizedFile) Size() int64 { return f.size }
+
+// TestFingerprintStreamsLargeRegions: a metadata region larger than any allocation limit still
+// fingerprints, as the hash of its bytes.
+func TestFingerprintStreamsLargeRegions(t *testing.T) {
+	const head, audio = 300 << 20, 4096
+	f, err := os.Create(filepath.Join(t.TempDir(), "sparse"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := f.Truncate(head + audio); err != nil {
+		t.Fatal(err)
+	}
+	fp, ok := Fingerprint(sizedFile{f, head + audio}, &Media{AudioStart: head, AudioEnd: head + audio})
+	if !ok {
+		t.Fatal("no fingerprint for a 300 MiB metadata region")
+	}
+	h := sha256.New()
+	if _, err := io.CopyN(h, zeros{}, head); err != nil {
+		t.Fatal(err)
+	}
+	if want := [32]byte(h.Sum(nil)); fp != want {
+		t.Errorf("fingerprint = %x, want the SHA-256 of the region %x", fp, want)
+	}
+}
+
+// TestReadFingerprintShortSource: a source that ends inside a region gives no fingerprint and no
+// error; that is a changed file, not a failed read.
+func TestReadFingerprintShortSource(t *testing.T) {
+	_, ok, err := ReadFingerprint(BytesSource(make([]byte, 10)), &Media{AudioStart: 20, AudioEnd: 30})
+	if ok || err != nil {
+		t.Errorf("ReadFingerprint = (ok %v, %v), want (false, nil)", ok, err)
 	}
 }

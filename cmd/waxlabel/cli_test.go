@@ -634,6 +634,7 @@ func TestClassifyError(t *testing.T) {
 		{"unaligned-stream", fmt.Errorf("w: %w", waxerr.ErrUnalignedStream), 3, "unsupported-alignment"},
 		{"fragmented", fmt.Errorf("w: %w", waxerr.ErrFragmented), 3, "unsupported-fragmentation"},
 		{"picture-too-large", fmt.Errorf("w: %w", waxerr.ErrPictureTooLarge), 3, "picture-too-large"}, // write refusal, not corruption (exit 4)
+		{"content-too-large", fmt.Errorf("w: %w", waxerr.ErrContentTooLarge), 3, "content-too-large"},
 		{"invalid-data", fmt.Errorf("w: %w", waxerr.ErrInvalidData), 4, "invalid-data"},
 		{"input-too-large", fmt.Errorf("w: %w", waxerr.ErrInputTooLarge), 7, "input-too-large"},
 		{"source-changed", fmt.Errorf("w: %w", waxerr.ErrSourceChanged), 5, "source-changed"},
@@ -676,7 +677,7 @@ func TestSentinelsHaveNoProgramPrefix(t *testing.T) {
 	t.Parallel()
 	for _, err := range []error{
 		waxerr.ErrUnsupportedFormat, waxerr.ErrInvalidData,
-		waxerr.ErrUnsupportedTag, waxerr.ErrPictureTooLarge, waxerr.ErrSizeTooLarge,
+		waxerr.ErrUnsupportedTag, waxerr.ErrPictureTooLarge, waxerr.ErrContentTooLarge, waxerr.ErrSizeTooLarge,
 		waxerr.ErrInputTooLarge, waxerr.ErrTooDeep, waxerr.ErrSourceChanged,
 		waxerr.ErrChainedStream, waxerr.ErrUnalignedStream, waxerr.ErrFragmented,
 		waxerr.ErrInvalidKey,
@@ -1982,6 +1983,7 @@ func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
 		waxerr.ErrUnalignedStream,
 		waxerr.ErrFragmented,
 		waxerr.ErrPictureTooLarge,
+		waxerr.ErrContentTooLarge,
 		waxerr.ErrSourceChanged,
 		waxerr.ErrInvalidData,
 		waxerr.ErrInputTooLarge,

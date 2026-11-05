@@ -31,6 +31,7 @@ var allKeyConstants = []Key{
 	MediaType, Description, LongDescription, Narrator,
 	ITunesAdvisory, ITunesGapless, ShowMovement, BPM,
 	Work, MovementName, Movement, MovementTotal,
+	Show, ShowSort, EpisodeID, EpisodeNumber, SeasonNumber, Network,
 }
 
 func TestKnownKeysMatchConstants(t *testing.T) {

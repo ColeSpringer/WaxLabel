@@ -132,6 +132,23 @@ func TestModTimePolicy(t *testing.T) {
 		}
 	})
 
+	// The epoch is Unix nanosecond 0, which must not read as "no mtime".
+	t.Run("WithPreserveModTime keeps the exact epoch", func(t *testing.T) {
+		epoch := time.Unix(0, 0).UTC()
+		path := copyToTemp(t, sampleFLAC)
+		if err := os.Chtimes(path, epoch, epoch); err != nil {
+			t.Fatal(err)
+		}
+		doc := mustParseFile(t, path)
+		plan, _ := doc.Edit().Set(tag.Title, "e").Prepare(wl.WithPreserveModTime())
+		if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
+			t.Fatal(err)
+		}
+		if got := statMod(t, path); !got.Equal(epoch) {
+			t.Errorf("WithPreserveModTime: mtime = %v, want %v", got, epoch)
+		}
+	})
+
 	// Pre-1970 mtime is negative Unix ns; a >0 guard must not drop WithPreserveModTime.
 	t.Run("WithPreserveModTime keeps a pre-epoch mtime", func(t *testing.T) {
 		ancient := time.Date(1969, 7, 20, 20, 17, 0, 0, time.UTC)

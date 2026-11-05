@@ -58,6 +58,32 @@ func TestKeysTextListsWholeVocabulary(t *testing.T) {
 	}
 }
 
+// The TV keys are listed, single-valued and described, in both renderings.
+func TestKeysListsTVKeys(t *testing.T) {
+	tv := []string{"SHOW", "SHOWSORT", "EPISODEID", "EPISODENUMBER", "SEASONNUMBER", "NETWORK"}
+	out, _, code := runCLI(t, "--json", "keys")
+	if code != 0 {
+		t.Fatalf("keys --json exit = %d, want 0", code)
+	}
+	var jk jsonKeys
+	if err := json.Unmarshal([]byte(out), &jk); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := map[string]jsonKey{}
+	for _, k := range jk.Keys {
+		got[k.Key] = k
+	}
+	text, _, _ := runCLI(t, "keys")
+	for _, k := range tv {
+		if e, ok := got[k]; !ok || e.Cardinality != "single" || e.Description == "" {
+			t.Errorf("keys --json %s = %+v (listed %v), want single with a description", k, e, ok)
+		}
+		if !strings.Contains(text, "\n  "+k+" ") {
+			t.Errorf("keys text output has no %s line:\n%s", k, text)
+		}
+	}
+}
+
 func TestKeysRejectsArguments(t *testing.T) {
 	_, _, code := runCLI(t, "keys", "extra")
 	if code != 2 {

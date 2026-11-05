@@ -6,12 +6,85 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/atomicfile"
 	"github.com/colespringer/waxlabel/tag"
+	"github.com/colespringer/waxlabel/waxerr"
 )
+
+// TestClassifyContentTooLarge: an oversize non-picture write is an exit-3 refusal ranked
+// with picture-too-large, below unsupported-fragmentation and above io.
+func TestClassifyContentTooLarge(t *testing.T) {
+	tooLarge := fmt.Errorf("%w: x", waxerr.ErrContentTooLarge)
+	if c := classifyError(tooLarge); c.exitCode != 3 || c.code != "content-too-large" {
+		t.Fatalf("classify = (%d,%q), want (3,%q)", c.exitCode, c.code, "content-too-large")
+	}
+	worst := func(errs ...error) string {
+		var w error
+		for _, e := range errs {
+			if worseError(w, e) {
+				w = e
+			}
+		}
+		return classifyError(w).code
+	}
+	fragmented := fmt.Errorf("w: %w", waxerr.ErrFragmented)
+	ioErr := &fs.PathError{Op: "write", Path: "x", Err: errors.New("disk failure")}
+	for _, errs := range [][]error{{tooLarge, fragmented}, {fragmented, tooLarge}} {
+		if got := worst(errs...); got != "unsupported-fragmentation" {
+			t.Errorf("worst of %v = %q, want unsupported-fragmentation", errs, got)
+		}
+	}
+	for _, errs := range [][]error{{tooLarge, ioErr}, {ioErr, tooLarge}} {
+		if got := worst(errs...); got != "content-too-large" {
+			t.Errorf("worst of %v = %q, want content-too-large", errs, got)
+		}
+	}
+}
+
+// TestClassifySourceVanished: a source deleted since parse is source-changed (exit 5), even
+// though the refusal wraps the open's not-found error.
+func TestClassifySourceVanished(t *testing.T) {
+	gone := &fs.PathError{Op: "open", Path: "/x.flac", Err: fs.ErrNotExist}
+	err := fmt.Errorf("%w: /x.flac no longer exists (%w)", waxerr.ErrSourceChanged, gone)
+	if c := classifyError(err); c.exitCode != 5 || c.code != "source-changed" {
+		t.Errorf("classify = (%d,%q), want (5,%q)", c.exitCode, c.code, "source-changed")
+	}
+}
+
+// TestOutputCommitError: a no-replace commit that found the -o target reads like the up-front
+// existing-target refusal (usage, exit 2). Other failures keep their class, including a temp file
+// that could not be created and a collision when no-replace was not asked for.
+func TestOutputCommitError(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "out.flac")
+	if err := os.WriteFile(out, []byte("theirs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	write := func(f *os.File) error { _, err := f.WriteString("ours"); return err }
+	_, _, collided := atomicfile.Write(out, write, atomicfile.Options{NoReplace: true})
+	if collided == nil {
+		t.Fatal("setup: a no-replace write onto an existing file succeeded")
+	}
+	err := outputCommitError(out, true, collided)
+	if c := classifyError(err); c.exitCode != 2 || !strings.Contains(c.message, "already exists") || !strings.Contains(c.message, "--overwrite") {
+		t.Errorf("collision = (%d, %q), want exit 2 naming the existing target and --overwrite", c.exitCode, c.message)
+	}
+	if got := outputCommitError(out, false, collided); got != collided {
+		t.Errorf("a collision without no-replace became %v", got)
+	}
+	exhausted := atomicfile.NewTempCreateError(filepath.Dir(out), &fs.PathError{Op: "createtemp", Path: out, Err: fs.ErrExist})
+	if got := outputCommitError(out, true, exhausted); got != exhausted {
+		t.Errorf("a temp-create failure became %v", got)
+	}
+	ioErr := &fs.PathError{Op: "write", Path: "out.flac", Err: errors.New("disk failure")}
+	if got := outputCommitError(out, true, ioErr); got != error(ioErr) {
+		t.Errorf("an I/O failure became %v", got)
+	}
+}
 
 // TestHasFlagHonorsDoubleDash: tokens after "--" are positionals, not flags (file named --format).
 func TestHasFlagHonorsDoubleDash(t *testing.T) {

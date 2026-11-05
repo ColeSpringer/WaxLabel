@@ -37,6 +37,10 @@ func TestStrictEscalatesWriteLossFamily(t *testing.T) {
 		wl.WarnChaptersFlattened,  // can describe pre-existing state
 		wl.WarnPaddingClamped,     // padding size, not tag content
 		wl.WarnDuplicateTagBlock,  // read-path; write-path sibling escalates above
+		wl.WarnTrailingLyrics3,    // read-path regions, preserved
+		wl.WarnLeadingBytes,
+		wl.WarnPageGap,
+		wl.WarnMultiplexedStream, // read-path; the write itself is refused
 	}
 	for _, c := range excluded {
 		if strictEscalatingCodes[c] {

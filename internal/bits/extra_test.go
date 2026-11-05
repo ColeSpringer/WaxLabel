@@ -5,6 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"io"
+	"io/fs"
+	"syscall"
 	"testing"
 
 	"github.com/colespringer/waxlabel/waxerr"
@@ -87,4 +90,53 @@ func TestSHA256Concatenation(t *testing.T) {
 	if a != b {
 		t.Error("SHA256 over chunks should equal SHA256 of the concatenation")
 	}
+}
+
+// eioReader fails every read with a filesystem I/O error.
+type eioReader struct{}
+
+func (eioReader) ReadAt([]byte, int64) (int, error) {
+	return 0, &fs.PathError{Op: "read", Path: "src", Err: syscall.EIO}
+}
+
+// endsAt reads n bytes of zeros, then reports the end of input.
+type endsAt struct{ n int64 }
+
+func (r endsAt) ReadAt(p []byte, off int64) (int, error) {
+	if off >= r.n {
+		return 0, io.EOF
+	}
+	k := min(int64(len(p)), r.n-off)
+	clear(p[:k])
+	if k < int64(len(p)) {
+		return int(k), io.EOF
+	}
+	return int(k), nil
+}
+
+// TestWriteReadErrors: a failing read keeps its cause (an I/O error is not corrupt data); a source
+// shorter than the plan is invalid data; a full read that also reports EOF is not an error.
+func TestWriteReadErrors(t *testing.T) {
+	_, err := Write(context.Background(), discardWriter{}, eioReader{}, []Segment{Copy(0, 8)}, nil)
+	if _, ok := errors.AsType[*fs.PathError](err); !ok || errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("EIO read: err = %v, want the *fs.PathError and not ErrInvalidData", err)
+	}
+	_, err = Write(context.Background(), discardWriter{}, endsAt{4}, []Segment{Copy(0, 8)}, nil)
+	if !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("short source: err = %v, want ErrInvalidData", err)
+	}
+	if n, err := Write(context.Background(), discardWriter{}, eofAtEnd{8}, []Segment{Copy(0, 8)}, nil); err != nil || n != 8 {
+		t.Errorf("full read with EOF: (%d, %v), want (8, nil)", n, err)
+	}
+}
+
+// eofAtEnd returns io.EOF with a full read that ends the input, as io.ReaderAt allows.
+type eofAtEnd struct{ n int64 }
+
+func (r eofAtEnd) ReadAt(p []byte, off int64) (int, error) {
+	k, err := endsAt(r).ReadAt(p, off)
+	if err == nil && off+int64(k) == r.n {
+		err = io.EOF
+	}
+	return k, err
 }

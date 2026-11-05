@@ -157,7 +157,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	media.Properties = d.properties(lastGranule)
 	media.Warnings = warnings
 	media.Identity = core.Identity{Size: size}
-	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media, limit)
+	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media)
 	return media, nil
 }
 

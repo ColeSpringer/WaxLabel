@@ -135,7 +135,7 @@ an exit status:
 | 0 | none, or `broken-pipe` | Success, or a closed output pipe (`... \| head`) |
 | 1 | `error` | Unclassified failure |
 | 2 | `usage`, `invalid-key`, `needs-file` | Bad invocation, invalid canonical key, or `--strict` refusal |
-| 3 | `unsupported-format`, `unsupported-tag`, `unsupported-stream`, `unsupported-alignment`, `unsupported-fragmentation`, `picture-too-large` | Unsupported format, or file reads but format refuses the write |
+| 3 | `unsupported-format`, `unsupported-tag`, `unsupported-stream`, `unsupported-alignment`, `unsupported-fragmentation`, `picture-too-large`, `content-too-large` | Unsupported format, or file reads but format refuses the write |
 | 4 | `invalid-data` | Corrupt file or format violation |
 | 5 | `source-changed` | File changed between read and save-back |
 | 6 | `not-found`, `io` | Wrong path, or local I/O failure |
@@ -145,8 +145,9 @@ an exit status:
 Multi-file runs exit with the most-severe class (not numeric max):
 `canceled`/`timeout` > `source-changed` > `invalid-data` > `input-too-large` >
 `unsupported-format` > `unsupported-tag` > `unsupported-stream` >
-`unsupported-alignment` > `unsupported-fragmentation` > `picture-too-large` >
-`io` > `not-found` > `usage`/`invalid-key`/`needs-file` > `error` > `broken-pipe`.
+`unsupported-alignment` > `unsupported-fragmentation` >
+`picture-too-large`/`content-too-large` > `io` > `not-found` >
+`usage`/`invalid-key`/`needs-file` > `error` > `broken-pipe`.
 A corrupt file (exit 4) outranks a mistyped path (exit 6).
 
 ## Format Support
@@ -210,10 +211,24 @@ LONGDESCRIPTION; elsewhere as `\x0a` (JSON keeps exact values).
 
 Save-back: temp file in the target directory, fsync, rename. SIGKILL mid-write can
 leave the temp; recursive commands note leftovers and `waxlabel clean` lists or
-removes them. If the source changed since parse, `SaveBack()` refuses with
-`waxerr.ErrSourceChanged`. Atomic rename consequences: editing through a symlink
-rewrites the target and leaves the link; other hard links keep the old inode; a
-read-only file can be replaced when its directory is writable (mode preserved).
+removes them. `SaveBack()` refuses with `waxerr.ErrSourceChanged` when the file
+changed since parse: a different file at the path, its size, metadata fingerprint,
+mtime, or (Unix) change time, so a `chmod` or an xattr write counts as a change too;
+so does a deleted file. The check runs again after the copy and, through the path,
+just before the rename, so a competitor that renamed its own file over the path keeps
+it. Concurrent saves of one file run one at a time under an advisory `flock` (Linux,
+macOS, BSD) and the later one refuses; a save that waits on another program's lock
+says so after a second. Without the lock (Windows, filesystems that refuse locks) two
+saves that both pass the last check can still race to the rename.
+
+A rewrite keeps the replaced file's mode, its owner and group where the caller may
+set them, and on Linux its `user.*` attributes and POSIX access ACL; Windows swaps
+the file with `ReplaceFile`, which keeps its ACL and attributes. A new file's mode
+follows the umask. `-o` without `--overwrite` also refuses a target created while
+the write runs, except at the last moment on a filesystem without hard links (FAT,
+exFAT, some network shares). Atomic rename consequences: editing through a symlink rewrites the
+target and leaves the link; other hard links keep the old inode; a read-only file
+can be replaced when its directory is writable (mode preserved).
 
 ## License
 

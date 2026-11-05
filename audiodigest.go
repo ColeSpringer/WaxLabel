@@ -66,6 +66,10 @@ func (d *Document) HashAudioEssence(ctx context.Context, opts ...HashOption) (Au
 		return AudioDigest{}, err
 	}
 	defer closer()
+	check, err := d.checkReopened(src)
+	if err != nil {
+		return AudioDigest{}, err
+	}
 
 	version, cfg := d.essenceExtent()
 	ranges := d.media.EssenceRanges()
@@ -76,7 +80,7 @@ func (d *Document) HashAudioEssence(ctx context.Context, opts ...HashOption) (Au
 		return AudioDigest{}, fmt.Errorf("%w: no audio essence to hash", waxerr.ErrInvalidData)
 	}
 	sum, err := hashRanges(ctx, src, cfg, ranges)
-	if err != nil {
+	if err := check(err); err != nil {
 		return AudioDigest{}, err
 	}
 	return AudioDigest{
@@ -84,6 +88,26 @@ func (d *Document) HashAudioEssence(ctx context.Context, opts ...HashOption) (Au
 		ExtentVersion: version,
 		TrackID:       0,
 		Sum:           sum,
+	}, nil
+}
+
+// checkReopened verifies a reopened ParseFile source against the parse before a hash reads it.
+// The returned check takes the read's error and refuses a source that changed during the read in
+// its place; an in-memory or caller-supplied source passes through.
+func (d *Document) checkReopened(src core.ReaderAtSized) (check func(readErr error) error, err error) {
+	held, ok := src.(*fileSource)
+	if !ok {
+		return func(readErr error) error { return readErr }, nil
+	}
+	before, err := d.checkHeldSource(held, false)
+	if err != nil {
+		return nil, err
+	}
+	return func(readErr error) error {
+		if serr := held.checkStable(d.path, before, false); serr != nil {
+			return serr
+		}
+		return readErr
 	}, nil
 }
 
@@ -110,9 +134,13 @@ func (d *Document) HashFile(ctx context.Context, opts ...HashOption) (AudioDiges
 		return AudioDigest{}, err
 	}
 	defer closer()
+	check, err := d.checkReopened(src)
+	if err != nil {
+		return AudioDigest{}, err
+	}
 
 	sum, err := hashRanges(ctx, src, nil, [][2]int64{{0, src.Size()}})
-	if err != nil {
+	if err := check(err); err != nil {
 		return AudioDigest{}, err
 	}
 	return AudioDigest{Algorithm: "sha256", ExtentVersion: "whole-file-v1", Sum: sum}, nil

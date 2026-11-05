@@ -2,20 +2,23 @@ package waxlabel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
-	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// fileSource adapts an open file to ReaderAtSized. Not retained by Document.
+// fileSource adapts an open file to ReaderAtSized. Not retained by Document. info is the
+// fstat taken at open, so it describes the bytes read through f.
 type fileSource struct {
 	f    *os.File
 	size int64
+	info os.FileInfo
 }
 
 func openFileSource(path string) (*fileSource, error) {
@@ -39,44 +42,64 @@ func openFileSource(path string) (*fileSource, error) {
 		f.Close()
 		return nil, err
 	}
-	return &fileSource{f: f, size: fi.Size()}, nil
+	return &fileSource{f: f, size: fi.Size(), info: fi}, nil
 }
 
 func (s *fileSource) ReadAt(p []byte, off int64) (int, error) { return s.f.ReadAt(p, off) }
 func (s *fileSource) Size() int64                             { return s.size }
 func (s *fileSource) Close() error                            { return s.f.Close() }
 
-// fileIdentity captures size, mtime, and inode/device for save-back checks.
+// identity is the open file's identity now, recorded under path.
+func (s *fileSource) identity(path string) (core.Identity, error) {
+	info, err := s.f.Stat()
+	if err != nil {
+		return core.Identity{}, err
+	}
+	return core.FileIdentity(path, info), nil
+}
+
+// checkStable refuses a source that changed while a read of it ran: an append, a truncation, or an
+// in-place write since before was taken. A write that replaces the source also refuses a change
+// time move (a chmod or attribute edit the rename would undo); other reads only need the content
+// to have held still, which a moved mtime casts doubt on.
+func (s *fileSource) checkStable(path string, before core.Identity, inPlace bool) error {
+	after, err := s.identity(path)
+	if err != nil {
+		return err
+	}
+	ok, why := before.Matches(after)
+	if !inPlace {
+		if ok, why = before.MatchesContent(after); ok && before.ModTimeUnixNano != after.ModTimeUnixNano {
+			ok, why = false, "modification time changed"
+		}
+	}
+	if !ok {
+		return fmt.Errorf("%w: %s during the read", waxerr.ErrSourceChanged, why)
+	}
+	return nil
+}
+
+// fileIdentity captures size, times, and file identity of path for save-back checks.
 func fileIdentity(path string) (core.Identity, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return core.Identity{}, err
 	}
-	id := core.Identity{
-		Path:            path,
-		Size:            info.Size(),
-		ModTimeUnixNano: unixNanoOrZero(info.ModTime()),
-	}
-	id.INode, id.Device = sysInodeDevice(info)
-	return id, nil
+	return core.FileIdentity(path, info), nil
 }
 
-var (
-	minRepresentableTime = time.Unix(0, math.MinInt64)
-	maxRepresentableTime = time.Unix(0, math.MaxInt64)
-)
-
-// unixNanoOrZero returns Unix nanos, or 0 outside the representable range / as unknown.
-func unixNanoOrZero(t time.Time) int64 {
-	if t.Before(minRepresentableTime) || t.After(maxRepresentableTime) {
-		return 0
+// reopenFileSource reopens a parsed document's file. A path that no longer names a regular file,
+// or names nothing, is a source that changed since parse.
+func reopenFileSource(path string) (*fileSource, error) {
+	info, err := os.Stat(path)
+	if err == nil && !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: %s is no longer a regular file", waxerr.ErrSourceChanged, path)
 	}
-	return t.UnixNano()
-}
-
-// reopensFileSource is true for ParseFile documents (source may have changed).
-func (d *Document) reopensFileSource() bool {
-	return d.src == nil && d.path != ""
+	src, err := openFileSource(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("%w: %s no longer exists (%w)", waxerr.ErrSourceChanged, path, err)
+	}
+	return src, err
 }
 
 // resolveSource picks explicit, then in-memory, then reopened file. Closer is idempotent.
@@ -92,11 +115,11 @@ func (d *Document) resolveSource(explicit core.ReaderAtSized, remedy string) (co
 		return d.src, noop, nil
 	}
 	if d.path != "" {
-		fs, err := openFileSource(d.path)
+		src, err := reopenFileSource(d.path)
 		if err != nil {
 			return nil, noop, err
 		}
-		return fs, func() { fs.Close() }, nil
+		return src, func() { src.Close() }, nil
 	}
 	return nil, noop, fmt.Errorf("%w: no source available; %s", waxerr.ErrInvalidData, remedy)
 }
