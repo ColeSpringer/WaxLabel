@@ -71,8 +71,10 @@ func TestWriteNoReplaceRefusesExistingTarget(t *testing.T) {
 	if committed || !errors.Is(err, fs.ErrExist) {
 		t.Fatalf("Write = (committed %v, %v), want an uncommitted fs.ErrExist", committed, err)
 	}
-	if n := strings.Count(err.Error(), path); n != 1 {
-		t.Errorf("error %q names the target %d times, want once", err, n)
+	// Write names the resolved target: on Windows, t.TempDir() may be spelled with 8.3 short names.
+	target := ResolveTarget(path)
+	if n := strings.Count(err.Error(), target); n != 1 {
+		t.Errorf("error %q names %q %d times, want once", err, target, n)
 	}
 	assertContent(t, path, "old")
 	assertNoTemps(t, dir)
