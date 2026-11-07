@@ -84,7 +84,7 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	}
 	// Numeric genre and v2.3 original-date reductions follow shared ID3 rules.
 	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatAAC), opts.NumericGenre, true)
-	// Front-tag padding is grow-only (ReuseOrTarget), same as MP3.
+	// Front-tag padding reuses the region (ReuseOrTarget), same as MP3.
 	return core.NewCapabilities(core.FormatAAC, false, fields, pictures, chapters, core.AccessPartial, perField).
 		WithSyncedLyrics(id3.SyncedLyricsCapability()).
 		WithFieldClassifier(id3.TransferClassifier)

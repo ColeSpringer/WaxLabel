@@ -192,7 +192,7 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	result := buildResult(edited, d, newComments, shift)
 	// Only the first Vorbis comment block survives; warn when an extra held content the
 	// written set does not, matching native FLAC.
-	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "Vorbis comment block", result.Tags, flacDupContent)
+	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "Vorbis comment block", base.Tags, result.Tags, flacDupContent)
 	// Downgrade catches rebuild drops (e.g. empty strings). Vendor/gain are structural
 	// so a combined drop is not collapsed to a no-op that keeps the old gain.
 	if np := core.DowngradeNoOp(d.format, edited.Identity.Size, base, result, len(vorbis.DiffKeys(base.Tags, result.Tags)) == 0, vendorChanged || gainChanged, report.Warnings); np != nil {

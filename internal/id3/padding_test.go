@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
@@ -77,4 +78,26 @@ func TestTagPaddingMeasuresTheSourceRegion(t *testing.T) {
 			t.Errorf("FrontTagPadding(nil) = %d, want 0", got)
 		}
 	})
+}
+
+// A tag reused in place keeps its region size when a frame carries a grouping byte: the size the
+// padding is cut to counts that byte, so the rendered tag neither grows nor shrinks.
+func TestReuseInPlaceCountsTheGroupByte(t *testing.T) {
+	for _, major := range []byte{3, 4} {
+		group := byte(0x20)
+		if major == 4 {
+			group = 0x40
+		}
+		body := append(testfile.ID3FrameFlags(major, "TPE1", [2]byte{0, group}, []byte("\x07\x00Grouped")), make([]byte, 100)...)
+		src := wrapTag(major, 0, body)
+		tg, err := ParseTag(src, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ft := RenderFrontTag(tg, major, tg.Frames(), RebuildInfo{}, core.DefaultPadding, int64(len(src)),
+			tg, false, false, 0, false, 0, false, 0)
+		if len(ft.Bytes) != len(src) || ft.Padding != 100 {
+			t.Errorf("v2.%d: rendered %d bytes with %d of padding, want the %d-byte region with 100", major, len(ft.Bytes), ft.Padding, len(src))
+		}
+	}
 }

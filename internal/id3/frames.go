@@ -3,6 +3,7 @@ package id3
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
@@ -31,7 +32,7 @@ func CheckSize(writeVersion byte, frames []Frame, maxElements int) error {
 	}
 	var total int64 // int64 so a sum of large frames cannot wrap on 32-bit
 	for _, f := range frames {
-		fl := len(f.Body)
+		fl := f.renderedLen()
 		if writeVersion == 4 && fl > maxFrameSize {
 			return sizeErr(f, fl)
 		}
@@ -53,14 +54,30 @@ func sizeErr(f Frame, n int) error {
 
 // Frame is one ID3v2 frame. ID is always the 4-character v2.3/v2.4 identifier (a v2.2
 // 3-character ID is upgraded on read). A normal frame's Body is the clean, re-renderable
-// payload (de-unsynchronised, grouping byte and data-length indicator stripped) and Flags
-// is zero. An opaque frame (compressed, encrypted, or otherwise unsafe to reinterpret)
-// keeps Body and Flags exactly as read so it round-trips byte-for-byte.
+// payload (de-unsynchronised, grouping byte and data-length indicator stripped, a v2.4
+// chapter frame's subframes sized sync-safe) and Flags is zero; its status flag byte and
+// grouping identity are kept in Status, Group and HasGroup, so an unrelated edit renders it
+// as read, less what a clean body does not need, while a frame an edit renders has neither
+// status nor group (the spec has an edit clear a read-only bit). An opaque frame (compressed,
+// encrypted, or otherwise unsafe to reinterpret) keeps Body and Flags exactly as read so it
+// round-trips byte-for-byte.
 type Frame struct {
-	ID     string
-	Flags  [2]byte
-	Body   []byte
-	Opaque bool
+	ID       string
+	Flags    [2]byte
+	Body     []byte
+	Opaque   bool
+	Status   byte
+	Group    byte
+	HasGroup bool
+}
+
+// renderedLen is the size field renderFrame writes for f: the body, and a normal frame's
+// grouping byte.
+func (f Frame) renderedLen() int {
+	if f.HasGroup && !f.Opaque {
+		return len(f.Body) + 1
+	}
+	return len(f.Body)
 }
 
 // Clone returns a deep copy of the frame.
@@ -85,14 +102,30 @@ const (
 	v24DataLen     = 0x01
 )
 
+// tailCause is why the frame walk stopped with bytes left that it could not read.
+type tailCause uint8
+
+const (
+	tailOverrun   tailCause = iota // a frame declares more bytes than the region holds
+	tailBadID                      // a frame ID holds a byte outside printable ASCII
+	tailCutHeader                  // the region ends inside a frame header
+	tailDirtyPad                   // what follows a zero ID byte is not all zeros
+)
+
 // parseFrames walks the frame region, decoding each frame and stopping at padding (a zero
-// ID byte), an invalid identifier, or truncation. major selects the header geometry;
-// tagUnsync (v2.4) forces per-frame de-unsynchronisation even when a frame does not set
-// its own flag. rest is the byte count after the last frame read: free padding when the
-// walk stopped on a zero ID, the unread remainder when it stopped on a malformed frame.
-// malformed names the frame whose declared size ran past the end of the tag, and is empty
-// when the walk stopped cleanly; it tells ParseTag whether rest is padding or unreadable.
-func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) (frames []Frame, rest int, malformed string, err error) {
+// ID byte), an ID with a byte outside printable ASCII, a frame that overruns the region, or a
+// header the region ends inside. Padding is zeros to the end of the region: non-zero bytes
+// after a zero ID byte (stale frames, junk, or the rest of a frame whose size was misread) are
+// unreadable, not free. A printable ID that is not A-Z and 0-9 is read by its size and kept
+// opaque: junk IDs carry junk sizes, so only a printable one is trusted that far.
+// major selects the header geometry; tagUnsync (v2.4) forces per-frame de-unsynchronisation
+// even when a frame does not set its own flag, and plainSizes (v2.4) reads frame sizes as
+// plain 32-bit integers ([v24FrameSizesArePlain]). rest is the byte count after the last
+// frame read: free padding when the walk stopped on a zero ID, the unread remainder
+// otherwise. malformed names the frame header the walk stopped at, and is empty when it
+// stopped cleanly; it tells ParseTag whether rest is padding or unreadable, and cause says
+// why it stopped.
+func parseFrames(body []byte, major byte, tagUnsync, plainSizes bool, maxElements int) (frames []Frame, rest int, malformed string, cause tailCause, err error) {
 	pos := 0
 	hdr := 10
 	idLen := 4
@@ -101,17 +134,17 @@ func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) (fram
 	}
 	for pos+hdr <= len(body) {
 		if body[pos] == 0 {
-			break // padding
+			break // padding, unless bytes after it are not zeros (checked below)
 		}
 		// The body is bounded by the caller's MaxAllocBytes, but a body full of
 		// minimum-size (6/10 B) frames still amplifies into one Frame descriptor each;
 		// cap the count.
 		if err := bits.CheckElementCap(len(frames), maxElements, "ID3 frames"); err != nil {
-			return nil, 0, "", err
+			return nil, 0, "", 0, err
 		}
 		id := string(body[pos : pos+idLen])
-		if !validFrameID(id) {
-			break
+		if !printableFrameID(id) {
+			return frames, len(body) - pos, id, tailBadID, nil
 		}
 		var size int64
 		var flags [2]byte
@@ -121,10 +154,15 @@ func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) (fram
 		case 3:
 			size = int64(body[pos+4])<<24 | int64(body[pos+5])<<16 | int64(body[pos+6])<<8 | int64(body[pos+7])
 			flags = [2]byte{body[pos+8], body[pos+9]}
-		default: // 4
-			// v2.4 sizes are sync-safe; some buggy encoders write plain sizes, but
-			// sync-safe is the spec and what Render emits.
-			size = syncSafe(body[pos+4 : pos+8])
+		default: // 4: sync-safe, as the spec says and Render emits, unless the tag's are plain
+			size = frameSize(body[pos:pos+10], plainSizes)
+			if plainSizes {
+				// A frame of a plain-size tag whose own size is sync-safe (two writers edited the
+				// tag) is read by the size that lands on the next frame.
+				if alt := syncSafe(body[pos+4 : pos+8]); alt != size && !landsOnHeader(body, pos+hdr, size) && landsOnHeader(body, pos+hdr, alt) {
+					size = alt
+				}
+			}
 			flags = [2]byte{body[pos+8], body[pos+9]}
 		}
 		start := pos + hdr
@@ -134,14 +172,39 @@ func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) (fram
 			// The frame declares more bytes than the tag holds. Stop and name it: what
 			// follows is unreadable, not padding. Report the id the rest of the output uses,
 			// so a v2.2 tag does not warn about a "TAL" frame that dump lists as TALB.
-			return frames, len(body) - pos, reportedFrameID(id, major), nil
+			return frames, len(body) - pos, reportedFrameID(id, major), tailOverrun, nil
 		}
 		raw := body[start : start+int(size)]
 		pos = start + int(size)
 
 		frames = append(frames, decodeFrame(id, flags, raw, major, tagUnsync))
 	}
-	return frames, len(body) - pos, "", nil
+	if pos < len(body) && !allZero(body[pos:]) {
+		cause := tailCutHeader
+		if body[pos] == 0 {
+			cause = tailDirtyPad
+		}
+		return frames, len(body) - pos, string(body[pos:min(pos+idLen, len(body))]), cause, nil
+	}
+	return frames, len(body) - pos, "", 0, nil
+}
+
+// landsOnHeader reports whether a frame body of size bytes at start ends where the region ends, or
+// where a frame with a known ID begins whose size, read either way, fits the region.
+func landsOnHeader(body []byte, start int, size int64) bool {
+	n := int64(len(body))
+	next := int64(start) + size
+	if size < 0 || next > n {
+		return false
+	}
+	if next == n {
+		return true
+	}
+	if next+10 > n || !knownFrameIDs[string(body[next:next+4])] {
+		return false
+	}
+	h, rest := body[next:next+10], n-next-10
+	return frameSize(h, false) <= rest || frameSize(h, true) <= rest
 }
 
 // reportedFrameID renders a frame identifier the way the decoded frame list does: a v2.2
@@ -159,9 +222,9 @@ func reportedFrameID(id string, major byte) string {
 }
 
 // decodeFrame normalises one raw frame: it upgrades a v2.2 identifier, converts
-// a v2.2 PIC body to APIC form, and either cleans the body (stripping grouping
-// and data-length bytes and de-unsynchronising) or marks it opaque when it is
-// compressed or encrypted.
+// a v2.2 PIC body to APIC form, and either cleans the body (keeping the grouping
+// byte and status flags apart, stripping the data-length indicator and
+// de-unsynchronising) or marks it opaque when it is compressed or encrypted.
 func decodeFrame(id string, flags [2]byte, raw []byte, major byte, tagUnsync bool) Frame {
 	if major == 2 {
 		up, ok := upgradeV22ID(id)
@@ -201,13 +264,16 @@ func decodeFrame(id string, flags [2]byte, raw []byte, major byte, tagUnsync boo
 	if unsync || (major == 4 && tagUnsync) {
 		b = deunsync(b)
 	}
+	f := Frame{ID: id, Status: flags[0]}
 	if grouping && len(b) >= 1 {
-		b = b[1:] // drop the group identity byte
+		f.Group, f.HasGroup = b[0], true
+		b = b[1:] // the group identity byte, kept apart from the body
 	}
 	if dataLen && len(b) >= 4 {
 		b = b[4:] // drop the sync-safe data-length indicator
 	}
-	return Frame{ID: id, Body: slices.Clone(b)}
+	f.Body = slices.Clone(b)
+	return f
 }
 
 // decodeFrameFlags interprets the second format-flag byte for the version.
@@ -219,36 +285,35 @@ func decodeFrameFlags(flags [2]byte, major byte) (compressed, encrypted, groupin
 	return f&v24Compression != 0, f&v24Encryption != 0, f&v24Grouping != 0, f&v24Unsync != 0, f&v24DataLen != 0
 }
 
-// validFrameID reports whether id looks like a frame identifier: it begins with A-Z or a
-// digit, and the rest are A-Z, digits, or spaces. The trailing-space allowance keeps a
-// three-character ID padded to four ("TT2 ") from ending the scan and dropping every
-// later frame. A leading space or NUL still stops the scan.
-func validFrameID(id string) bool {
-	if len(id) == 0 {
-		return false
-	}
-	if !isUpperAlnum(id[0]) {
-		return false
-	}
-	for i := 1; i < len(id); i++ {
-		if c := id[i]; !isUpperAlnum(c) && c != ' ' {
+// printableFrameID reports whether every byte of id is printable ASCII, space included: the
+// frame walk reads such a frame by its size, a conformant one or not.
+func printableFrameID(id string) bool {
+	for i := range len(id) {
+		if id[i] < 0x20 || id[i] > 0x7E {
 			return false
 		}
 	}
 	return true
 }
 
+// preservedV22ID reports whether id is how an unknown ID3v2.2 frame is kept in a v2.3 tag: its
+// three-character ID padded with a space ([padID]). Such a frame is opaque by design, not a
+// malformed one.
+func preservedV22ID(id string) bool {
+	return len(id) == 4 && id[3] == ' ' && isUpperAlnum(id[0]) && isUpperAlnum(id[1]) && isUpperAlnum(id[2])
+}
+
 // isUpperAlnum reports whether c is an uppercase ASCII letter or a digit, the character
-// class of an ID3 frame identifier. validFrameID, conformantFrameID, and rawFrameIDKey
+// class of an ID3 frame identifier. conformantFrameID, preservedV22ID and ownTextFrameKey
 // share it.
 func isUpperAlnum(c byte) bool {
 	return c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
 
 // conformantFrameID reports whether id is a spec-conformant 4-character frame identifier:
-// exactly four bytes, each A-Z or 0-9. Unlike validFrameID it rejects a trailing space, so
-// an unknown ID3v2.2 frame preserved under a space-padded ID ("TXY " from padID) fails.
-// decodeFrame uses it to mark such a re-read frame opaque; rawFrameIDKey builds on it.
+// exactly four bytes, each A-Z or 0-9. It rejects a trailing space, so an unknown ID3v2.2
+// frame preserved under a space-padded ID ("TXY " from padID) fails.
+// decodeFrame uses it to mark such a re-read frame opaque; ownTextFrameKey builds on it.
 func conformantFrameID(id string) bool {
 	if len(id) != 4 {
 		return false
@@ -314,7 +379,7 @@ func Render(writeVersion byte, frames []Frame, padding int) []byte {
 func RenderedSize(frames []Frame) int64 {
 	total := int64(10) // tag header
 	for _, f := range frames {
-		total += int64(10 + len(f.Body))
+		total += int64(10 + f.renderedLen())
 	}
 	return total
 }
@@ -338,14 +403,19 @@ func FrameNote(f Frame) string {
 	case "USLT":
 		desc, _, _ = decodeLangText(f.Body)
 	}
-	if desc == "" {
-		return ""
+	var notes []string
+	if desc != "" {
+		notes = append(notes, "description: "+tag.SanitizeLine(desc))
 	}
-	return "description: " + tag.SanitizeLine(desc)
+	if f.HasGroup {
+		notes = append(notes, fmt.Sprintf("group 0x%02X", f.Group))
+	}
+	return strings.Join(notes, ", ")
 }
 
 // FramesNote is the native-view note for a described ID3v2 tag: its frame count, plus the
-// byte count of a region the frame walk could not read (see [Tag.MalformedTail]). Padding
+// byte count of a region the frame walk could not read (see [Tag.MalformedTail]) and whether
+// its v2.4 frame sizes are plain integers, which a rewrite makes sync-safe. Padding
 // is not counted as unparsed, but a malformed tail is not padding either; without it the
 // block size would disagree with the frames listed under it. All four ID3-backed codecs
 // render through it.
@@ -354,7 +424,11 @@ func FramesNote(t *Tag) string {
 		return "0 frames"
 	}
 	_, tail := t.MalformedTail()
-	return fmt.Sprintf("%d frames", len(t.Frames())) + core.UnparsedNote(tail)
+	note := fmt.Sprintf("%d frames", len(t.Frames())) + core.UnparsedNote(tail)
+	if t.plainSizes {
+		note += ", non-sync-safe frame sizes"
+	}
+	return note
 }
 
 // FrontTagPadding reports the free padding inside a front ID3v2 region, or 0 for a file
@@ -368,22 +442,35 @@ func FrontTagPadding(t *Tag) int64 {
 	return t.Padding()
 }
 
-// renderFrame renders one frame's on-disk bytes for the write version. An opaque
-// frame keeps its preserved flags; a normal frame writes cleared flags.
+// renderFrame renders one frame's on-disk bytes for the write version. An opaque frame
+// keeps its preserved flags; a normal frame writes its status byte and, in a group, the
+// grouping flag and identity byte ahead of the body.
 func renderFrame(writeVersion byte, f Frame) []byte {
-	out := make([]byte, 0, 10+len(f.Body))
+	n := f.renderedLen()
+	out := make([]byte, 0, 10+n)
 	out = append(out, f.ID[:4]...)
 	var sz [4]byte
 	if writeVersion == 4 {
-		putSyncSafe(sz[:], int64(len(f.Body)))
+		putSyncSafe(sz[:], int64(n))
 	} else {
-		sz[0] = byte(len(f.Body) >> 24)
-		sz[1] = byte(len(f.Body) >> 16)
-		sz[2] = byte(len(f.Body) >> 8)
-		sz[3] = byte(len(f.Body))
+		sz[0] = byte(n >> 24)
+		sz[1] = byte(n >> 16)
+		sz[2] = byte(n >> 8)
+		sz[3] = byte(n)
 	}
 	out = append(out, sz[:]...)
-	out = append(out, f.Flags[0], f.Flags[1])
+	switch {
+	case f.Opaque:
+		out = append(out, f.Flags[0], f.Flags[1])
+	case f.HasGroup:
+		group := byte(v23Grouping)
+		if writeVersion == 4 {
+			group = v24Grouping
+		}
+		out = append(out, f.Status, group, f.Group)
+	default:
+		out = append(out, f.Status, 0)
+	}
 	out = append(out, f.Body...)
 	return out
 }

@@ -352,3 +352,75 @@ func TestStreamBehindALargeSecondTag(t *testing.T) {
 		})
 	}
 }
+
+// A stray leading ID3v2 tag holding a frame the canonical view does not carry, a rating or a frame of
+// a non-standard ID, is opaque legacy content: a strip says it loses content (--strict refuses it)
+// and lint --fix leaves the tag. One holding only values the file's tags hold too strips silently.
+func TestStrayLeadingTagWithUncarriedFrames(t *testing.T) {
+	title := testfile.TextFrame(3, "TIT2", "Sample Title")
+	for _, c := range []struct {
+		name   string
+		frames [][]byte
+		opaque bool
+	}{
+		{"values only", [][]byte{title}, false},
+		{"a rating", [][]byte{title, testfile.ID3Frame(3, "POPM", []byte("me@example.com\x00\xC8"))}, true},
+		{"a non-standard ID", [][]byte{title, testfile.TextFrame(3, "Tlow", "lowercase")}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for _, path := range []string{sampleFLAC, sampleWV} {
+				doc := mustParseBytes(t, slices.Concat(testfile.ID3v2(3, c.frames...), readFixture(t, path)))
+				if doc.HasOpaqueLegacyContent() != c.opaque {
+					t.Errorf("%s: opaque legacy content %v, want %v", path, doc.HasOpaqueLegacyContent(), c.opaque)
+				}
+				plan, err := doc.Edit().Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := planWarns(t, plan, wl.WarnLegacyStripDropped); got != c.opaque {
+					t.Errorf("%s: legacy-strip-dropped warned %v, want %v: %v", path, got, c.opaque, plan.Report().Warnings)
+				}
+			}
+		})
+	}
+}
+
+// The native view counts a stray tag's unreadable bytes as the parse read the tag, under the parse's
+// element cap: a tag of more frames than the cap is unreadable whole, there as in the opaque flag.
+func TestStrayLeadingTagUnreadUnderTheParseCap(t *testing.T) {
+	var frames [][]byte
+	for range 50 {
+		frames = append(frames, testfile.TextFrame(3, "TIT2", "T"))
+	}
+	lead := testfile.ID3v2(3, frames...)
+	for _, path := range []string{sampleFLAC, sampleWV} {
+		doc, err := wl.Parse(context.Background(), wl.BytesSource(slices.Concat(lead, readFixture(t, path))),
+			wl.WithLimits(wl.Limits{MaxElements: 20}))
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		want := fmt.Sprintf("%d unparsed byte(s)", len(lead))
+		if native := doc.Native().Describe(); !doc.HasOpaqueLegacyContent() || len(native) == 0 || !strings.Contains(native[0].Note, want) {
+			t.Errorf("%s: opaque %v, native view %+v; want the whole stray tag counted unreadable (%s)", path, doc.HasOpaqueLegacyContent(), native, want)
+		}
+	}
+}
+
+// A stray leading ID3v2 tag that holds bytes its frame walk cannot read is opaque legacy content,
+// which lint --fix keeps, and the native view shows how many bytes those are, so the note that
+// points there finds them.
+func TestStrayLeadingTagWithUnreadableBytes(t *testing.T) {
+	dirty := make([]byte, 40)
+	copy(dirty[30:], "JUNK")
+	lead := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Sample Title"), dirty)
+	for _, path := range []string{sampleFLAC, sampleWV} {
+		doc := mustParseBytes(t, slices.Concat(lead, readFixture(t, path)))
+		if !doc.HasOpaqueLegacyContent() {
+			t.Errorf("%s: the unreadable bytes do not make the stray tag opaque", path)
+		}
+		if native := doc.Native().Describe(); len(native) == 0 || native[0].Kind != "ID3v2" ||
+			!strings.Contains(native[0].Note, "40 unparsed byte(s)") {
+			t.Errorf("%s: native view %+v, want the stray tag's 40 unparsed bytes noted", path, native)
+		}
+	}
+}

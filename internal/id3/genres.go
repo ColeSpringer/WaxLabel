@@ -109,8 +109,11 @@ func specialGenre(ref string) (string, bool) {
 //	"Rock"       -> ["Rock"]                 (already a name)
 //
 // Bare RX/CR values are reference tokens, not literal genre names. They resolve
-// on read like bare numeric references; lowercase values and other text stay literal.
+// on read like bare numeric references; lowercase values and other text stay literal. A
+// reference reads through the whitespace around it, a literal name keeps it (as a Vorbis
+// GENRE does), and an all-whitespace value is nothing.
 func resolveGenres(v string) (names []string, numeric bool) {
+	literal := v
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return nil, false
@@ -130,7 +133,7 @@ func resolveGenres(v string) (names []string, numeric bool) {
 				return []string{g}, true
 			}
 		}
-		return []string{v}, false
+		return []string{literal}, false
 	}
 	// One or more "(ref)" references, optionally followed by a refinement.
 	for strings.HasPrefix(v, "(") {

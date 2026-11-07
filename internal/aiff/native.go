@@ -15,10 +15,12 @@ type chunk struct {
 	id      [4]byte
 	bodyOff int64 // source offset of the body (after the 8-byte chunk header)
 	bodyLen int64 // declared body length, excluding any trailing pad byte
-	// dupTag: redundant duplicate "ID3 " chunk. First parse wins; dropped on rewrite.
+	// dupTag: an "ID3 " chunk other than the authoritative one (the first that parses and holds
+	// frames, else the first that parses); dropped on rewrite.
 	dupTag bool
-	// dupContent: graded against the written set at write time.
-	dupContent core.DuplicateContent
+	// dupID3: the duplicate's digest ([id3.PickTag], unreadable when it does not parse); graded by
+	// [id3.DupGrader] at write time. A digest is never modified, so clones share it.
+	dupID3 id3.DupDigest
 }
 
 // id4 returns the chunk identifier as a string.

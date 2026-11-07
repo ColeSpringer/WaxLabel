@@ -152,7 +152,7 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 			refusal = d.refuseWrite()
 		}
 	}
-	// Padding is grow-only (ReuseOrTarget).
+	// Padding is grow-only: an edit that fits reuses the ilst and free region in place.
 	return core.NewCapabilities(core.FormatMP4, refusal != nil, fields, pictures, chapters, core.AccessPartial, perField).
 		WithFieldClassifier(transferClassifier).
 		WithReadOnlyReason(refusal)

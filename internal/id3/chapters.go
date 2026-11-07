@@ -3,6 +3,7 @@ package id3
 import (
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
@@ -83,7 +84,7 @@ func ProjectChapters(t *Tag) ([]core.Chapter, []core.Warning) {
 		}
 		switch f.ID {
 		case "CHAP":
-			if id, ch, ok := decodeCHAP(f.Body, major); ok {
+			if id, ch, _, ok := decodeCHAP(f.Body, major); ok {
 				chaps = append(chaps, decodedCHAP{id: id, ch: ch})
 			}
 		case "CTOC":
@@ -146,11 +147,14 @@ type decodedCHAP struct {
 }
 
 // ctocFrame is a decoded CTOC: its element ID, whether it is the top-level table of
-// contents, and the ordered child element-ID list.
+// contents, the ordered child element-ID list, whether that list is whole (listed), and the
+// bytes after it, the table's subframes.
 type ctocFrame struct {
-	id       string
-	topLevel bool
-	children []string
+	id        string
+	topLevel  bool
+	children  []string
+	listed    bool
+	subframes []byte
 }
 
 // pickTOC selects the table of contents to order by: the first top-level CTOC, else the
@@ -174,57 +178,43 @@ func pickTOC(tocs []ctocFrame) *ctocFrame {
 // of chapFieldUnused (or 0) means "no explicit end". A start of chapFieldUnused is the
 // spec's "time not used" sentinel for a byte-offset-only chapter; with no usable position
 // it is reported unrepresentable (ok == false) rather than projected at ~49.7 days, and an
-// unrelated edit preserves it verbatim.
-func decodeCHAP(body []byte, major byte) (string, core.Chapter, bool) {
+// unrelated edit preserves it verbatim. whole reports whether the chapter carries all of the
+// body: its subframes read cleanly to one title of at most one value, or to none.
+func decodeCHAP(body []byte, major byte) (id string, ch core.Chapter, whole, ok bool) {
 	id, rest, ok := cutLatin1(body)
 	if !ok || len(rest) < 16 {
-		return "", core.Chapter{}, false
+		return "", core.Chapter{}, false, false
 	}
 	startMs := binary.BigEndian.Uint32(rest[0:4])
 	if startMs == chapFieldUnused {
-		return "", core.Chapter{}, false
+		return "", core.Chapter{}, false, false
 	}
 	endMs := binary.BigEndian.Uint32(rest[4:8])
-	ch := core.Chapter{Start: msToDuration(startMs)}
+	ch = core.Chapter{Start: msToDuration(startMs)}
 	if endMs != chapFieldUnused {
 		ch.End = msToDuration(endMs)
 	}
-	if subs, _, _, err := parseFrames(rest[16:], major, false, maxChapterSubframes); err == nil {
-		for _, sf := range subs {
-			if sf.ID == "TIT2" {
-				if vals := decodeTextFrame(sf.Body); len(vals) > 0 {
-					ch.Title = vals[0]
-				}
-				break
-			}
-		}
-	}
-	return id, ch, true
-}
-
-// chapHasExtraSubframes reports whether a CHAP body carries any subframe other than the
-// TIT2 title, such as a per-chapter image or URL that the flat chapter model cannot hold.
-func chapHasExtraSubframes(body []byte, major byte) bool {
-	_, rest, ok := cutLatin1(body)
-	if !ok || len(rest) < 16 {
-		return false
-	}
-	subs, _, _, err := parseFrames(rest[16:], major, false, maxChapterSubframes)
+	subs, _, malformed, _, err := parseFrames(rest[16:], major, false, false, maxChapterSubframes)
 	if err != nil {
-		return false
+		return id, ch, false, true
 	}
 	for _, sf := range subs {
-		if sf.ID != "TIT2" {
-			return true
+		if sf.ID == "TIT2" {
+			if vals := decodeTextFrame(sf.Body); len(vals) > 0 {
+				ch.Title = vals[0]
+			}
+			break
 		}
 	}
-	return false
+	whole = malformed == "" && (len(subs) == 0 ||
+		len(subs) == 1 && subs[0].ID == "TIT2" && !subs[0].Opaque && len(decodeTextFrame(subs[0].Body)) <= 1)
+	return id, ch, whole, true
 }
 
 // decodeCTOC decodes a CTOC frame body: element-id (NUL-terminated Latin-1), flags (1),
 // entry count (1), then that many child element-ID strings (each NUL-terminated Latin-1).
-// Trailing subframes (an optional TOC title) are ignored. Children are read flat, never
-// followed, so no recursion through child references occurs.
+// Trailing subframes (an optional TOC title) are not read but kept in subframes. Children
+// are read flat, never followed, so no recursion through child references occurs.
 func decodeCTOC(body []byte) (ctocFrame, bool) {
 	id, rest, ok := cutLatin1(body)
 	if !ok || len(rest) < 2 {
@@ -237,12 +227,86 @@ func decodeCTOC(body []byte) (ctocFrame, bool) {
 	for range count {
 		child, r, cok := cutLatin1(rest)
 		if !cok {
-			break // truncated child list; keep what parsed
+			return c, true // truncated child list; keep what parsed
 		}
 		c.children = append(c.children, child)
 		rest = r
 	}
+	c.subframes, c.listed = rest, true
 	return c, true
+}
+
+// chapCarried reports whether the chapter model carries all of a CHAP body ([decodeCHAP]'s whole).
+func chapCarried(body []byte, major byte) bool {
+	_, _, whole, ok := decodeCHAP(body, major)
+	return ok && whole
+}
+
+// tocCarried reports whether the chapter model carries all of a CTOC body: it is the root table
+// ([rootTOC]) and holds its child list and nothing after it, such as a title. Any other table is
+// nested in or beside the root one, which the model's flat chapter list does not keep.
+func tocCarried(body []byte, root bool) bool {
+	c, ok := decodeCTOC(body)
+	return ok && root && c.listed && len(c.subframes) == 0
+}
+
+// syncSafeChapterSubframes rewrites the subframes of the CHAP and CTOC frames of an ID3v2.4 tag
+// with sync-safe sizes where [v24FrameSizesArePlain] finds a frame's own subframe sizes plain, as
+// mutagen votes on each frame region: a writer that gets the tag's frame sizes wrong gets these
+// wrong too. Every later read of the body then walks it as the specification sizes it, and a
+// rewrite that carries the frame writes it sync-safe throughout. What the walk cannot read stays
+// as it was.
+func syncSafeChapterSubframes(frames []Frame) {
+	for i, f := range frames {
+		if f.Opaque {
+			continue
+		}
+		at := -1
+		switch f.ID {
+		case "CHAP":
+			if _, rest, ok := cutLatin1(f.Body); ok && len(rest) >= 16 {
+				at = len(f.Body) - len(rest) + 16
+			}
+		case "CTOC":
+			if c, ok := decodeCTOC(f.Body); ok && c.listed {
+				at = len(f.Body) - len(c.subframes)
+			}
+		}
+		if at < 0 || !v24FrameSizesArePlain(f.Body[at:], maxChapterSubframes) {
+			continue
+		}
+		subs, rest, _, _, err := parseFrames(f.Body[at:], 4, false, true, maxChapterSubframes)
+		if err != nil {
+			continue
+		}
+		body := slices.Clone(f.Body[:at])
+		for _, sf := range subs {
+			body = append(body, renderFrame(4, sf)...)
+		}
+		frames[i].Body = append(body, f.Body[len(f.Body)-rest:]...)
+	}
+}
+
+// rootTOC is the index in frames of the table of contents [ProjectChapters] orders by, as
+// [pickTOC] picks it: the first top-level CTOC, else the first, or -1 with none.
+func rootTOC(frames []Frame) int {
+	first := -1
+	for i, f := range frames {
+		if f.Opaque || f.ID != "CTOC" {
+			continue
+		}
+		c, ok := decodeCTOC(f.Body)
+		if !ok {
+			continue
+		}
+		if c.topLevel {
+			return i
+		}
+		if first < 0 {
+			first = i
+		}
+	}
+	return first
 }
 
 // chapterFrames renders a chapter list as CHAP frames (one per chapter, in order) followed

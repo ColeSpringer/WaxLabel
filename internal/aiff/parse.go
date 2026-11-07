@@ -3,7 +3,6 @@ package aiff
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"slices"
 
@@ -101,54 +100,32 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 	}
 
-	// The first ID3 chunk that parses is authoritative. Every other ID3 chunk, a
-	// duplicate or a corrupt one beside a valid one, is marked dropped so the output
-	// never carries two.
-	for _, i := range id3Idxs {
-		body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, d.chunks[i].bodyLen, limit)
-		if err != nil {
-			return nil, err
-		}
-		tg, perr := id3.ParseTag(body, opts.Limits.MaxElements)
-		if perr == nil {
-			d.id3 = tg
-			d.id3Idx = i
-			break
-		}
-		// A MaxElements cap breach is a hard error, not "this chunk is not a tag":
-		// swallowing it would treat a valid ID3 chunk as absent and rewrite without it.
-		if errors.Is(perr, waxerr.ErrSizeTooLarge) {
-			return nil, perr
-		}
+	// The first ID3 chunk that parses and holds frames is authoritative, else the first that
+	// parses ([id3.PickTag]). Every other ID3 chunk, a duplicate, an empty one or a corrupt one
+	// beside a valid one, is marked dropped so the output never carries two, its digest kept for
+	// the writer to grade against what it stores.
+	pick, picked, digests, err := id3.PickTag(len(id3Idxs), func(k int) ([]byte, error) {
+		ch := d.chunks[id3Idxs[k]]
+		return bits.ReadSlice(src, ch.bodyOff, ch.bodyLen, limit)
+	}, opts.Limits.MaxElements)
+	if err != nil {
+		return nil, err
 	}
-	if d.id3Idx >= 0 {
-		for _, i := range id3Idxs {
-			if i == d.id3Idx {
-				continue
-			}
-			d.chunks[i].dupTag = true
-			// Record what this dropped chunk holds; the writer grades it against what it stores.
-			body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, d.chunks[i].bodyLen, limit)
-			if fatal := bits.Fatal(err); fatal != nil {
-				return nil, fatal
-			}
-			if err != nil {
-				continue
-			}
-			tg, perr := id3.ParseTag(body, opts.Limits.MaxElements)
-			if perr != nil {
-				continue // unparseable: nothing readable dies with it
-			}
-			p := id3.Project(tg)
-			d.chunks[i].dupContent = core.DuplicateContent{
-				Tags: p.Tags, Pictures: len(p.Pictures), Chapters: len(p.Chapters),
-				SyncedLyrics: len(p.SyncedLyrics),
+	if pick < 0 && len(id3Idxs) > 0 {
+		warnings = core.Warn(warnings, core.WarnMalformedTagEntry, fmt.Sprintf(
+			"%d ID3 chunk(s) could not be read as an ID3v2 tag; kept until an edit writes a new ID3 chunk in their place", len(id3Idxs)))
+	}
+	if pick >= 0 {
+		d.id3, d.id3Idx = picked, id3Idxs[pick]
+		for k, i := range id3Idxs {
+			if k != pick {
+				d.chunks[i].dupTag, d.chunks[i].dupID3 = true, digests[k]
 			}
 		}
 	}
 	if len(id3Idxs) > 1 && d.id3Idx >= 0 {
 		warnings = core.Warn(warnings, core.WarnDuplicateTagBlock,
-			"more than one ID3 chunk; the first that parses is authoritative and the rest are dropped on rewrite")
+			"more than one ID3 chunk; the first readable one holding frames, else the first readable one, is authoritative and the rest are dropped on rewrite")
 	}
 
 	// ssndAlign is the SSND "offset" field: block-alignment bytes that precede the first

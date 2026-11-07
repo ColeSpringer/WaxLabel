@@ -369,6 +369,8 @@ func parityInputs(t *testing.T) []parityInput {
 	}
 	// Tails after an APE-tagged stream: a duplicate tag holding a value the tag does not, junk, a
 	// Lyrics3 block and stacked ID3v1 tags.
+	pastEnd := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Cut"))
+	copy(pastEnd[6:10], testfile.Syncsafe(1<<20)) // declares more bytes than any input holds
 	dupTag, err := ape.Render([]ape.Item{{Key: "Composer", Value: "Only In The Duplicate"}}, 2000, true)
 	if err != nil {
 		t.Fatal(err)
@@ -504,8 +506,36 @@ func parityInputs(t *testing.T) []parityInput {
 			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
 		parityInput{name: "cut-frame-tag.aac", data: slices.Concat(v2Title, fixture["notags.aac"][:len(fixture["notags.aac"])-100], cutTag, tailJunk[:10]),
 			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		// A second tag chained behind the front one: a duplicate, which every rewrite drops.
 		parityInput{name: "second-tag.aac", data: slices.Concat(v2Title, testfile.ID3v2(3, testfile.TextFrame(3, "TALB", "Second Tag")),
 			fixture["notags.aac"])},
+		parityInput{name: "second-tag-gap.mp3", data: slices.Concat(v2Title, testfile.ID3v2(3, testfile.TextFrame(3, "TALB", "Second Tag")),
+			gap, fixture["notags.mp3"], v1a)},
+		// The kept tag behind an empty one, a duplicate holding a frame the canonical view does not
+		// carry, and a ninth chained tag past the chain's bound.
+		parityInput{name: "empty-ahead.mp3", data: slices.Concat(testfile.ID3v2(3), v2Title, fixture["notags.mp3"])},
+		parityInput{name: "empty-ahead.aac", data: slices.Concat(testfile.ID3v2(3), v2Title, fixture["notags.aac"])},
+		parityInput{name: "popm-dup.mp3", data: slices.Concat(v2Title,
+			testfile.ID3v2(3, testfile.ID3Frame(3, "POPM", []byte("me@example.com\x00\xC8"))), fixture["notags.mp3"])},
+		parityInput{name: "nine-tags.mp3", data: slices.Concat(v2Title, v2Title, v2Title, v2Title, v2Title, v2Title, v2Title, v2Title, v2Title,
+			fixture["notags.mp3"])},
+		// Front tags the frame walk reads in part or not at all: one past the end of the file, one of a
+		// version no specification defines, a lowercase frame ID, a control byte in an ID, a header the
+		// tag ends inside; and ones it reads whole: plain v2.4 sizes, grouped and status-flagged frames.
+		parityInput{name: "past-end-tag.mp3", data: slices.Concat(pastEnd, fixture["notags.mp3"])},
+		parityInput{name: "v25-tag.mp3", data: slices.Concat(testfile.ID3v2(5, testfile.TextFrame(4, "TIT2", "Future")), fixture["notags.mp3"])},
+		parityInput{name: "v25-tag.aac", data: slices.Concat(testfile.ID3v2(5, testfile.TextFrame(4, "TIT2", "Future")), fixture["notags.aac"])},
+		parityInput{name: "lowercase-id.mp3", data: slices.Concat(testfile.ID3v2(3, testfile.TextFrame(3, "Tlow", "odd"),
+			testfile.TextFrame(3, "TPE1", "After")), fixture["notags.mp3"])},
+		parityInput{name: "control-id.mp3", data: slices.Concat(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Song"),
+			testfile.TextFrame(3, "T\x01LW", "junk")), fixture["notags.mp3"])},
+		parityInput{name: "cut-header.aac", data: slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Song"), []byte("TPE")),
+			fixture["notags.aac"])},
+		parityInput{name: "plain-v24.mp3", data: slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Song"),
+			slices.Concat([]byte("COMM"), testfile.BE32(204), []byte{0, 0}, []byte("\x00eng\x00"), bytes.Repeat([]byte("c"), 199))),
+			fixture["notags.mp3"])},
+		parityInput{name: "grouped.mp3", data: slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Song"),
+			testfile.ID3FrameFlags(4, "TPE1", [2]byte{0x40, 0x40}, []byte("\x07\x00Grouped"))), fixture["notags.mp3"])},
 		// A tag between two concatenated streams: the second stays in the essence around the tag, which a
 		// strip joins to the first; a tag filling the resync window with junk after it.
 		parityInput{name: "joined.mp3", data: slices.Concat(v2Title, fixture["notags.mp3"], dupTag, fixture["notags.mp3"], v1a),

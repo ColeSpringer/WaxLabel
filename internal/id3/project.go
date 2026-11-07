@@ -3,6 +3,7 @@ package id3
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/colespringer/waxlabel/internal/core"
@@ -80,13 +81,16 @@ func Project(t *Tag) Projection {
 	var warnings []core.Warning
 	numeric := false
 
-	// A frame whose declared size overran the tag stopped the walk, so everything from its
-	// header on is unread. Every ID3-backed codec projects through here and inherits the
-	// diagnostic.
+	// A frame header the walk could not get past stopped it, so everything from there on is
+	// unread. Every ID3-backed codec projects through here and inherits the diagnostic.
 	if id, n := t.MalformedTail(); id != "" {
 		warnings = core.Warn(warnings, core.WarnMalformedTagEntry,
-			fmt.Sprintf("the %s frame declares more bytes than the tag holds; the %d byte(s) from it to the end of the tag could not be read",
-				core.WarnSnippet(id), n))
+			fmt.Sprintf("the frame walk stops at %s; the %d byte(s) from there to the end of the tag could not be read",
+				t.tailStop(), n))
+	}
+	if ids := nonStandardIDs(t.frames); len(ids) > 0 {
+		warnings = core.Warn(warnings, core.WarnMalformedTagEntry, fmt.Sprintf(
+			"frame(s) with a non-standard ID (%s) are kept verbatim but not read", strings.Join(ids, ", ")))
 	}
 	if r := t.Ignored(); r != "" {
 		warnings = core.Warn(warnings, core.WarnMalformedTagEntry, r)
@@ -235,6 +239,61 @@ func Project(t *Tag) Projection {
 	}
 }
 
+// carried reports whether the canonical view carries all of f's content, f read from a tag of the
+// given major version, root reporting whether f is that tag's root table of contents ([rootTOC]):
+// a frame it reads as a key, a well-formed picture, a chapter holding no more than its times and
+// title, the root table holding only its child list, a lyrics SYLT, an involved-people list of
+// modelled credits. A frame it keeps without reading (a URL, POPM, PRIV, a machine-described
+// comment, an opaque frame), or reads in part, is not carried, so dropping it loses content.
+func carried(f Frame, major byte, root bool) bool {
+	if f.Opaque {
+		return false
+	}
+	switch f.ID {
+	case "APIC":
+		return validAPIC(f.Body)
+	case "CHAP":
+		return chapCarried(f.Body, max(major, 3))
+	case "CTOC":
+		return tocCarried(f.Body, root)
+	case "SYLT":
+		return syltProjectsLyrics(f.Body)
+	case "TIPL", "IPLS":
+		for _, p := range decodeInvolvedPeople(f.Body) {
+			if _, ok := mapping.ID3InvolvedRoleKey(p.Function); !ok {
+				return false
+			}
+		}
+		return true
+	}
+	return len(frameKeys(f)) > 0
+}
+
+// uncarried lists the frames of t the canonical view does not carry whole ([carried]).
+func (t *Tag) uncarried() []Frame {
+	root := rootTOC(t.frames)
+	var out []Frame
+	for i, f := range t.frames {
+		if !carried(f, t.srcVersion, i == root) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// nonStandardIDs lists, in frame order, the IDs of frames kept opaque because their ID is not A-Z
+// and 0-9, each quoted as a warning shows it. An unknown ID3v2.2 frame kept under its space-padded
+// ID is not one: that form is how this package preserves it.
+func nonStandardIDs(frames []Frame) []string {
+	var ids []string
+	for _, f := range frames {
+		if !conformantFrameID(f.ID) && !preservedV22ID(f.ID) {
+			ids = append(ids, strconv.Quote(f.ID))
+		}
+	}
+	return ids
+}
+
 // emitNumTotal splits "n/total" text values into a number key and a total key via the
 // shared [tag.NumberTotalSplit], so the split and its validity gate match the edit-time
 // pair normalization and the other read paths. A malformed pair ("abc/1", "1/2/3") stays
@@ -277,33 +336,42 @@ func movementSplit(v string) (num, total string, split bool) {
 // LegacyV1Families projects a preserved ID3v1 run, one or more stacked 128-byte tags, into
 // legacy family entries, every tag in file order. MP3, raw AAC, FLAC, and the APEv2-native
 // containers all carry one as a non-authoritative trailer, so the projection lives here rather
-// than being written out per codec.
+// than being written out per codec. A field that holds what ID3v1 can store of a value auth
+// holds ([V1Echoes]) agrees with it.
 func LegacyV1Families(auth tag.TagSet, raw []byte) []core.FamilyValue {
-	var contribs []core.Contribution
+	var out []core.FamilyValue
 	for block := range slices.Chunk(raw, 128) {
 		v1, ok := ParseV1(block)
 		if !ok {
 			continue
 		}
+		var contribs []core.Contribution
 		for _, p := range v1.Pairs() {
 			contribs = append(contribs, core.Contribution{Key: p.Key, Value: p.Value})
 		}
+		fams := core.LegacyFamilies(auth, core.FamilyID3v1, contribs)
+		for i, f := range fams {
+			fams[i].Selected = f.Selected || V1Echoes(auth, f.Key, f.Values[0], v1.width(f.Key))
+		}
+		out = append(out, fams...)
 	}
-	return core.LegacyFamilies(auth, core.FamilyID3v1, contribs)
+	return out
 }
 
 // LegacyV2Families projects a preserved, non-authoritative ID3v2 tag into legacy family
-// entries, and reports whether it also carries content the canonical set does not fold
-// in (pictures, chapters, or synced lyrics), which a legacy strip cannot prove redundant.
-// The stray leading tag of FLAC, WavPack, Monkey's Audio and Musepack takes this path. An
-// unreadable tag, or one parsed but ignored whole ([Tag.Ignored]), reports opaque with no entries.
-func LegacyV2Families(auth tag.TagSet, raw []byte, maxElements int) ([]core.FamilyValue, bool) {
+// entries, and reports whether it also holds content the canonical set does not fold in,
+// which a legacy strip cannot prove redundant: pictures, chapters or synced lyrics, a frame
+// the canonical view does not carry whole ([carried]), or bytes it could not read. unread is
+// how many those are, for the native view: all of a tag that does not parse or is ignored
+// whole ([Tag.Ignored]), which reports opaque with no entries. The stray leading tag of FLAC,
+// WavPack, Monkey's Audio and Musepack takes this path.
+func LegacyV2Families(auth tag.TagSet, raw []byte, maxElements int) (fams []core.FamilyValue, opaque bool, unread int64) {
 	if len(raw) == 0 {
-		return nil, false
+		return nil, false, 0
 	}
 	t, err := ParseTag(raw, maxElements)
 	if err != nil {
-		return nil, true
+		return nil, true, int64(len(raw))
 	}
 	proj := Project(t)
 	var contribs []core.Contribution
@@ -313,12 +381,16 @@ func LegacyV2Families(auth tag.TagSet, raw []byte, maxElements int) ([]core.Fami
 			contribs = append(contribs, core.Contribution{Key: k, Value: v})
 		}
 	}
-	// A region the frame walk could not read, or a tag ignored whole (a v2.2 compression
-	// flag), is content nothing can prove redundant; a strip would destroy it, so the
+	// A region the frame walk could not read, a tag ignored whole (a v2.2 compression flag), or
+	// a frame the canonical view keeps without reading (a rating, private data, a frame of a
+	// non-standard ID) is content nothing can prove redundant; a strip would destroy it, so the
 	// container is opaque. Without this an ignored tag would project nothing and read as
 	// provably empty.
-	malformed, _ := t.MalformedTail()
-	opaque := malformed != "" || t.Ignored() != "" ||
-		len(proj.Pictures) > 0 || len(proj.Chapters) > 0 || len(proj.SyncedLyrics) > 0
-	return core.LegacyFamilies(auth, core.FamilyID3v2, contribs), opaque
+	_, unread = t.MalformedTail()
+	if t.Ignored() != "" {
+		unread = int64(len(raw))
+	}
+	opaque = unread > 0 || len(proj.Pictures) > 0 || len(proj.Chapters) > 0 ||
+		len(proj.SyncedLyrics) > 0 || len(t.uncarried()) > 0
+	return core.LegacyFamilies(auth, core.FamilyID3v2, contribs), opaque, unread
 }

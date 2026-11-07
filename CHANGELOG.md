@@ -98,8 +98,8 @@ All notable changes to this project are documented here.
   of a WavPack, Monkey's Audio, Musepack, MP3, ADTS or FLAC stream is reported
   (`malformed-tag-entry`) instead of ignored, or after MP3 read as a tag over the audio.
 - An MP3 behind a second ID3v2 tag or a gap reads its audio from the first frame detection finds,
-  instead of reporting no audio when the frame lay past the first 64 KiB; the bytes before it
-  are reported (`leading-bytes`) and kept after the tag, as ADTS keeps them.
+  instead of reporting no audio when the frame lay past the first 64 KiB; a gap before it is
+  reported (`leading-bytes`) and kept after the tag, as ADTS keeps it.
 - An MP3 whose VBR header's byte count ends where the same stream goes on, right there or behind
   the ID3 tags a file joined there opens with, takes its duration from its bytes at the first
   frame's bitrate instead of the header's frame count, which doubled the bitrate of a joined pair;
@@ -118,6 +118,48 @@ All notable changes to this project are documented here.
   starts past sample 0, as a cut does, whose stated length is the cut's or the whole original's.
   A cut also adds up all of its channels and reads a rate kept in a sub-block, and a length of
   2^32 - 1 samples or more reads as the reference encoder stores it.
+- An ID3v2 frame whose ID is printable but not A-Z and 0-9 (`Tlow`) is read by its size and kept
+  verbatim, reported (`malformed-tag-entry`), so the frames after it read and survive an edit
+  instead of being taken for padding. An ID with a control or non-ASCII byte, a frame header the
+  tag ends inside, or padding holding non-zero bytes ends the frame walk as an unreadable tail, as a
+  frame running past the tag does: reported, and warned `malformed-tag-entry-dropped` by a rewrite
+  (`--strict` refuses).
+- ID3v2.4 tags whose frame sizes are plain integers rather than sync-safe, as iTunes once wrote
+  them, read every frame instead of losing the rest after the first one over 127 bytes, and a
+  chapter's sub-frames sized that way keep a long title whole; `dump --native` notes such sizes,
+  and a rewrite writes them sync-safe. Where the sizes cannot tell, the tag reads sync-safe, as
+  mutagen and ffmpeg read it, and reports what that leaves.
+- Of the ID3v2 tags chained at the start of an MP3 or ADTS file, the first readable one that is not
+  empty is read and the others are reported (`duplicate-tag-block`) instead of counted as leading
+  bytes; a rewrite drops them, warning `duplicate-tag-block-dropped` (`--strict` refuses) when one
+  held a value, picture or frame the file holds nowhere else, before or after the edit, or could not
+  be read. A duplicate APE tag after WavPack, Monkey's Audio or Musepack is graded the same way.
+  WAV and AIFF keep the first id3 chunk that is not empty and grade a dropped duplicate the same
+  way, where they named only its values, pictures and chapters; they report an id3 chunk they
+  cannot read, warning `malformed-tag-entry-dropped` when a fresh one replaces it, and refuse one
+  over the element cap wherever it sits, as MP3 does.
+- A TXXX frame whose description is an alias spelling reads as the canonical key (ffmpeg passes a
+  FLAC's `TOTALTRACKS`, `ALBUM ARTIST` or `UNSYNCEDLYRICS` through and writes LYRICS as
+  `TXXX:USLT`), so an edit or `--clear` of that key reaches it instead of leaving it behind.
+- An ID3v2 front tag of a major version no specification defines is ignored and reported
+  (`malformed-tag-entry`) instead of refusing the file, and one declaring more bytes than the file
+  holds is an unreadable region up to the first frame instead of audio; a rewrite replaces either
+  with a tag of the format's default version, warning `malformed-tag-entry-dropped`.
+- An ID3v1 field holding what ID3v1 can store of the ID3v2 value, a title cut at 30 bytes or the
+  year of a full date, is no longer a `conflicting-families` finding. An ID3v2.2 `PIC` link (format
+  `-->`) reads as a link instead of an unreadable JPEG. Frame grouping bytes and status flags
+  survive a rewrite of the tag around them, and a GENRE name keeps its surrounding whitespace, as
+  in FLAC.
+- An ID3v2 chapter edit warns `chapter-metadata-dropped` (`--strict` refuses) when it drops a
+  chapter's second title or unreadable bytes, a chapter that does not decode, or a table of
+  contents' title or nesting, as it did for a chapter's image or URL.
+- An ID3v2 track or disc number edit no longer leaves a second copy of a total kept in a TXXX
+  frame (`TOTALTRACKS`, `TRACKTOTAL`, `TOTALDISCS`), nor a credit edit one of a credit kept in a
+  TXXX frame; a second, different total stays.
+- A stray ID3v2 tag before FLAC, WavPack, Monkey's Audio or Musepack that holds a frame the
+  canonical view does not carry (a rating, private data, a frame of a non-standard ID) is legacy
+  content a strip cannot prove redundant: `--legacy strip` warns `legacy-strip-dropped`
+  (`--strict` refuses) and `lint --fix` keeps the tag.
 
 ### Changed
 
@@ -157,6 +199,12 @@ All notable changes to this project are documented here.
   end cleanly before the tags, or an SV8 or WavPack stream too long to walk within `MaxElements`
   headers, a WavPack one only when the 64 KiB before the tags do not settle its end, whose digest
   then depends on that limit), junk found after the tag still hashes.
+- A custom key spelled like an ID3 frame ID this library reads as something else (`TBPM`, `TCON`,
+  `TIT2`, `TXXX`) is stored as a `TXXX` frame of that name and reads back unchanged, instead of
+  writing that frame (`--set TBPM=128` read back as BPM); `TCMP` reads back as COMPILATION, the
+  spelling ffmpeg writes. `USLT` is an alias of LYRICS on every format.
+- `PaddingPolicy.Max` also caps the padding an MP3 or ADTS front tag reuses in place, so a rewrite
+  shrinks a tag with more free space than that (1 MiB by default).
 
 ### Added
 

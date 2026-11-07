@@ -2,6 +2,7 @@ package aac
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
@@ -14,9 +15,14 @@ import (
 type doc struct {
 	id3    *id3.Tag // front ID3v2 (nil if none)
 	id3Len int64    // on-disk ID3v2 region length (0 if none)
+	id3Off int64    // where it sits: past the empty or unreadable tags ahead of it (0 if none)
+	// dups are the other ID3v2 tags in the chain, which a rewrite drops, and frontEnd where the
+	// chain ends.
+	dups     []id3.LeadingDup
+	frontEnd int64
 
-	// firstFrameOff is the first ADTS frame: id3Len, or past chained tags or a gap, which a rewrite
-	// keeps after the new tag, out of the essence.
+	// firstFrameOff is the first ADTS frame: where the tags end, or past a gap, which a rewrite keeps
+	// after the new tag, out of the essence.
 	firstFrameOff int64
 	header        adtsHeader // first frame header (essence config)
 	track         core.AudioTrack
@@ -33,6 +39,7 @@ func (d *doc) Clone() core.NativeDoc {
 	if d.id3 != nil {
 		c.id3 = d.id3.Clone()
 	}
+	c.dups = slices.Clone(d.dups) // digests are never modified, so the copies share them
 	c.layout = d.layout.Clone()
 	return &c
 }
@@ -42,7 +49,8 @@ func (d *doc) PaddingBytes() int64 { return id3.FrontTagPadding(d.id3) }
 
 // Describe summarizes native structure for dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
-	var out []core.NativeEntry
+	before, after := id3.SplitDups(d.dups, d.id3Off)
+	out := id3.DupEntries(before)
 	if d.id3 != nil {
 		out = append(out, core.NativeEntry{
 			Kind: fmt.Sprintf("ID3v2.%d", d.id3.SrcVersion()),
@@ -53,7 +61,8 @@ func (d *doc) Describe() []core.NativeEntry {
 			out = append(out, core.NativeEntry{Kind: "  " + f.ID, Size: len(f.Body), Note: id3.FrameNote(f)})
 		}
 	}
-	if gap := d.firstFrameOff - d.id3Len; gap > 0 {
+	out = append(out, id3.DupEntries(after)...)
+	if gap := d.firstFrameOff - d.frontEnd; gap > 0 {
 		out = append(out, core.LeadingBytesEntry(gap))
 	}
 	out = append(out, core.NativeEntry{

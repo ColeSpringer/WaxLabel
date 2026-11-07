@@ -42,7 +42,8 @@ var id3TextFrames = map[string]tag.Key{
 // id3KeyFrames is the inverse of id3TextFrames, built at init.
 var id3KeyFrames = map[tag.Key]string{}
 
-// txxxAliases maps uppercased TXXX descriptions to canonical keys.
+// txxxAliases maps uppercased TXXX descriptions to canonical keys: the spellings [tag.AliasKey]
+// lacks, which ID3TXXXKey consults next.
 var txxxAliases = map[string]tag.Key{
 	"MUSICBRAINZ ALBUM ID":         tag.MBReleaseID,
 	"MUSICBRAINZ ARTIST ID":        tag.MBArtistID,
@@ -63,30 +64,8 @@ var txxxAliases = map[string]tag.Key{
 	"MUSICBRAINZ ALBUM RELEASE COUNTRY": tag.ReleaseCountry,
 	"MUSICBRAINZ ALBUM STATUS":          tag.ReleaseStatus,
 	"MUSICBRAINZ ALBUM TYPE":            tag.ReleaseType,
-	// No tag.AliasKey on this path.
-	"MUSICBRAINZ_ALBUMSTATUS": tag.ReleaseStatus,
-	"MUSICBRAINZ_ALBUMTYPE":   tag.ReleaseType,
 	// ffmpeg TXXX:TCMP; write still uses TCMP frame. Both TCMP frame + TXXX:TCMP -> lint single-valued-multi.
 	"TCMP": tag.Compilation,
-	// Read-only DJMIXER variants; write uses TIPL/IPLS.
-	"DJ MIXER": tag.DJMixer,
-	"DJ_MIXER": tag.DJMixer,
-	"DJ-MIXER": tag.DJMixer,
-	// Matroska native spellings (tag/aliases.go); read-only.
-	"LEAD_PERFORMER": tag.Artist,
-	"DATE_RECORDED":  tag.RecordingDate,
-	"DATE_RELEASED":  tag.ReleaseDate,
-	"DATE_RELEASE":   tag.ReleaseDate,
-	"DATE_ORIGINAL":  tag.OriginalDate,
-	"ORIGINAL_DATE":  tag.OriginalDate,
-	"ENCODED_BY":     tag.EncodedBy,
-	"PART_NUMBER":    tag.TrackNumber,
-	"TOTAL_PARTS":    tag.TrackTotal,
-	"TOTAL_DISCS":    tag.DiscTotal,
-	"CATALOG_NUMBER": tag.CatalogNumber,
-	"PUBLISHER":      tag.Label,
-	"REMIXED_BY":     tag.Remixer,
-	"CONTENT_GROUP":  tag.Grouping,
 }
 
 // txxxDescForKey is preferred TXXX write description. Unlisted keys write string(key).
@@ -156,10 +135,15 @@ func ID3KeyFrame(key tag.Key) (string, bool) {
 	return id, ok
 }
 
-// ID3TXXXKey maps a TXXX description to its canonical key via txxxAliases or tag.ParseKey.
+// ID3TXXXKey maps a TXXX description to its canonical key via txxxAliases, tag.AliasKey, then
+// tag.ParseKey: every alias folds, as on the Vorbis and APE read paths, since ffmpeg passes a
+// source's field names through as TXXX descriptions.
 func ID3TXXXKey(desc string) (tag.Key, bool) {
 	up := normalizeKey(desc)
 	if k, ok := txxxAliases[up]; ok {
+		return k, true
+	}
+	if k, ok := tag.AliasKey(up); ok {
 		return k, true
 	}
 	k, err := tag.ParseKey(up)

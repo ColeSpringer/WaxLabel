@@ -122,7 +122,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags, changed)...)
 	}
 
-	outs, ops, dupLost := planChunks(d, newInfo, newID3, emitINFO, emitID3, stripINFO, infoBytesChange(d, newInfo))
+	outs, ops, dropped, staleDropped := planChunks(d, newInfo, newID3, emitINFO, emitID3, stripINFO, infoBytesChange(d, newInfo))
 
 	segs, lay, err := assemble(d, outs)
 	if err != nil {
@@ -175,11 +175,20 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.BytesAfter = lay.total
 
 	result := buildResult(edited, d, newInfo, newID3, lay)
-	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "tag chunk", result.Tags, dupLost)
+	var written []id3.Frame
+	if emitID3 {
+		written = newID3.Frames()
+	}
+	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "tag chunk", base.Tags, result.Tags,
+		droppedLosses(dropped, id3.NewDupGrader(base, result, d.id3.Frames(), written)))
+	if staleDropped {
+		report.Warnings = core.Warn(report.Warnings, core.WarnMalformedTagEntryDropped,
+			"the id3 chunk that could not be read is replaced by the rewritten one and its contents are not carried")
+	}
 	// Report ID3 rebuild losses only when the file as a whole loses them: RecordingDate
 	// can survive verbatim in LIST/INFO ICRD, and the helper checks the re-projected output.
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, id3Info, result.Tags)
-	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3)
+	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3, emitID3)
 	// Collapse to a no-op when the containers re-projected to base's values (a numeric
 	// genre, a dropped empty). DowngradeNoOp carries the value-dropped warning forward.
 	if np := core.DowngradeNoOp(core.FormatWAV, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripINFO || stampToStrip || encodingRewrite || infoRewrite, report.Warnings); np != nil {
@@ -218,8 +227,10 @@ func id3Tags(edited tag.TagSet, id3Present, encoderAuthored bool) tag.TagSet {
 
 // planChunks builds the output chunk list in source order, re-rendering or dropping the
 // tag containers and copying everything else (including the data chunk) verbatim, then
-// inserting any newly created tag container before the data chunk.
-func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, stripINFO, infoBytesChange bool) (outs []outChunk, ops []string, dupLost []core.DuplicateContent) {
+// inserting any newly created tag container before the data chunk. It returns the duplicate
+// tag chunks the rewrite drops and whether it drops a stale id3 chunk, one that could not be
+// read, that a fresh one replaces.
+func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, stripINFO, infoBytesChange bool) (outs []outChunk, ops []string, dropped []chunk, staleDropped bool) {
 	infoRewritten, id3Rewritten := false, false
 
 	for i, ch := range d.chunks {
@@ -255,13 +266,14 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 			if ch.dupTag {
 				// A second LIST/INFO or id3 chunk: dropped so the output carries one copy.
 				ops = append(ops, "duplicate tag chunk drop")
-				dupLost = append(dupLost, ch.dupContent)
+				dropped = append(dropped, ch)
 				continue
 			}
 			// A lone id3 chunk that failed to parse is not marked dupTag. Drop it when a
 			// fresh id3 chunk is written, so the output never carries two.
 			if emitID3 && isID3Chunk(ch.id4()) {
 				ops = append(ops, "stale id3 chunk drop")
+				staleDropped = true
 				continue
 			}
 			role := roleOther
@@ -286,7 +298,21 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 	if len(created) > 0 {
 		outs = insertBeforeData(outs, created)
 	}
-	return outs, ops, dupLost
+	return outs, ops, dropped, staleDropped
+}
+
+// droppedLosses says what dropping each of the dropped tag chunks loses: a LIST/INFO duplicate its
+// values, an id3 chunk what g finds.
+func droppedLosses(dropped []chunk, g *id3.DupGrader) []core.DuplicateContent {
+	out := make([]core.DuplicateContent, len(dropped))
+	for i, ch := range dropped {
+		if !isID3Chunk(ch.id4()) {
+			out[i] = ch.dupContent
+			continue
+		}
+		out[i] = g.Loss(ch.dupID3, "unreadable id3 chunk(s)")
+	}
+	return out
 }
 
 // infoOut builds the LIST/INFO output chunk from rendered INFO items.

@@ -116,23 +116,63 @@ func LegacyOnlyKeys(fams []FamilyValue, auth tag.TagSet) []tag.Key {
 	return out
 }
 
-// DuplicateContent describes a duplicate container's extra content vs the written set.
+// DuplicateContent describes what a duplicate container a rewrite drops holds: its values, which
+// [AppendDuplicateBlockDropped] grades against the parsed and written sets, and the pictures,
+// chapters and synced lyric sets the file holds nowhere else. Other counts what else it holds that
+// the file holds nowhere else, by kind: content the canonical view does not carry (`"POPM"
+// frame(s)`) or could not read (`unreadable ID3v2.5 tag(s)`).
 type DuplicateContent struct {
 	Tags         tag.TagSet
 	Pictures     int
 	Chapters     int
 	SyncedLyrics int
+	Other        []ContentCount
 }
 
-// UnsubsumedKeys returns, in losing's key order, the canonical keys for which losing holds a
-// value winning does not.
-func UnsubsumedKeys(winning, losing tag.TagSet) []tag.Key {
+// ContentCount is N items of one kind, the kind as a warning names it.
+type ContentCount struct {
+	Kind string
+	N    int64
+}
+
+// Tally counts content by kind in the order the kinds first appear, as [DuplicateContent.Other]
+// lists it. The zero value is empty and ready to use.
+type Tally struct {
+	counts []ContentCount
+	at     map[string]int
+}
+
+// Add counts n more of kind.
+func (t *Tally) Add(kind string, n int64) {
+	if i, ok := t.at[kind]; ok {
+		t.counts[i].N += n
+		return
+	}
+	if t.at == nil {
+		t.at = map[string]int{}
+	}
+	t.at[kind] = len(t.counts)
+	t.counts = append(t.counts, ContentCount{Kind: kind, N: n})
+}
+
+// Counts lists the kinds counted, nil when none.
+func (t *Tally) Counts() []ContentCount { return t.counts }
+
+// UnsubsumedKeys returns, in losing's key order, the canonical keys for which losing holds a value
+// none of holders does.
+func UnsubsumedKeys(losing tag.TagSet, holders ...tag.TagSet) []tag.Key {
 	var out []tag.Key
 	for _, k := range losing.Keys() {
+		kept := map[string]bool{}
+		for _, h := range holders {
+			vals, _ := h.Get(k)
+			for _, v := range vals {
+				kept[v] = true
+			}
+		}
 		lost, _ := losing.Get(k)
-		kept, _ := winning.Get(k)
 		for _, v := range lost {
-			if !slices.Contains(kept, v) {
+			if !kept[v] {
 				out = append(out, k)
 				break
 			}

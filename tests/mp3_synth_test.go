@@ -5,11 +5,15 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
+	"os/exec"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/ape"
@@ -628,14 +632,14 @@ func TestMP3FramesNotLookedForInsideTrailingTags(t *testing.T) {
 }
 
 // An MP3 behind its ID3v2 tag and a second tag longer than a resync window has audio: the stream
-// starts behind every chained tag, and the second tag is kept before it, out of the essence.
+// starts behind every chained tag, and the second tag is a duplicate, out of the essence.
 func TestMP3BehindALargeSecondTag(t *testing.T) {
 	audio := mp3Audio(t)
 	second := testfile.ID3v2(4, txxxFrame(4, "Filler", strings.Repeat("x", 100<<10)))
 	src := slices.Concat(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Front")), second, audio)
 	doc := mustParseBytes(t, src)
-	if hasWarning(doc, wl.WarnNoAudioFrames) || !hasWarning(doc, wl.WarnLeadingBytes) {
-		t.Errorf("warnings %v; want audio, the second tag reported as leading bytes", doc.Warnings())
+	if hasWarning(doc, wl.WarnNoAudioFrames) || !hasWarning(doc, wl.WarnDuplicateTagBlock) || hasWarning(doc, wl.WarnLeadingBytes) {
+		t.Errorf("warnings %v; want audio, the second tag reported as a duplicate", doc.Warnings())
 	}
 	if want := mustParseBytes(t, audio); !reflect.DeepEqual(doc.Properties(), want.Properties()) {
 		t.Errorf("properties %+v, want the plain stream's %+v", doc.Properties(), want.Properties())
@@ -1197,5 +1201,800 @@ func TestMP3NonAudioWarnsNoAudio(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("no-audio warnings = %d, want exactly 1 (the mp3 and root paths must not both fire); got %v", n, doc.Warnings())
+	}
+}
+
+// An MP3 whose ID3v2 tag holds a frame with a lowercase ID reads the frames after it and reports the
+// frame; an edit keeps it byte for byte, and ffmpeg still reads all four frames after the edit.
+func TestMP3NonStandardFrameIDKeepsLaterFrames(t *testing.T) {
+	low := testfile.ID3Frame(3, "Tlow", []byte("\x00odd"))
+	src := slices.Concat(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Title"), low,
+		testfile.TextFrame(3, "TPE1", "Artist"), testfile.TextFrame(3, "TALB", "Album")), mp3Audio(t))
+	doc := mustParseBytes(t, src)
+	if f := doc.Fields(); f.Title != "Title" || !slices.Equal(f.Artists, []string{"Artist"}) || f.Album != "Album" {
+		t.Errorf("fields %+v, want the three standard frames", f)
+	}
+	if !slices.ContainsFunc(doc.Warnings(), func(w wl.Warning) bool {
+		return w.Code == wl.WarnMalformedTagEntry && strings.Contains(w.Message, "Tlow")
+	}) {
+		t.Errorf("warnings %v, want malformed-tag-entry naming Tlow", doc.Warnings())
+	}
+	plan, err := doc.Edit().Set(tag.Comment, "Note").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, src, plan)
+	if !bytes.Contains(out, low) {
+		t.Error("the edit did not keep the Tlow frame byte for byte")
+	}
+	if f := mustParseBytes(t, out).Fields(); !slices.Equal(f.Artists, []string{"Artist"}) || f.Album != "Album" {
+		t.Errorf("after the edit fields %+v, want ARTIST and ALBUM kept", f)
+	}
+	requireTool(t, "ffprobe")
+	got := ffprobeFormatTags(t, writeTempFile(t, "edited.mp3", out))
+	for k, want := range map[string]string{"title": "Title", "artist": "Artist", "album": "Album", "Tlow": "odd"} {
+		if got[k] != want {
+			t.Errorf("ffprobe %s = %q, want %q (tags %v)", k, got[k], want, got)
+		}
+	}
+}
+
+// A frame ID with a control byte ends the frame walk: the frames after it are reported unreadable,
+// not taken for padding, and an edit says it does not carry them.
+func TestMP3ControlByteFrameIDIsAnUnreadableTail(t *testing.T) {
+	src := slices.Concat(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Title"),
+		testfile.TextFrame(3, "T\x01LW", "junk"), testfile.TextFrame(3, "TPE1", "Artist")), mp3Audio(t))
+	doc := mustParseBytes(t, src)
+	if !hasWarning(doc, wl.WarnMalformedTagEntry) || doc.Padding() != 0 {
+		t.Errorf("warnings %v, padding %d; want malformed-tag-entry and no padding", doc.Warnings(), doc.Padding())
+	}
+	plan, err := doc.Edit().Set(tag.Album, "X").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(plan.Report().Warnings, func(w wl.Warning) bool { return w.Code == wl.WarnMalformedTagEntryDropped }) {
+		t.Errorf("plan warnings %v, want malformed-tag-entry-dropped", plan.Report().Warnings)
+	}
+}
+
+// png16 is a real 16x16 PNG that ffmpeg can decode.
+func png16(t *testing.T) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	if err := png.Encode(&b, image.NewRGBA(image.Rect(0, 0, 16, 16))); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+// A chapter's sub-frames are sized as the writer sized the rest: plain in a tag whose frame sizes are
+// plain, so a long chapter title reads whole, and they are sized the same way in a tag otherwise
+// sync-safe. A rewrite writes them sync-safe, as it writes the frames around them.
+func TestMP3PlainSizeChapterTitleReadsWhole(t *testing.T) {
+	title := strings.Repeat("T", 200)
+	plain := func(id string, body []byte) []byte {
+		return slices.Concat([]byte(id), testfile.BE32(len(body)), []byte{0, 0}, body)
+	}
+	unused := []byte{0xFF, 0xFF, 0xFF, 0xFF}
+	syncSafe := func(id string, body []byte) []byte { return testfile.ID3Frame(4, id, body) }
+	chap := func(frame, sub func(string, []byte) []byte) []byte {
+		return frame("CHAP", slices.Concat([]byte("ch0\x00"), testfile.BE32(0), testfile.BE32(1000), unused, unused,
+			sub("TIT2", slices.Concat([]byte{3}, []byte(title)))))
+	}
+	for name, frames := range map[string][][]byte{
+		"a plain-size tag": {plain("TIT2", []byte("\x03Plain")), chap(plain, plain), plain("CTOC", []byte("toc\x00\x03\x01ch0\x00"))},
+		"a sync-safe tag":  {syncSafe("TIT2", []byte("\x03Safe")), chap(syncSafe, plain), syncSafe("CTOC", []byte("toc\x00\x03\x01ch0\x00"))},
+		"a conformant tag": {syncSafe("TIT2", []byte("\x03Safe")), chap(syncSafe, syncSafe), syncSafe("CTOC", []byte("toc\x00\x03\x01ch0\x00"))},
+		// The title's sync-safe size read plain (329) lands on a frame ID inside the TXXX behind it.
+		"a conformant tag with a decoy": {syncSafe("TIT2", []byte("\x03Safe")), syncSafe("CHAP", slices.Concat([]byte("ch0\x00"),
+			testfile.BE32(0), testfile.BE32(1000), unused, unused, syncSafe("TIT2", slices.Concat([]byte{3}, []byte(title))),
+			syncSafe("TXXX", slices.Concat([]byte("\x03x\x00"), bytes.Repeat([]byte("v"), 115), []byte("TIT3\x00\x00\x00\x05\x00\x00"),
+				bytes.Repeat([]byte("w"), 40))))), syncSafe("CTOC", []byte("toc\x00\x03\x01ch0\x00"))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := slices.Concat(testfile.ID3v2(4, append(frames, make([]byte, 64))...), mp3Audio(t))
+			doc := mustParseBytes(t, src)
+			if chs := doc.Chapters(); len(chs) != 1 || chs[0].Title != title {
+				t.Fatalf("chapters %+v, want one titled with all 200 characters", chs)
+			}
+			plan, err := doc.Edit().Set(tag.Album, "Album").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := applyToBytes(t, src, plan)
+			if chs := mustParseBytes(t, out).Chapters(); len(chs) != 1 || chs[0].Title != title {
+				t.Errorf("after the edit chapters %+v, want the title kept whole", chs)
+			}
+			if !bytes.Contains(out, []byte("TIT2\x00\x00\x01\x49")) || bytes.Contains(out, []byte("TIT2\x00\x00\x00\xC9")) {
+				t.Errorf("the rewritten chapter's title sub-frame is not sized sync-safe")
+			}
+		})
+	}
+}
+
+// An MP3 whose ID3v2.4 frame sizes are plain integers, as iTunes writes them, reads every frame and
+// its cover with only a native-view note, and an unrelated edit keeps the cover, which ffmpeg then
+// decodes.
+func TestMP3PlainSizeV24TagKeepsTheCover(t *testing.T) {
+	img := png16(t)
+	head := slices.Concat([]byte{0}, []byte("image/png\x00"), []byte{3})
+	apic := slices.Concat(head, bytes.Repeat([]byte("d"), 201-len(head)-1-len(img)), []byte{0}, img)
+	plainAPIC := slices.Concat([]byte("APIC"), testfile.BE32(len(apic)), []byte{0, 0}, apic)
+	src := slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Title"), plainAPIC,
+		testfile.TextFrame(4, "TPE1", "Artist"), make([]byte, 64)), mp3Audio(t))
+	doc := mustParseBytes(t, src)
+	if pics := doc.Pictures(); len(pics) != 1 || !bytes.Equal(pics[0].Data, img) || doc.Fields().Title != "Title" ||
+		!slices.Equal(doc.Fields().Artists, []string{"Artist"}) || doc.Padding() != 64 {
+		t.Errorf("pictures %d, fields %+v, padding %d; want the cover, both frames and 64 bytes of padding",
+			len(doc.Pictures()), doc.Fields(), doc.Padding())
+	}
+	if hasWarning(doc, wl.WarnMalformedTagEntry) {
+		t.Errorf("warnings %v; plain sizes are a native note, not a read warning", doc.Warnings())
+	}
+	if note := nativeNote(doc, "ID3v2.4"); !strings.Contains(note, "non-sync-safe frame sizes") {
+		t.Errorf("native note %q, want it to name the plain frame sizes", note)
+	}
+	plan, err := doc.Edit().Set(tag.Album, "Album").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, src, plan)
+	re := mustParseBytes(t, out)
+	if pics := re.Pictures(); len(pics) != 1 || !bytes.Equal(pics[0].Data, img) {
+		t.Fatalf("after the edit pictures %d, want the cover kept", len(pics))
+	}
+	if note := nativeNote(re, "ID3v2.4"); strings.Contains(note, "non-sync-safe") {
+		t.Errorf("the rewritten tag still notes plain sizes: %q", note)
+	}
+	requireTool(t, "ffprobe")
+	width, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width",
+		"-of", "csv=p=0", writeTempFile(t, "edited.mp3", out)).Output()
+	if err != nil || strings.TrimSpace(string(width)) != "16" {
+		t.Errorf("ffprobe cover width %q (%v), want 16", width, err)
+	}
+}
+
+// nativeNote is the note of the first native-view entry of the given kind.
+func nativeNote(doc *wl.Document, kind string) string {
+	for _, e := range doc.Native().Describe() {
+		if e.Kind == kind {
+			return e.Note
+		}
+	}
+	return ""
+}
+
+// Custom keys spelled like ID3 frame IDs are stored as TXXX frames and read back as themselves; the
+// edit leaves the file's own frames alone. ffmpeg reads the TXXX descriptions through its ID3 name
+// table, so TCON reaches it as the genre and TBPM under its own name.
+func TestMP3FrameIDSpelledCustomKeysRoundTrip(t *testing.T) {
+	src := slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Title")), mp3Audio(t))
+	doc := mustParseBytes(t, src)
+	plan, err := doc.Edit().Set("TCON", "Rock").Set("TBPM", "128").Set("TIT2", "Custom").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, src, plan)
+	re := mustParseBytes(t, out)
+	for key, want := range map[tag.Key]string{"TCON": "Rock", "TBPM": "128", "TIT2": "Custom", tag.Title: "Title"} {
+		if v, _ := re.Get(key); !slices.Equal(v, []string{want}) {
+			t.Errorf("%s = %v, want [%s]", key, v, want)
+		}
+	}
+	if re.Fields().BPM != "" || len(re.Fields().Genres) != 0 {
+		t.Errorf("BPM %q, genres %v; the custom keys must not read back as the canonical ones", re.Fields().BPM, re.Fields().Genres)
+	}
+	requireTool(t, "ffprobe")
+	got := ffprobeFormatTags(t, writeTempFile(t, "custom.mp3", out))
+	if got["genre"] != "Rock" || got["TBPM"] != "128" {
+		t.Errorf("ffprobe tags %v, want genre=Rock and TBPM=128", got)
+	}
+}
+
+// A second ID3v2 tag chained behind an MP3's front tag is a duplicate: the first wins and the second
+// is reported, kept out of the essence and not counted as leading bytes. An edit drops it, warning
+// that it held a value no other tag does; the output reads as the edit says, with the clean digest.
+func TestMP3DuplicateLeadingTag(t *testing.T) {
+	audio := mp3Audio(t)
+	first := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "First"))
+	second := testfile.ID3v2(4, testfile.TextFrame(4, "TALB", "Second Album"))
+	src := slices.Concat(first, second, audio)
+	doc := mustParseBytes(t, src)
+	if !hasWarning(doc, wl.WarnDuplicateTagBlock) || hasWarning(doc, wl.WarnLeadingBytes) {
+		t.Errorf("warnings %v, want duplicate-tag-block and no leading-bytes", doc.Warnings())
+	}
+	if f := doc.Fields(); f.Title != "First" || f.Album != "" {
+		t.Errorf("title %q, album %q; want the first tag's alone", f.Title, f.Album)
+	}
+	if got := nativeSize(doc, "MPEG audio"); got != len(audio) || nativeNote(doc, "ID3v2.4") != "duplicate, dropped on rewrite" {
+		t.Errorf("MPEG audio %d bytes, duplicate note %q; want %d and the duplicate marked", got, nativeNote(doc, "ID3v2.4"), len(audio))
+	}
+	clean := essenceOf(t, audio)
+	if !essenceOf(t, src).Equal(clean) {
+		t.Error("the digest is not the clean file's")
+	}
+	plan, err := doc.Edit().Clear(tag.Title).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(plan.Report().Warnings, func(w wl.Warning) bool {
+		return w.Code == wl.WarnDuplicateTagBlockDropped && slices.Equal(w.Keys, []tag.Key{tag.Album})
+	}) {
+		t.Errorf("plan warnings %v, want duplicate-tag-block-dropped naming ALBUM", plan.Report().Warnings)
+	}
+	if !slices.Contains(plan.Report().Operations, "duplicate ID3v2 drop") {
+		t.Errorf("operations %v, want the duplicate drop", plan.Report().Operations)
+	}
+	out := applyToBytes(t, src, plan)
+	if !bytes.Equal(out, audio) {
+		t.Errorf("output is %d bytes, want the %d bytes of the bare stream", len(out), len(audio))
+	}
+	re := mustParseBytes(t, out)
+	if hasWarning(re, wl.WarnDuplicateTagBlock) || !essenceOf(t, out).Equal(clean) {
+		t.Errorf("after the edit warnings %v; want no duplicate and the clean digest", re.Warnings())
+	}
+}
+
+// Editing one half of a number pair re-renders the frame that holds both halves, so a total kept
+// in a TXXX frame (ffmpeg passes a FLAC's TOTALTRACKS through as one) is not left beside it as a
+// second copy, and neither is a credit an involved-people edit re-renders; a total the re-rendered
+// frame cannot hold, a second and different one, stays where it is.
+func TestMP3NumberEditKeepsOneTotal(t *testing.T) {
+	trck := func(v string) []byte { return testfile.TextFrame(3, "TRCK", v) }
+	for _, c := range []struct {
+		name   string
+		frames [][]byte
+		key    tag.Key
+		value  string
+		check  tag.Key
+		want   []string
+	}{
+		{"TOTALTRACKS", [][]byte{trck("3"), txxxFrame(3, "TOTALTRACKS", "12")}, tag.TrackNumber, "4", tag.TrackTotal, []string{"12"}},
+		{"TRACKTOTAL", [][]byte{trck("3"), txxxFrame(3, "TRACKTOTAL", "12")}, tag.TrackNumber, "4", tag.TrackTotal, []string{"12"}},
+		{"TOTALDISCS", [][]byte{testfile.TextFrame(3, "TPOS", "1"), txxxFrame(3, "TOTALDISCS", "2")}, tag.DiscNumber, "2", tag.DiscTotal, []string{"2"}},
+		{"a total ahead of the number", [][]byte{txxxFrame(3, "TOTALTRACKS", "12"), trck("3")}, tag.TrackNumber, "4", tag.TrackTotal, []string{"12"}},
+		{"a credit", [][]byte{testfile.ID3Frame(3, "IPLS", []byte("\x00producer\x00Pro")), txxxFrame(3, "ENGINEER", "Eng")}, tag.Producer, "Other", tag.Engineer, []string{"Eng"}},
+		{"a conflicting total", [][]byte{trck("3/10"), txxxFrame(3, "TOTALTRACKS", "12")}, tag.TrackNumber, "4", tag.TrackTotal, []string{"10", "12"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			src := slices.Concat(testfile.ID3v2(3, c.frames...), mp3Audio(t))
+			plan, err := mustParseBytes(t, src).Edit().Set(c.key, c.value).Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			after := mustParseBytes(t, applyPlan(t, plan, src))
+			if got, _ := after.Tags().Get(c.check); !slices.Equal(got, c.want) {
+				t.Errorf("%s after the edit = %q, want %q", c.check, got, c.want)
+			}
+			if got, _ := after.Tags().Get(c.key); !slices.Equal(got, []string{c.value}) {
+				t.Errorf("%s after the edit = %q, want [%q]", c.key, got, c.value)
+			}
+		})
+	}
+}
+
+// TXXX descriptions spelled as aliases read as their canonical keys, as ffmpeg leaves a FLAC's own
+// field names: TOTALTRACKS is the track total, which a clear removes and a set keeps in one home,
+// TXXX:USLT is the lyrics, and ALBUM ARTIST the album artist, whose edits reach every home it has.
+func TestMP3TXXXAliasSpellingsFold(t *testing.T) {
+	audio := mp3Audio(t)
+	src := slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TRCK", "3"), txxxFrame(4, "TOTALTRACKS", "12"),
+		txxxFrame(4, "USLT", "la la"), testfile.TextFrame(4, "TPE2", "Real AA"), txxxFrame(4, "ALBUM ARTIST", "Alias AA")), audio)
+	doc := mustParseBytes(t, src)
+	if f := doc.Fields(); f.TrackNumber != 3 || f.TrackTotal != 12 || f.Lyrics != "la la" {
+		t.Errorf("track %d/%d, lyrics %q; want 3/12 and the TXXX:USLT lyrics", f.TrackNumber, f.TrackTotal, f.Lyrics)
+	}
+	if v, _ := doc.Get(tag.AlbumArtist); !slices.Equal(v, []string{"Real AA", "Alias AA"}) {
+		t.Errorf("ALBUMARTIST = %v, want both spellings' values", v)
+	}
+	for _, c := range []struct {
+		name  string
+		edit  func(*wl.Editor) *wl.Editor
+		check func(t *testing.T, out []byte, re *wl.Document)
+	}{
+		{"clear the total", func(e *wl.Editor) *wl.Editor { return e.Clear(tag.TrackTotal) }, func(t *testing.T, out []byte, re *wl.Document) {
+			if bytes.Contains(out, []byte("TOTALTRACKS")) || re.Fields().TrackTotal != 0 || re.Fields().TrackNumber != 3 {
+				t.Errorf("total %d, track %d, TOTALTRACKS kept %v; want the total gone and the track kept",
+					re.Fields().TrackTotal, re.Fields().TrackNumber, bytes.Contains(out, []byte("TOTALTRACKS")))
+			}
+		}},
+		{"set the total", func(e *wl.Editor) *wl.Editor { return e.Set(tag.TrackTotal, "20") }, func(t *testing.T, out []byte, re *wl.Document) {
+			if v, _ := re.Get(tag.TrackTotal); !slices.Equal(v, []string{"20"}) || bytes.Contains(out, []byte("TOTALTRACKS")) {
+				t.Errorf("TRACKTOTAL = %v, want [20] in one home", v)
+			}
+		}},
+		{"clear the album artist", func(e *wl.Editor) *wl.Editor { return e.Clear("ALBUM ARTIST") }, func(t *testing.T, out []byte, re *wl.Document) {
+			if _, has := re.Get(tag.AlbumArtist); has || bytes.Contains(out, []byte("ALBUM ARTIST")) || bytes.Contains(out, []byte("TPE2")) {
+				t.Errorf("ALBUMARTIST still has a home after the clear")
+			}
+		}},
+		{"set the album artist", func(e *wl.Editor) *wl.Editor { return e.Set("ALBUM ARTIST", "New AA") }, func(t *testing.T, out []byte, re *wl.Document) {
+			if v, _ := re.Get(tag.AlbumArtist); !slices.Equal(v, []string{"New AA"}) || bytes.Contains(out, []byte("ALBUM ARTIST")) {
+				t.Errorf("ALBUMARTIST = %v, want [New AA] in TPE2 alone", v)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			plan, err := c.edit(doc.Edit()).Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := applyToBytes(t, src, plan)
+			c.check(t, out, mustParseBytes(t, out))
+		})
+	}
+}
+
+// What ffmpeg makes of a FLAC reads back: field names it passes through as TXXX descriptions read as
+// the canonical keys they spell, and its TXXX:USLT for the lyrics as LYRICS.
+func TestMP3FFmpegTXXXSpellingsRead(t *testing.T) {
+	requireTool(t, "ffmpeg")
+	dir := t.TempDir()
+	for _, c := range []struct {
+		name string
+		meta []string
+		want map[tag.Key]string
+	}{
+		{"aliases", []string{"TOTALTRACKS=12", "ALBUM ARTIST=Alias AA", "UNSYNCEDLYRICS=un sync"},
+			map[tag.Key]string{tag.TrackTotal: "12", tag.AlbumArtist: "Alias AA", tag.Lyrics: "un sync"}},
+		{"lyrics", []string{"LYRICS=la la"}, map[tag.Key]string{tag.Lyrics: "la la"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			args := []string{"-i", "../testdata/notags.flac"}
+			for _, m := range c.meta {
+				args = append(args, "-metadata", m)
+			}
+			flac := ffmpegEncode(t, dir+"/"+c.name+".flac", args...)
+			mp3 := ffmpegEncode(t, dir+"/"+c.name+".mp3", "-i", flac, "-c:a", "libmp3lame", "-b:a", "64k")
+			doc := mustParseFile(t, mp3)
+			for k, want := range c.want {
+				if v, _ := doc.Get(k); !slices.Equal(v, []string{want}) {
+					t.Errorf("%s = %v, want [%s] (tags %v)", k, v, want, doc.Tags().Keys())
+				}
+			}
+		})
+	}
+}
+
+// An ID3v2.2 PIC link (format "-->") reads as a URL link, not a broken JPEG, and the v2.3 tag an
+// unrelated edit writes keeps it a link.
+func TestMP3V22PICLink(t *testing.T) {
+	pic := frame22("PIC", slices.Concat([]byte{0}, []byte("-->"), []byte{3}, []byte("\x00"), []byte("http://example.com/c.jpg")))
+	src := slices.Concat(testfile.ID3v2(2, textFrame22("TT2", "Linked"), pic), mp3Audio(t))
+	doc := mustParseBytes(t, src)
+	if pics := doc.Pictures(); len(pics) != 1 || pics[0].MIME != wl.LinkMIME || string(pics[0].Data) != "http://example.com/c.jpg" {
+		t.Fatalf("pictures %+v, want the link", pics)
+	}
+	if hasWarning(doc, wl.WarnInvalidPicture) || slices.ContainsFunc(doc.Lint(), func(f wl.Finding) bool { return f.Code == "invalid-picture" }) {
+		t.Errorf("warnings %v, lint %v; want no invalid-picture", doc.Warnings(), doc.Lint())
+	}
+	plan, err := doc.Edit().Set(tag.Album, "X").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, src, plan)
+	if !bytes.Contains(out, []byte("\x00-->\x00\x03")) {
+		t.Error("the rewritten APIC does not declare the --> link MIME")
+	}
+	if pics := mustParseBytes(t, out).Pictures(); len(pics) != 1 || pics[0].MIME != wl.LinkMIME {
+		t.Errorf("after the edit pictures %+v, want the link", pics)
+	}
+}
+
+// An ID3v1 tag holding what it can of the ID3v2 values, a title cut at 30 bytes and the year of a
+// full date, agrees with them: no conflicting-families, and lint --fix may strip it. A different
+// value still conflicts. ffmpeg's own ID3v1 writes the same cut.
+func TestMP3ID3v1TruncationIsNotAConflict(t *testing.T) {
+	long := "A Title Far Longer Than Thirty Characters"
+	v2 := testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", long), testfile.TextFrame(4, "TDRC", "2001-05-06"))
+	lintOf := func(src []byte) []wl.Finding { return mustParseBytes(t, src).Lint() }
+	findings := lintOf(slices.Concat(v2, mp3Audio(t), testfile.ID3v1(long[:30], "", "", "2001", "", 255)))
+	if slices.ContainsFunc(findings, func(f wl.Finding) bool { return f.Code == "conflicting-families" }) ||
+		!slices.ContainsFunc(findings, func(f wl.Finding) bool { return f.Code == "trailing-id3v1" && f.Fixable }) {
+		t.Errorf("findings %+v, want no conflict and a fixable trailing-id3v1", findings)
+	}
+	live := testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Song (Live)"))
+	if !slices.ContainsFunc(lintOf(slices.Concat(live, mp3Audio(t), testfile.ID3v1("Song", "", "", "", "", 255))),
+		func(f wl.Finding) bool { return f.Code == "conflicting-families" && f.Key == tag.Title }) {
+		t.Error("Song against Song (Live) no longer conflicts")
+	}
+	requireTool(t, "ffmpeg")
+	out := ffmpegEncode(t, t.TempDir()+"/v1.mp3", "-i", "../testdata/notags.flac", "-metadata", "title="+long,
+		"-metadata", "date=2001-05-06", "-write_id3v1", "1", "-c:a", "libmp3lame", "-b:a", "64k")
+	doc := mustParseFile(t, out)
+	if !hasWarning(doc, wl.WarnTrailingID3v1) || slices.ContainsFunc(doc.Lint(), func(f wl.Finding) bool { return f.Code == "conflicting-families" }) {
+		t.Errorf("ffmpeg's ID3v1: warnings %v, lint %+v; want the tag found and no conflict", doc.Warnings(), doc.Lint())
+	}
+}
+
+// An MP3 whose front tag is ID3v2.5, a version no specification defines, reads: the tag is ignored
+// and reported, the audio starts behind it with the clean file's digest, and an edit replaces it
+// with a tag at the format's default version, saying the old one is not carried.
+func TestMP3UnknownID3Version(t *testing.T) {
+	audio := mp3Audio(t)
+	tagBytes := testfile.ID3v2(5, testfile.TextFrame(4, "TIT2", "Future"))
+	src := slices.Concat(tagBytes, audio)
+	doc := mustParseBytes(t, src)
+	if !hasWarning(doc, wl.WarnMalformedTagEntry) || doc.Fields().Title != "" {
+		t.Errorf("warnings %v, title %q; want the tag ignored and reported", doc.Warnings(), doc.Fields().Title)
+	}
+	if nativeSize(doc, "ID3v2.5") != len(tagBytes) || nativeSize(doc, "MPEG audio") != len(audio) || !essenceOf(t, src).Equal(essenceOf(t, audio)) {
+		t.Errorf("native %+v; want the tag's %d bytes, then the audio with the clean digest", doc.Native().Describe(), len(tagBytes))
+	}
+	plan, err := doc.Edit().Set(tag.Album, "X").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !planWarns(t, plan, wl.WarnMalformedTagEntryDropped) {
+		t.Errorf("plan warnings %v, want malformed-tag-entry-dropped", plan.Report().Warnings)
+	}
+	out := applyToBytes(t, src, plan)
+	if out[3] != 3 || mustParseBytes(t, out).Fields().Album != "X" || !bytes.HasSuffix(out, audio) {
+		t.Errorf("output tag version %d; want an ID3v2.3 tag holding the album ahead of the audio", out[3])
+	}
+}
+
+// An ignored front tag is no tag a rewrite updates: when it writes a tag the operations say one is
+// created and the warning says the ignored tag is replaced, and when it writes none (all that held
+// values was an ID3v1 tag a strip removes) the operations say the ID3v2 tag is removed and so does
+// the warning. A tag declaring more bytes than the file holds is ignored the same way.
+func TestMP3IgnoredFrontTagReplacedOrRemoved(t *testing.T) {
+	audio := mp3Audio(t)
+	pastEnd := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Cut"))
+	copy(pastEnd[6:10], []byte{0x04, 0x00, 0x00, 0x00}) // 8 MiB declared
+	for name, front := range map[string][]byte{
+		"an unknown version": testfile.ID3v2(5, testfile.TextFrame(4, "TIT2", "Future")),
+		"a tag past the end": pastEnd,
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc := mustParseBytes(t, slices.Concat(front, audio))
+			plan, err := doc.Edit().Set(tag.Album, "X").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ops, msg := plan.Report().Operations, malformedDroppedMessage(plan)
+			if !slices.Contains(ops, "ID3v2.3 tag creation") || !strings.Contains(msg, "is replaced by") {
+				t.Errorf("writing a tag: operations %v, warning %q; want a tag creation and the ignored tag replaced", ops, msg)
+			}
+			stripped := slices.Concat(front, audio, testfile.ID3v1("V1 Title", "", "", "2001", "", 255))
+			plan, err = mustParseBytes(t, stripped).Edit().Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ops, msg = plan.Report().Operations, malformedDroppedMessage(plan)
+			if !slices.Contains(ops, "ID3v2 removal") || slices.ContainsFunc(ops, func(op string) bool { return strings.Contains(op, "creation") }) ||
+				!strings.Contains(msg, "is removed") {
+				t.Errorf("writing no tag: operations %v, warning %q; want the ID3v2 tag's removal and the ignored tag removed", ops, msg)
+			}
+		})
+	}
+	// A tag that reads no frame, only bytes it cannot read, goes whole with them when a strip leaves
+	// it nothing to write.
+	junk := testfile.ID3v2(3, []byte("\x01\x02\x03\x04junk"))
+	plan, err := mustParseBytes(t, slices.Concat(junk, audio, testfile.ID3v1("V1 Title", "", "", "", "", 255))).Edit().
+		Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg := malformedDroppedMessage(plan); !strings.Contains(msg, "are removed with the tag") {
+		t.Errorf("an unreadable tag stripped: warning %q, want its bytes removed with the tag", msg)
+	}
+}
+
+// malformedDroppedMessage is the message of plan's malformed-tag-entry-dropped warning, or "".
+func malformedDroppedMessage(plan *wl.Plan) string {
+	if w, ok := warningFor(plan, wl.WarnMalformedTagEntryDropped); ok {
+		return w.Message
+	}
+	return ""
+}
+
+// Frames in a group or with status flags set, a read-only one included, keep those bytes through an
+// unrelated edit, in ID3v2.3 and ID3v2.4, and still read; an edit of such a frame is not blocked.
+func TestMP3FrameGroupAndStatusKept(t *testing.T) {
+	for _, c := range []struct {
+		version       byte
+		group, status byte
+	}{{3, 0x20, 0xE0}, {4, 0x40, 0x70}} {
+		grouped := testfile.ID3FrameFlags(c.version, "TPE1", [2]byte{0, c.group}, []byte("\x07\x00Grouped"))
+		flagged := testfile.ID3FrameFlags(c.version, "TALB", [2]byte{c.status, 0}, []byte("\x00Flagged"))
+		src := slices.Concat(testfile.ID3v2(c.version, testfile.TextFrame(c.version, "TIT2", "Title"), grouped, flagged), mp3Audio(t))
+		doc := mustParseBytes(t, src)
+		plan, err := doc.Edit().Set(tag.Title, "New Title").Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, src, plan)
+		if !bytes.Contains(out, grouped) || !bytes.Contains(out, flagged) {
+			t.Errorf("v2.%d: the edit did not keep the grouped and flagged frames byte for byte", c.version)
+		}
+		re := mustParseBytes(t, out)
+		if f := re.Fields(); f.Title != "New Title" || !slices.Equal(f.Artists, []string{"Grouped"}) || f.Album != "Flagged" {
+			t.Errorf("v2.%d: fields %+v after the edit", c.version, f)
+		}
+		plan, err = re.Edit().Set(tag.Album, "Edited").Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := mustParseBytes(t, applyToBytes(t, out, plan)).Fields().Album; got != "Edited" {
+			t.Errorf("v2.%d: the read-only frame's edit read back %q", c.version, got)
+		}
+	}
+}
+
+// A GENRE with whitespace around it reads the same from an MP3's TCON as from a FLAC's GENRE.
+func TestMP3GenreWhitespaceMatchesFLAC(t *testing.T) {
+	const genre = "  padded  "
+	flac := testfile.TaggedFLAC("ref", "GENRE="+genre)
+	mp3 := slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TCON", genre)), mp3Audio(t))
+	want, _ := mustParseBytes(t, flac).Get(tag.Genre)
+	if got, _ := mustParseBytes(t, mp3).Get(tag.Genre); !slices.Equal(got, want) || !slices.Equal(want, []string{genre}) {
+		t.Errorf("MP3 GENRE %q, FLAC %q; want both %q", got, want, genre)
+	}
+}
+
+// An MP3 whose front tag declares more bytes than the file holds reads its audio behind the tag: the
+// tag is an unreadable region up to the first frame, reported, out of the essence, whose digest is
+// the clean file's, and an edit replaces the whole region, saying it is not carried.
+func TestMP3FrontTagPastTheEnd(t *testing.T) {
+	audio := mp3Audio(t)
+	tagBytes := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Cut"), testfile.TextFrame(3, "TALB", "Lost"))
+	copy(tagBytes[6:10], testfile.Syncsafe(len(audio)+1000))
+	src := slices.Concat(tagBytes, audio)
+	doc := mustParseBytes(t, src)
+	if !hasWarning(doc, wl.WarnMalformedTagEntry) || hasWarning(doc, wl.WarnLeadingBytes) || hasWarning(doc, wl.WarnNoAudioFrames) {
+		t.Errorf("warnings %v; want the tag reported and the audio found", doc.Warnings())
+	}
+	if nativeSize(doc, "ID3v2.3") != len(tagBytes) || nativeSize(doc, "MPEG audio") != len(audio) || !essenceOf(t, src).Equal(essenceOf(t, audio)) {
+		t.Errorf("native %+v; want the tag's %d bytes, then the audio with the clean digest", doc.Native().Describe(), len(tagBytes))
+	}
+	plan, err := doc.Edit().Set(tag.Title, "New").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !planWarns(t, plan, wl.WarnMalformedTagEntryDropped) {
+		t.Errorf("plan warnings %v, want malformed-tag-entry-dropped", plan.Report().Warnings)
+	}
+	out := applyToBytes(t, src, plan)
+	if bytes.Contains(out, []byte("Lost")) || !bytes.HasSuffix(out, audio) || mustParseBytes(t, out).Fields().Title != "New" {
+		t.Error("the edit did not replace the unreadable tag with the new one ahead of the audio")
+	}
+}
+
+// Nine ID3v2 tags chained ahead of an MP3: the chain read stops at eight, the front tag and seven
+// duplicates, and the ninth is no stream start but bytes before the first frame. The digest is the
+// clean file's before an edit and after it, when the ninth becomes the chain's duplicate.
+func TestMP3NineChainedTags(t *testing.T) {
+	audio := mp3Audio(t)
+	var parts [][]byte
+	for i := range 9 {
+		parts = append(parts, testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", fmt.Sprintf("Tag %d", i))))
+	}
+	src := slices.Concat(append(parts, audio)...)
+	clean := essenceOf(t, audio)
+	doc := mustParseBytes(t, src)
+	if !essenceOf(t, src).Equal(clean) || !hasWarning(doc, wl.WarnLeadingBytes) || nativeSize(doc, "MPEG audio") != len(audio) {
+		t.Errorf("warnings %v, native %+v; want the ninth tag before the first frame and the clean digest", doc.Warnings(), doc.Native().Describe())
+	}
+	plan, err := doc.Edit().Set(tag.Album, "X").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := applyToBytes(t, src, plan); !essenceOf(t, out).Equal(clean) {
+		t.Error("the edit changed the digest")
+	}
+}
+
+// dupDroppedNames is the duplicate-tag-block-dropped message of plan, or "" when it has none.
+func dupDroppedNames(plan *wl.Plan) string {
+	for _, w := range plan.Report().Warnings {
+		if w.Code == wl.WarnDuplicateTagBlockDropped {
+			return w.Message
+		}
+	}
+	return ""
+}
+
+// A chapter edit rewrites the chapter frames from the flat chapter list, so it names what that list
+// cannot hold: a chapter's image, a second title or unreadable bytes, a table of contents' title, and
+// a nested table. Plain chapters under one table lose nothing, and --strict lets their edit through.
+func TestMP3ChapterEditNamesDroppedChapterContent(t *testing.T) {
+	unused := []byte{0xFF, 0xFF, 0xFF, 0xFF} // no byte offsets
+	chap := func(sub ...[]byte) []byte {
+		return testfile.ID3Frame(3, "CHAP", slices.Concat([]byte("ch0\x00"), testfile.BE32(0), testfile.BE32(1000),
+			unused, unused, testfile.TextFrame(3, "TIT2", "One"), slices.Concat(sub...)))
+	}
+	ctoc := func(id string, flags byte, child string, sub ...[]byte) []byte {
+		return testfile.ID3Frame(3, "CTOC", slices.Concat([]byte(id+"\x00"), []byte{flags, 1}, []byte(child+"\x00"), slices.Concat(sub...)))
+	}
+	const topOrdered, ordered = 3, 1
+	toc := ctoc("toc", topOrdered, "ch0")
+	for _, c := range []struct {
+		name   string
+		frames [][]byte
+		lossy  bool
+	}{
+		{"plain chapters under one table", [][]byte{chap(), toc}, false},
+		{"a lone table not flagged top-level", [][]byte{chap(), ctoc("toc", ordered, "ch0")}, false},
+		{"a chapter's image", [][]byte{chap(testfile.FrontCover("image/png", testfile.PNG())), toc}, true},
+		{"a chapter's second title", [][]byte{chap(testfile.TextFrame(3, "TIT2", "Two")), toc}, true},
+		{"a chapter's unreadable sub-frame", [][]byte{chap(testfile.OverrunFrame("APIC")), toc}, true},
+		{"a table of contents' title", [][]byte{chap(), ctoc("toc", topOrdered, "ch0", testfile.TextFrame(3, "TIT2", "Contents"))}, true},
+		{"a nested table", [][]byte{chap(), ctoc("toc", topOrdered, "part"), ctoc("part", ordered, "ch0")}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			src := slices.Concat(testfile.ID3v2(3, slices.Concat([][]byte{testfile.TextFrame(3, "TIT2", "Front")}, c.frames)...), mp3Audio(t))
+			doc := mustParseBytes(t, src)
+			if len(doc.Chapters()) != 1 {
+				t.Fatalf("setup: %d chapters, want 1", len(doc.Chapters()))
+			}
+			plan, err := doc.Edit().SetChapters(wl.Chapter{Start: 0, End: time.Second, Title: "Renamed"}).Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := planWarns(t, plan, wl.WarnChapterMetadataDropped); got != c.lossy {
+				t.Errorf("chapter-metadata-dropped warned %v, want %v: %v", got, c.lossy, plan.Report().Warnings)
+			}
+		})
+	}
+}
+
+// A duplicate ID3v2 tag a rewrite drops loses more than values: the frames the canonical view does not
+// carry (a rating, a URL, private data), a picture the written tag lacks, and, when the duplicate does
+// not read at all, everything in it. The warning names each, so --strict refuses; a picture the
+// written tag holds too is not a loss.
+func TestMP3DroppedDuplicateNamesWhatItLoses(t *testing.T) {
+	front := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Front"))
+	popm := testfile.ID3Frame(3, "POPM", []byte("me@example.com\x00\xC8"))
+	wxxx := testfile.ID3Frame(3, "WXXX", []byte("\x00\x00http://example.com"))
+	priv := testfile.ID3Frame(3, "PRIV", []byte("owner\x00data"))
+	cover := testfile.FrontCover("image/png", testfile.PNG())
+	unknown := testfile.ID3v2(5, testfile.TextFrame(4, "TALB", "Future"))
+	compressed := testfile.ID3v2(2, frame22("TT2", []byte("\x00Compressed")))
+	compressed[5] = 0x40
+	credit := testfile.ID3Frame(3, "TIPL", []byte("\x00photography\x00Some One"))
+	chap := func(sub ...[]byte) []byte {
+		unused := []byte{0xFF, 0xFF, 0xFF, 0xFF} // no byte offsets
+		return testfile.ID3Frame(3, "CHAP", slices.Concat([]byte("ch0\x00"), testfile.BE32(0), testfile.BE32(1000),
+			unused, unused, testfile.TextFrame(3, "TIT2", "One"), slices.Concat(sub...)))
+	}
+	chapterFront := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Front"), chap())
+	for _, c := range []struct {
+		name   string
+		front  []byte
+		second []byte
+		want   []string // in the dropped warning; none means no warning
+	}{
+		{"unmodeled frames", front, testfile.ID3v2(3, popm, wxxx, priv), []string{"POPM", "WXXX", "PRIV"}},
+		{"an unknown version", front, unknown, []string{"unreadable ID3v2.5 tag"}},
+		{"a compressed v2.2 tag", front, compressed, []string{"unreadable ID3v2.2 tag"}},
+		{"an unreadable tail", front, testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Front"), testfile.OverrunFrame("TALB")),
+			[]string{"unreadable byte(s)"}},
+		{"the written tag's own picture", testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Front"), cover),
+			testfile.ID3v2(3, cover), nil},
+		{"a picture the written tag lacks", front, testfile.ID3v2(3, cover), []string{"1 picture(s)"}},
+		{"a credit the canonical view does not model", front, testfile.ID3v2(3, credit), []string{"TIPL"}},
+		{"a chapter's sub-frame", chapterFront, testfile.ID3v2(3, chap(wxxx)), []string{"CHAP"}},
+		{"a chapter's second title", chapterFront, testfile.ID3v2(3, chap(testfile.TextFrame(3, "TIT2", "Two"))), []string{"CHAP"}},
+		{"a chapter's unreadable sub-frame", chapterFront, testfile.ID3v2(3, chap(testfile.OverrunFrame("APIC"))), []string{"CHAP"}},
+		{"a table of contents' title", chapterFront, testfile.ID3v2(3, chap(), testfile.ID3Frame(3, "CTOC",
+			slices.Concat([]byte("toc\x00"), []byte{3, 1}, []byte("ch0\x00"), testfile.TextFrame(3, "TIT2", "Contents")))), []string{"CTOC"}},
+		{"a lone table not flagged top-level", chapterFront, testfile.ID3v2(3, chap(), testfile.ID3Frame(3, "CTOC",
+			slices.Concat([]byte("toc\x00"), []byte{1, 1}, []byte("ch0\x00")))), nil},
+		{"a nested table of contents", chapterFront, testfile.ID3v2(3, chap(), testfile.ID3Frame(3, "CTOC",
+			slices.Concat([]byte("toc\x00"), []byte{3, 1}, []byte("part\x00"))), testfile.ID3Frame(3, "CTOC",
+			slices.Concat([]byte("part\x00"), []byte{1, 1}, []byte("ch0\x00")))), []string{`1 "CTOC" frame(s)`}},
+		{"two frames of one kind", front, testfile.ID3v2(3, popm, testfile.ID3Frame(3, "POPM", []byte("you@example.com\x00\x40"))),
+			[]string{`2 "POPM" frame(s)`}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			src := slices.Concat(c.front, c.second, mp3Audio(t))
+			doc := mustParseBytes(t, src)
+			if doc.Fields().Title != "Front" || !hasWarning(doc, wl.WarnDuplicateTagBlock) {
+				t.Fatalf("title %q, warnings %v; want the front tag read and the second reported", doc.Fields().Title, doc.Warnings())
+			}
+			plan, err := doc.Edit().Set(tag.Artist, "X").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			msg := dupDroppedNames(plan)
+			if (msg != "") != (len(c.want) > 0) {
+				t.Fatalf("dropped warning %q, want one naming %v", msg, c.want)
+			}
+			for _, w := range c.want {
+				if !strings.Contains(msg, w) {
+					t.Errorf("dropped warning %q does not name %s", msg, w)
+				}
+			}
+		})
+	}
+}
+
+// Of the tags a file opens with, the first that holds frames is the one read: an empty one ahead of
+// it, or one that cannot be read, is a duplicate, and an edit keeps the real tag's values, dropping
+// an empty duplicate without a word.
+func TestMP3FirstTagHoldingFramesWins(t *testing.T) {
+	tagged := readFixture(t, sampleMP324)
+	for _, c := range []struct {
+		name   string
+		ahead  []byte
+		silent bool // dropping the tag ahead loses nothing
+	}{
+		{"an empty tag", readFixture(t, "../testdata/empty.mp3"), true},
+		{"an unknown version", testfile.ID3v2(5, testfile.TextFrame(4, "TIT2", "Future")), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			src := slices.Concat(c.ahead, tagged)
+			doc := mustParseBytes(t, src)
+			want := mustParseBytes(t, tagged).Tags()
+			if !doc.Tags().Equal(want) || !hasWarning(doc, wl.WarnDuplicateTagBlock) {
+				t.Fatalf("tags %v, warnings %v; want the second tag's eight values and the duplicate reported", doc.Tags().Keys(), doc.Warnings())
+			}
+			plan, err := doc.Edit().Set(tag.Comment, "Note").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := dupDroppedNames(plan) == ""; got != c.silent {
+				t.Errorf("dropped warning %q, want one only when the tag ahead held something", dupDroppedNames(plan))
+			}
+			re := mustParseBytes(t, applyToBytes(t, src, plan))
+			for _, k := range want.Keys() {
+				if v, _ := re.Get(k); len(v) == 0 {
+					t.Errorf("the edit lost %s", k)
+				}
+			}
+		})
+	}
+}
+
+// A tag written twice, its copy a duplicate, loses nothing when an edit drops the copy: the value the
+// edit replaces or clears, the picture, chapter or synced lyrics it removes, and a credit list it
+// re-renders were the file's own, so none is named and --strict lets the edit through. That holds
+// for a chapter the read opens up, one starting past the end with its end at its start.
+func TestMP3DuplicateOfTheSameTagLosesNothing(t *testing.T) {
+	chapAt := func(id string, start, end int) []byte {
+		return testfile.ID3Frame(3, "CHAP", slices.Concat([]byte(id+"\x00"), testfile.BE32(start), testfile.BE32(end),
+			[]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, testfile.TextFrame(3, "TIT2", id)))
+	}
+	chap := slices.Concat(chapAt("ch0", 0, 1000), chapAt("ch1", 60000, 60000))
+	sylt := testfile.ID3Frame(3, "SYLT", slices.Concat([]byte{0}, []byte("eng"), []byte{2, 1, 0}, []byte("line\x00"), testfile.BE32(1000)))
+	ipls := testfile.ID3Frame(3, "IPLS", []byte("\x00producer\x00Pro\x00mastering\x00Mas"))
+	tagBytes := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Title"), testfile.TextFrame(3, "TPE1", "Artist"),
+		testfile.FrontCover("image/png", testfile.PNG()), chap, sylt, ipls)
+	src := slices.Concat(tagBytes, tagBytes, mp3Audio(t))
+	doc := mustParseBytes(t, src)
+	if chs := doc.Chapters(); len(chs) != 2 || chs[1].End != 0 || len(doc.SyncedLyrics()) != 1 {
+		t.Fatalf("setup: chapters %+v, %d synced lyric sets; want two, the last opened up, and one set", chs, len(doc.SyncedLyrics()))
+	}
+	for name, edit := range map[string]func(*wl.Editor) *wl.Editor{
+		"replace the title":       func(e *wl.Editor) *wl.Editor { return e.Set(tag.Title, "New") },
+		"clear the artist":        func(e *wl.Editor) *wl.Editor { return e.Clear(tag.Artist) },
+		"remove the cover":        func(e *wl.Editor) *wl.Editor { return e.ClearPictures() },
+		"clear the chapters":      func(e *wl.Editor) *wl.Editor { return e.ClearChapters() },
+		"clear the synced lyrics": func(e *wl.Editor) *wl.Editor { return e.ClearSyncedLyrics() },
+		"replace the producer":    func(e *wl.Editor) *wl.Editor { return e.Set(tag.Producer, "Other") },
+	} {
+		plan, err := edit(doc.Edit()).Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if msg := dupDroppedNames(plan); msg != "" {
+			t.Errorf("%s: dropped warning %q, want none", name, msg)
+		}
+	}
+}
+
+// A padding-only edit of a tag whose padding holds junk reports the padding it had, none, and says
+// the unreadable bytes are not carried, instead of counting them as padding.
+func TestMP3PaddingEditOfJunkPadding(t *testing.T) {
+	pad := make([]byte, 1000)
+	copy(pad[996:], "JUNK")
+	src := slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Title"), pad), mp3Audio(t))
+	plan, err := mustParseBytes(t, src).Edit().Prepare(wl.WithPadding(wl.PaddingPolicy{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(plan.Report().Operations, "padding 0 -> 0") || !planWarns(t, plan, wl.WarnMalformedTagEntryDropped) {
+		t.Errorf("operations %v, warnings %v; want padding 0 -> 0 and the junk reported dropped", plan.Report().Operations, plan.Report().Warnings)
 	}
 }

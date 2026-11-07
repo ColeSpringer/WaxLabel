@@ -20,6 +20,21 @@ type Projection struct {
 	Warnings []core.Warning
 }
 
+// Carried reports whether the canonical view carries item it: a text item whose name maps to a key,
+// or a cover item that decodes. Any other binary item is kept without being read, so a duplicate tag
+// a rewrite drops loses it.
+func Carried(it Item) bool {
+	if it.NonText() {
+		if !IsCoverKey(it.Key) {
+			return false
+		}
+		_, err := DecodeCover(it.Key, it.Data)
+		return err == nil
+	}
+	_, ok := mapping.CanonicalAPE(it.Key)
+	return ok
+}
+
 // Project decodes an APE tag; nil => empty set.
 func Project(t *Tag) Projection {
 	var contribs []core.Contribution

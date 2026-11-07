@@ -18,7 +18,7 @@ func TestKeyAliases(t *testing.T) {
 		{DiscTotal, []string{"TOTALDISCS", "TOTAL_DISCS"}},   // self-alias DISCTOTAL excluded
 		{AlbumArtist, []string{"ALBUM ARTIST", "ALBUM_ARTIST"}},
 		{Label, []string{"ORGANIZATION", "PUBLISHER"}},
-		{Lyrics, []string{"UNSYNCEDLYRICS"}},
+		{Lyrics, []string{"UNSYNCEDLYRICS", "USLT"}}, // USLT: the ID3 frame name ffmpeg writes as a TXXX description
 		{DiscNumber, []string{"DISC"}},
 		{TrackNumber, []string{"PART_NUMBER", "TRACK"}},
 		{ReleaseStatus, []string{"MUSICBRAINZ_ALBUMSTATUS"}},

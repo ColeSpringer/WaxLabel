@@ -12,10 +12,13 @@
 package id3
 
 import (
+	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -28,8 +31,9 @@ const (
 )
 
 // Tag is a parsed ID3v2 tag: the decoded frames in original order plus the version
-// metadata needed to write them back. srcVersion records what was read (2, 3, or 4);
-// writeVersion is the version emitted (3 or 4; a v2.2 source is modernised to v2.3).
+// metadata needed to write them back. srcVersion records what was read (2, 3, or 4, or any
+// major version of a tag ignored whole); writeVersion is the version emitted (3 or 4; a v2.2
+// source is modernised to v2.3; 0 for an ignored tag of a version no writer emits).
 type Tag struct {
 	srcVersion   byte
 	writeVersion byte
@@ -40,16 +44,29 @@ type Tag struct {
 	// an extended header, a footer), none of which RenderedSize models, since it sizes what
 	// the writer emits.
 	padding int64
-	// malformedID names the frame whose declared size ran past the end of the tag, and
-	// malformedTail counts the bytes from that frame's header to the end of the region.
-	// The walk cannot read past such a frame, so those bytes are not free padding (padding
-	// is 0 for that stop) and a rewrite replaces them with zeros. WithFrames clears both.
+	// malformedID names the frame header the walk stopped at short of the end of the tag
+	// (tailCause says why), and malformedTail counts the bytes from that header to the end of
+	// the region. The walk cannot read past it, so those bytes are not free padding (padding
+	// is 0 for that stop) and a rewrite does not carry them. WithFrames clears all three.
 	malformedID   string
 	malformedTail int64
-	// ignored is the reason the whole tag was skipped (a v2.2 compression flag), empty when
-	// it parsed. Its frames are empty and its region is unreadable rather than free.
+	tailCause     tailCause
+	// ignored is the reason the whole tag was skipped (a v2.2 compression flag, a major
+	// version no specification defines, a declared size past the end of the file), empty
+	// when it parsed. Its frames are empty and its region is unreadable rather than free.
 	ignored string
+	// plainSizes records a v2.4 tag whose frame sizes were read as plain integers
+	// ([v24FrameSizesArePlain]); a rewrite writes them sync-safe.
+	plainSizes bool
+	// unbounded records an ignored front tag that declares more bytes than the file holds,
+	// so its extent past the header is unknown ([Tag.Unbounded]).
+	unbounded bool
 }
+
+// Unbounded reports an ignored front tag that declares more bytes than the file holds: its
+// region runs from the start of the file to where the stream starts, or to the end of the
+// file with none, which the codec finds.
+func (t *Tag) Unbounded() bool { return t != nil && t.unbounded }
 
 // Ignored reports why the whole tag was skipped, or "" when it parsed.
 func (t *Tag) Ignored() string {
@@ -62,8 +79,8 @@ func (t *Tag) Ignored() string {
 // Padding reports the free bytes inside the tag region, after the last frame.
 func (t *Tag) Padding() int64 { return t.padding }
 
-// MalformedTail reports the frame whose declared size overran the tag and the byte count
-// from its header to the end of the tag region, or ("", 0) when the tag parsed cleanly.
+// MalformedTail reports the frame header the frame walk stopped at, short of the end of the
+// tag region, and the byte count from it to that end, or ("", 0) when the tag parsed cleanly.
 func (t *Tag) MalformedTail() (string, int64) {
 	if t == nil {
 		return "", 0
@@ -71,18 +88,34 @@ func (t *Tag) MalformedTail() (string, int64) {
 	return t.malformedID, t.malformedTail
 }
 
-// SrcVersion reports the ID3v2 minor version that was parsed (2, 3, or 4).
+// tailStop describes where the frame walk stopped short of the end of the tag, for the
+// warnings about the bytes from there on.
+func (t *Tag) tailStop() string {
+	switch t.tailCause {
+	case tailBadID:
+		return fmt.Sprintf("a frame ID %q with a byte outside printable ASCII", t.malformedID)
+	case tailCutHeader:
+		return fmt.Sprintf("a frame header %q the tag ends inside", t.malformedID)
+	case tailDirtyPad:
+		return "padding that holds non-zero bytes"
+	}
+	return fmt.Sprintf("the %q frame, which declares more bytes than the tag holds", t.malformedID)
+}
+
+// SrcVersion reports the ID3v2 major version the tag's header declares (2, 3, or 4 for a tag
+// that parsed).
 func (t *Tag) SrcVersion() byte { return t.srcVersion }
 
-// WriteVersion reports the version a rewrite will emit (3 or 4).
+// WriteVersion reports the version a rewrite will emit (3 or 4), or 0 for an ignored tag of a
+// version no writer emits, which [WriteVersionOr] replaces with the format default.
 func (t *Tag) WriteVersion() byte { return t.writeVersion }
 
-// WriteVersionOr returns t's write version, or the format default when t is nil. It is the
-// one home for which ID3 minor version a codec writes, the v2.3-vs-v2.4 split that governs
-// date-frame and numeric-genre fidelity.
+// WriteVersionOr returns t's write version, or the format default when t is nil or has none. It
+// is the one home for which ID3 minor version a codec writes, the v2.3-vs-v2.4 split that
+// governs date-frame and numeric-genre fidelity.
 func WriteVersionOr(t *Tag, f core.Format) byte {
-	if t != nil {
-		return t.WriteVersion()
+	if t != nil && t.writeVersion != 0 {
+		return t.writeVersion
 	}
 	return core.DefaultID3Version(f)
 }
@@ -105,8 +138,13 @@ func WriteVersionFor(m *core.Media, f core.Format) byte {
 	return WriteVersionOr(t, f)
 }
 
-// Frames returns the decoded frames in order.
-func (t *Tag) Frames() []Frame { return t.frames }
+// Frames returns the decoded frames in order; a nil tag has none.
+func (t *Tag) Frames() []Frame {
+	if t == nil {
+		return nil
+	}
+	return t.frames
+}
 
 // Clone returns a deep copy of the tag.
 func (t *Tag) Clone() *Tag {
@@ -125,8 +163,9 @@ func (t *Tag) WithFrames(frames []Frame) *Tag {
 	c := *t
 	c.frames = frames
 	c.padding = 0
-	c.malformedID, c.malformedTail = "", 0 // a rewritten tag has no unreadable tail
+	c.malformedID, c.malformedTail, c.tailCause = "", 0, 0 // a rewritten tag has no unreadable tail
 	c.ignored = ""
+	c.plainSizes, c.unbounded = false, false
 	return &c
 }
 
@@ -162,40 +201,203 @@ func TagSize(header []byte) (int64, bool) {
 	return total, true
 }
 
-// ReadFront reads a leading ID3v2 tag from the start of src, returning the parsed tag,
-// its on-disk length, and any read warning; a nil tag and length 0 mean src has no
-// readable leading ID3. MP3 and raw AAC, whose authoritative container is a front ID3v2
-// tag, share it; a codec that only preserves a stray leading ID3 verbatim reads it with
-// [ReadFrontStray]. size is the source size (the tag must fit within it); limit bounds the
-// allocation, header included: a header or tag over it is refused with
+// LeadingDup is an ID3v2 tag in the chain a file opens with other than the one a rewrite keeps,
+// Len bytes at Off, of major version Version. A rewrite drops it; [DupLosses] says what that loses,
+// from its digest.
+type LeadingDup struct {
+	Off, Len int64
+	Version  byte
+	digest   DupDigest
+}
+
+// Front is the chain of ID3v2 tags a file opens with, as [ReadFrontAll] reads it: Tag, the one a
+// rewrite keeps, Len bytes at Off; the others in file order as duplicates; and where the chain ends.
+// A file with no readable leading ID3 has a nil Tag and an End of 0.
+type Front struct {
+	Tag      *Tag
+	Off, Len int64
+	Dups     []LeadingDup
+	End      int64
+}
+
+// ReadFrontAll reads the chain of ID3v2 tags at the start of src, as [core.MaxLeadingTags] bounds the
+// chain detection skips. The tag a rewrite keeps is the first that parses and holds frames (the
+// WAV id3-chunk precedent, "first that parses"), else the first; an empty or unreadable tag ahead
+// of it is a duplicate like any after it. MP3 and raw AAC, whose
+// authoritative container is a front ID3v2 tag, share it; a codec that only preserves a stray
+// leading ID3 verbatim reads it with [ReadFrontStray]. size is the source size (each tag must fit
+// within it); limit bounds each allocation, header included: a header or tag over it is refused with
 // [waxerr.ErrSizeTooLarge].
-func ReadFront(src core.ReaderAtSized, size, limit int64, maxElements int) (*Tag, int64, []core.Warning, error) {
-	total, ok, err := frontSize(src, size, limit)
+func ReadFrontAll(src core.ReaderAtSized, size, limit int64, maxElements int) (Front, []core.Warning, error) {
+	hdr, total, ok, err := frontHeader(src, 0, size, limit)
 	if err != nil || !ok {
-		return nil, 0, nil, err
+		return Front{}, nil, err
 	}
 	if total > size {
 		// A real header whose declared size runs past the end of the file is an unreadable
-		// tag, not a file without one: the bytes stay in place and are reported.
-		return nil, 0, core.Warn(nil, core.WarnMalformedTagEntry,
-			fmt.Sprintf("the leading ID3v2 tag declares %d bytes but the file holds %d; the tag could not be read", total, size)), nil
+		// tag, not a file without one or audio: ignored and unbounded, so the codec ends its
+		// region where the stream starts.
+		return Front{Tag: &Tag{srcVersion: hdr[3], revision: hdr[4], unbounded: true, ignored: fmt.Sprintf(
+			"the leading ID3v2 tag declares %d bytes but the file holds %d; the tag could not be read", total, size)},
+			Len: 10, End: 10}, nil, nil
 	}
-	tagBytes, err := bits.ReadSlice(src, 0, total, limit)
+	// The chain's tags are kept as parsed until the one a rewrite keeps is known, the first that
+	// holds frames; those ahead of it hold none. Every other member is held as its digest only.
+	var chain []LeadingDup
+	var tags []*Tag
+	keep := -1
+	add := func(d LeadingDup, tg *Tag) {
+		if keep >= 0 {
+			d.digest = digest(tg)
+		} else {
+			tags = append(tags, tg)
+			if HoldsFrames(tg) {
+				keep = len(chain)
+			}
+		}
+		chain = append(chain, d)
+	}
+	if major := hdr[3]; major < 2 || major > 4 {
+		// No specification defines the frames of such a tag, so it is ignored whole, the
+		// format's default version taking its place on a rewrite.
+		add(LeadingDup{Len: total, Version: major}, &Tag{srcVersion: major, revision: hdr[4], ignored: fmt.Sprintf(
+			"the tag declares ID3v2 major version %d, which no ID3v2 specification defines; the tag is ignored", major)})
+	} else {
+		raw, err := bits.ReadSlice(src, 0, total, limit)
+		if err != nil {
+			return Front{}, nil, err
+		}
+		tg, err := ParseTag(raw, maxElements)
+		if err != nil {
+			return Front{}, nil, err
+		}
+		add(LeadingDup{Len: total, Version: major}, tg)
+	}
+	for off := total; len(chain) < core.MaxLeadingTags; {
+		_, n, ok, err := frontHeader(src, off, size, limit)
+		if err != nil {
+			return Front{}, nil, err
+		}
+		if !ok || n > size-off {
+			break
+		}
+		tg, err := readChained(src, off, n, limit, maxElements)
+		if err != nil {
+			return Front{}, nil, err
+		}
+		add(LeadingDup{Off: off, Len: n, Version: tg.version}, tg.tag)
+		off += n
+	}
+	keep = max(keep, 0)
+	for i, tg := range tags {
+		if i != keep {
+			chain[i].digest = digest(tg)
+		}
+	}
+	last := chain[len(chain)-1]
+	f := Front{Tag: tags[keep], Off: chain[keep].Off, Len: chain[keep].Len, End: last.Off + last.Len}
+	f.Dups = slices.Delete(slices.Clone(chain), keep, keep+1)
+	var ws []core.Warning
+	if len(f.Dups) > 0 {
+		ws = core.Warn(ws, core.WarnDuplicateTagBlock, fmt.Sprintf(
+			"the file opens with %d chained ID3v2 tags; the first readable one holding frames, else the first, is authoritative and the rest are dropped on rewrite", len(chain)))
+	}
+	return f, ws, nil
+}
+
+// HoldsFrames reports whether t parsed, is not ignored and holds frames: of several tags a file
+// holds where one counts (a chain of front tags, WAV and AIFF id3 chunks), the first such tag is
+// the one that counts, else the first that parses.
+func HoldsFrames(t *Tag) bool {
+	return t != nil && t.ignored == "" && len(t.frames) > 0
+}
+
+// PickTag picks, of n ID3v2 tags a file holds where one counts (the id3 chunks of a WAV or AIFF
+// file), the one that does: the first that parses and holds frames ([HoldsFrames]), else the first
+// that parses, or -1 when none does. body reads tag i, each tag is read once, and only the picked
+// tag is kept as parsed; digests holds every other tag's digest. A failed read of a tag up to the
+// picked one refuses, as does a tag over the maxElements cap wherever it sits; behind the picked
+// one, a short read or a tag that does not parse digests as unreadable, and a fault or a read over
+// the allocation limit refuses.
+func PickTag(n int, body func(i int) ([]byte, error), maxElements int) (pick int, picked *Tag, digests []DupDigest, err error) {
+	tags := make([]*Tag, 0, n)
+	first := -1
+	pick = -1
+	for i := range n {
+		b, err := body(i)
+		if err != nil {
+			return -1, nil, nil, err
+		}
+		tg, err := ParseTag(b, maxElements)
+		// A MaxElements cap breach is a hard error, not "this chunk is not a tag": swallowing
+		// it would treat a valid tag as absent and rewrite without it.
+		if errors.Is(err, waxerr.ErrSizeTooLarge) {
+			return -1, nil, nil, err
+		}
+		tags = append(tags, tg)
+		if tg != nil && first < 0 {
+			first = i
+		}
+		if HoldsFrames(tg) {
+			pick = i
+			break
+		}
+	}
+	if pick < 0 {
+		pick = first
+	}
+	if pick < 0 {
+		return -1, nil, nil, nil
+	}
+	digests = make([]DupDigest, n)
+	for i := range n {
+		if i == pick {
+			continue
+		}
+		if i < len(tags) {
+			digests[i] = digest(tags[i])
+			continue
+		}
+		b, err := body(i)
+		if fatal := bits.Fatal(err); fatal != nil {
+			return -1, nil, nil, fatal
+		}
+		var tg *Tag
+		if err == nil {
+			if tg, err = ParseTag(b, maxElements); bits.Fatal(err) != nil {
+				return -1, nil, nil, err
+			}
+		}
+		digests[i] = digest(tg)
+	}
+	return pick, tags[pick], digests, nil
+}
+
+// readChained reads the n-byte chained tag at off, nil as the tag when it does not parse. A read
+// over limit, or a frame count over maxElements, is refused.
+func readChained(src core.ReaderAtSized, off, n, limit int64, maxElements int) (chained, error) {
+	raw, err := bits.ReadSlice(src, off, n, limit)
 	if err != nil {
-		return nil, 0, nil, err
+		return chained{}, err
 	}
-	tg, err := ParseTag(tagBytes, maxElements)
-	if err != nil {
-		return nil, 0, nil, err
+	tg, err := ParseTag(raw, maxElements)
+	if errors.Is(err, waxerr.ErrSizeTooLarge) {
+		return chained{}, err
 	}
-	return tg, total, nil, nil
+	return chained{tag: tg, version: raw[3]}, nil
+}
+
+// chained is a tag of the front chain as [readChained] reads it, and its major version.
+type chained struct {
+	tag     *Tag
+	version byte
 }
 
 // ReadFrontStray reads the stray leading ID3v2 tag of a codec that only preserves one (FLAC,
 // WavPack, Monkey's Audio, Musepack): the raw tag, nil when src has none, and streamAt, where c's
 // stream starts behind it as [core.StreamStart] finds it. Bytes between the two (chained tags or a
 // gap) go with the tag. The warnings name the stream. size and limit bound the reads as for
-// [ReadFront].
+// [ReadFrontAll].
 func ReadFrontStray(src core.ReaderAtSized, size, limit int64, c core.Codec, stream string) (raw []byte, streamAt int64, ws []core.Warning, err error) {
 	raw, err = ReadFrontRaw(src, size, limit)
 	if err != nil || raw == nil {
@@ -215,31 +417,206 @@ func ReadFrontStray(src core.ReaderAtSized, size, limit int64, c core.Codec, str
 	return raw, streamAt, ws, nil
 }
 
-// StreamBehindFront finds where c's stream starts behind its front ID3v2 tag of id3Len bytes, as
-// [core.StreamStart] does: past chained tags and any gap. With no stream confirmed there, scan,
-// unless nil, finds it on the codec's own terms at or past from, the tag's end. Bytes between the tag
-// and the stream warn leading-bytes, naming unit (the codec's first audio unit). Without a front tag
-// the stream starts at 0, where detection found it. ok is false when no stream is found behind the
-// tag; the start is then the tag's end.
-func StreamBehindFront(src core.ReaderAtSized, id3Len, limit int64, c core.Codec, unit string, scan func(from int64) (int64, bool, error)) (at int64, ok bool, ws []core.Warning, err error) {
-	if id3Len == 0 {
+// StreamBehindFront finds where c's stream starts behind its front ID3v2 tags, which end at
+// frontEnd ([ReadFrontAll]), as [core.StreamStart] finds it past chained tags: at frontEnd or past
+// a gap. With no stream confirmed there, scan, unless nil, finds it on the codec's own terms at or
+// past from, the tags' end. Bytes between the tags and the stream warn leading-bytes, naming unit
+// (the codec's first audio unit). Without a front tag the stream starts at 0, where detection found
+// it. ok is false when no stream is found behind the tags; the start is then their end.
+func StreamBehindFront(src core.ReaderAtSized, frontEnd, limit int64, c core.Codec, unit string, scan func(from int64) (int64, bool, error)) (at int64, ok bool, ws []core.Warning, err error) {
+	if frontEnd == 0 {
 		return 0, true, nil, nil
 	}
-	at, ok, err = core.StreamStart(src, TagSize, c, limit)
+	at, ok, err = core.StreamFrom(src, frontEnd, TagSize, c, limit)
 	if err != nil {
 		return 0, false, nil, err
 	}
 	if !ok && scan != nil {
-		if at, ok, err = scan(id3Len); err != nil {
+		if at, ok, err = scan(frontEnd); err != nil {
 			return 0, false, nil, err
 		}
 	}
-	if !ok || at <= id3Len {
-		return id3Len, ok, nil, nil
+	if !ok || at <= frontEnd {
+		return frontEnd, ok, nil, nil
 	}
 	ws = core.Warn(nil, core.WarnLeadingBytes, fmt.Sprintf(
-		"%d byte(s) sit between the ID3v2 tag and the first %s; preserved", at-id3Len, unit))
+		"%d byte(s) sit between the ID3v2 tag and the first %s; preserved", at-frontEnd, unit))
 	return at, true, ws, nil
+}
+
+// DupLosses says what dropping each of dups loses, for [core.AppendDuplicateBlockDropped]: before
+// and after are the media as parsed and as the rewrite reads, and frames the kept tag's frames as
+// parsed and as written ([NewDupGrader]).
+func DupLosses(dups []LeadingDup, before, after *core.Media, frames ...[]Frame) []core.DuplicateContent {
+	if len(dups) == 0 {
+		return nil
+	}
+	g := NewDupGrader(before, after, frames...)
+	out := make([]core.DuplicateContent, len(dups))
+	for i, d := range dups {
+		out[i] = g.Loss(d.digest, fmt.Sprintf("unreadable ID3v2.%d tag(s)", d.Version))
+	}
+	return out
+}
+
+// DupDigest is what grading a duplicate tag a rewrite drops needs, taken as the tag is read so a
+// file of large duplicate tags holds hashes rather than their bodies: its values and chapters,
+// the hashes of its pictures and synced lyric sets, the IDs and hashes of the frames the canonical
+// view does not carry, and how many of its bytes the frame walk could not read. A tag that does not
+// parse, or is ignored whole, digests as unreadable. A digest is never modified, so copies share it.
+type DupDigest struct {
+	readable bool
+	tags     tag.TagSet
+	chapters []core.Chapter
+	pictures []uint64
+	lyrics   []uint64
+	frames   []frameDigest
+	unread   int64
+}
+
+// frameDigest is a frame's ID and its [frameHash].
+type frameDigest struct {
+	id   string
+	hash uint64
+}
+
+// digest takes the [DupDigest] of t, a duplicate tag as parsed, nil when it does not parse.
+func digest(t *Tag) DupDigest {
+	if t == nil || t.ignored != "" {
+		return DupDigest{}
+	}
+	p := Project(t)
+	d := DupDigest{readable: true, tags: p.Tags, chapters: p.Chapters}
+	for _, pic := range p.Pictures {
+		d.pictures = append(d.pictures, core.PictureHash(pic))
+	}
+	for _, l := range p.SyncedLyrics {
+		d.lyrics = append(d.lyrics, lyricsHash(l))
+	}
+	for _, f := range t.uncarried() {
+		d.frames = append(d.frames, frameDigest{id: f.ID, hash: frameHash(f)})
+	}
+	_, d.unread = t.MalformedTail()
+	return d
+}
+
+// DupGrader grades the duplicate tags a rewrite drops against what the file holds apart from them:
+// the frames of the tag it keeps, as parsed and as written (a duplicate frame byte-identical to
+// either was the file's own, so dropping it is the edit's doing), and the pictures, chapters and
+// synced lyric sets of the media before and after the edit. Each is indexed once, on first need, so
+// grading is linear in what the duplicates hold and costs nothing without one. WAV and AIFF grade a
+// dropped id3 chunk with it too.
+type DupGrader struct {
+	before, after *core.Media
+	frameSets     [][]Frame
+
+	indexed                  bool
+	frames, pictures, lyrics core.HashSet
+	chapters                 map[core.Chapter]bool
+}
+
+// NewDupGrader grades against before and after and the frame lists frames.
+func NewDupGrader(before, after *core.Media, frames ...[]Frame) *DupGrader {
+	return &DupGrader{before: before, after: after, frameSets: frames}
+}
+
+// index builds the indexes the first time a duplicate needs them.
+func (g *DupGrader) index() {
+	if g.indexed {
+		return
+	}
+	g.indexed = true
+	g.frames, g.lyrics, g.chapters = core.HashSet{}, core.HashSet{}, map[core.Chapter]bool{}
+	for _, fs := range g.frameSets {
+		for _, f := range fs {
+			g.frames.Add(frameHash(f))
+		}
+	}
+	g.pictures = core.PictureHashes(g.before, g.after)
+	for _, m := range []*core.Media{g.before, g.after} {
+		for _, c := range m.Chapters {
+			g.chapters[c] = true
+		}
+		for _, l := range m.SyncedLyrics {
+			g.lyrics.Add(lyricsHash(l))
+		}
+	}
+}
+
+// Loss says what dropping a duplicate tag, digested as d, loses. An unreadable one loses all it
+// holds, counted as one of unreadable, its kind. Else it loses its values, graded by
+// [core.AppendDuplicateBlockDropped], the pictures, chapters and synced lyric sets the file holds
+// nowhere else, the frames the canonical view does not carry that the kept tag holds neither as
+// parsed nor as written, and the bytes its frame walk could not read. Its chapters are compared as
+// a read gives them, a last one starting past the end opened up ([core.OpenPastDurationEnds]).
+func (g *DupGrader) Loss(d DupDigest, unreadable string) core.DuplicateContent {
+	if !d.readable {
+		return core.DuplicateContent{Other: []core.ContentCount{{Kind: unreadable, N: 1}}}
+	}
+	g.index()
+	c := core.DuplicateContent{Tags: d.tags}
+	for _, h := range d.pictures {
+		if !g.pictures.Has(h) {
+			c.Pictures++
+		}
+	}
+	for _, ch := range core.ChaptersOpenedPastDuration(slices.Clone(d.chapters), g.before.Properties.Duration()) {
+		if !g.chapters[ch] {
+			c.Chapters++
+		}
+	}
+	for _, h := range d.lyrics {
+		if !g.lyrics.Has(h) {
+			c.SyncedLyrics++
+		}
+	}
+	var other core.Tally
+	for _, f := range d.frames {
+		if !g.frames.Has(f.hash) {
+			other.Add(fmt.Sprintf("%q frame(s)", f.id), 1)
+		}
+	}
+	if d.unread > 0 {
+		other.Add("unreadable byte(s)", d.unread)
+	}
+	c.Other = other.Counts()
+	return c
+}
+
+// frameHash hashes a frame's ID and body.
+func frameHash(f Frame) uint64 {
+	h := core.ContentHash()
+	h.WriteString(f.ID)
+	h.Write(f.Body)
+	return h.Sum64()
+}
+
+// lyricsHash hashes what [core.EqualSyncedLyrics] compares.
+func lyricsHash(l core.SyncedLyrics) uint64 {
+	h := core.ContentHash()
+	fmt.Fprintf(h, "%s\x00%s\x00", l.Language, l.Description)
+	for _, line := range l.Lines {
+		fmt.Fprintf(h, "%d\x00%s\x00", line.Time, line.Text)
+	}
+	return h.Sum64()
+}
+
+// SplitDups splits dups at off into those before it and those after it.
+func SplitDups(dups []LeadingDup, off int64) (before, after []LeadingDup) {
+	i := slices.IndexFunc(dups, func(d LeadingDup) bool { return d.Off > off })
+	if i < 0 {
+		return dups, nil
+	}
+	return dups[:i], dups[i:]
+}
+
+// DupEntries are the native-view entries of the duplicates.
+func DupEntries(dups []LeadingDup) []core.NativeEntry {
+	out := make([]core.NativeEntry, len(dups))
+	for i, d := range dups {
+		out[i] = core.NativeEntry{Kind: fmt.Sprintf("ID3v2.%d", d.Version), Size: int(d.Len), Note: "duplicate, dropped on rewrite"}
+	}
+	return out
 }
 
 // SkipTags passes the tags that open at off, as a file joined there opens with its ID3v2 tags,
@@ -276,29 +653,29 @@ func WarnJoinedTags(ws []core.Warning, n int, stream string) []core.Warning {
 }
 
 // ReadFrontRaw reads the raw bytes of a leading ID3v2 tag; nil when src has none. size and limit
-// bound the read as for [ReadFront]: the tag must fit within size, and a header or tag over limit
-// is refused with [waxerr.ErrSizeTooLarge].
+// bound the read as for [ReadFrontAll]: the tag must fit within size, and a header or tag over
+// limit is refused with [waxerr.ErrSizeTooLarge].
 func ReadFrontRaw(src core.ReaderAtSized, size, limit int64) ([]byte, error) {
-	total, ok, err := frontSize(src, size, limit)
+	_, total, ok, err := frontHeader(src, 0, size, limit)
 	if err != nil || !ok || total > size {
 		return nil, err
 	}
 	return bits.ReadSlice(src, 0, total, limit)
 }
 
-// frontSize reads the ID3v2 header at the start of src: the tag's total length, or false when src
-// is shorter than a header or holds none there. A header over limit is refused, and a read of it
+// frontHeader reads the ID3v2 header at off in src: the header and the tag's total length, or false
+// when src holds less than a header there or none. A header over limit is refused, and a read of it
 // that fails with a device error is that error.
-func frontSize(src core.ReaderAtSized, size, limit int64) (int64, bool, error) {
-	hdr, err := bits.ReadSlice(src, 0, min(size, 10), limit)
+func frontHeader(src core.ReaderAtSized, off, size, limit int64) ([]byte, int64, bool, error) {
+	hdr, err := bits.ReadSlice(src, off, max(min(size-off, 10), 0), limit)
 	if fatal := bits.Fatal(err); fatal != nil {
-		return 0, false, fatal
+		return nil, 0, false, fatal
 	}
 	if err != nil {
-		return 0, false, nil // a short read: no front tag
+		return nil, 0, false, nil // a short read: no front tag
 	}
 	total, ok := TagSize(hdr)
-	return total, ok, nil
+	return hdr, total, ok, nil
 }
 
 // syncSafe decodes a 28-bit sync-safe integer from four bytes (each contributes
@@ -367,15 +744,19 @@ func ParseTag(data []byte, maxElements int) (*Tag, error) {
 		body = skipExtHeader(body, major)
 	}
 
-	frames, rest, malformed, err := parseFrames(body, major, tagUnsync, maxElements)
+	t.plainSizes = major == 4 && v24FrameSizesArePlain(body, maxElements)
+	frames, rest, malformed, cause, err := parseFrames(body, major, tagUnsync, t.plainSizes, maxElements)
 	if err != nil {
 		return nil, err
+	}
+	if major == 4 {
+		syncSafeChapterSubframes(frames)
 	}
 	t.frames = frames
 	if malformed != "" {
 		// The remainder is a region the walk could not read, not free space a rewrite may
 		// reuse. Counting it as padding would let dump report it as room the file has.
-		t.malformedID, t.malformedTail = malformed, int64(rest)
+		t.malformedID, t.malformedTail, t.tailCause = malformed, int64(rest), cause
 	} else {
 		t.padding = int64(rest)
 	}

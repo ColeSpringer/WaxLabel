@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -171,5 +172,120 @@ func TestLintFixOnACleanFileReportsNoLoss(t *testing.T) {
 	}
 	if strings.Contains(out, "lost in the rewrite") {
 		t.Errorf("a fix that loses nothing must not report a loss:\n%s", out)
+	}
+}
+
+// TestLintReportsNonStandardFrameID: an ID3v2 frame with a lowercase ID reaches lint as
+// malformed-tag-entry, naming it, and the frames after it still read.
+func TestLintReportsNonStandardFrameID(t *testing.T) {
+	t.Parallel()
+	audio, err := os.ReadFile("../../testdata/notags.mp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := writeTempFile(t, "lower.mp3", slices.Concat(testfile.ID3v2(3,
+		testfile.TextFrame(3, "Tlow", "odd"), testfile.TextFrame(3, "TPE1", "Band")), audio))
+	out, _, code := runCLI(t, "--json", "lint", file)
+	if code != 1 {
+		t.Fatalf("lint exit = %d, want 1 (findings present)\n%s", code, out)
+	}
+	jl := decodeJSONList[jsonLint](t, out)
+	if len(jl) != 1 || !slices.ContainsFunc(jl[0].Findings, func(f jsonFinding) bool {
+		return f.Code == "malformed-tag-entry" && f.Severity == "warning" && strings.Contains(f.Message, "Tlow")
+	}) {
+		t.Errorf("lint did not report the Tlow frame as malformed-tag-entry:\n%s", out)
+	}
+	if dumped := mustDumpJSON(t, file); !strings.Contains(dumped, "Band") {
+		t.Errorf("the frame after Tlow did not read:\n%s", dumped)
+	}
+}
+
+// TestDumpNativeNotesPlainV24FrameSizes: an iTunes-style ID3v2.4 tag with a plain-size frame over
+// 127 bytes reads whole, and dump --native says its sizes are not sync-safe.
+func TestDumpNativeNotesPlainV24FrameSizes(t *testing.T) {
+	t.Parallel()
+	audio, err := os.ReadFile("../../testdata/notags.mp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	comment := slices.Concat([]byte{0}, []byte("eng\x00"), []byte(strings.Repeat("c", 200)))
+	plain := slices.Concat([]byte("COMM"), testfile.BE32(len(comment)), []byte{0, 0}, comment)
+	file := writeTempFile(t, "plain.mp3", slices.Concat(testfile.ID3v2(4, plain, testfile.TextFrame(4, "TPE1", "Band")), audio))
+	out, errb, code := runCLI(t, "dump", "--native", file)
+	if code != 0 {
+		t.Fatalf("dump exit = %d: %s", code, errb)
+	}
+	if !strings.Contains(out, "non-sync-safe frame sizes") || !strings.Contains(out, "Band") {
+		t.Errorf("dump --native does not note the plain sizes or lost the frame after the comment:\n%s", out)
+	}
+}
+
+// TestStrictRefusesDroppingADuplicateID3v2Tag: a second ID3v2 tag chained behind a populated one is a
+// duplicate lint reports, and a write that drops it names what it held, a value and a frame the
+// canonical view does not carry: --strict refuses, a plain set warns. An empty tag joined ahead of a
+// tagged MP3 yields to it, so a strict edit there loses nothing.
+func TestStrictRefusesDroppingADuplicateID3v2Tag(t *testing.T) {
+	t.Parallel()
+	audio, err := os.ReadFile("../../testdata/notags.mp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := testfile.ID3v2(3, testfile.TextFrame(3, "TALB", "Second Album"), testfile.ID3Frame(3, "POPM", []byte("me@example.com\x00\xC8")))
+	file := writeTempFile(t, "dup.mp3", slices.Concat(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Front")), second, audio))
+	if out, _, code := runCLI(t, "lint", file); code != 4 || !strings.Contains(out, "[error] duplicate-tag-block") {
+		t.Errorf("lint exit = %d, want 4 reporting the duplicate as an error:\n%s", code, out)
+	}
+	_, errb, code := runCLI(t, "set", file, "--strict", "--set", "TITLE=New")
+	if code != 2 || !strings.Contains(errb, "ALBUM") || !strings.Contains(errb, "POPM") {
+		t.Fatalf("strict exit = %d, want 2 naming ALBUM and the POPM frame: %s", code, errb)
+	}
+	out, errb, code := runCLI(t, "set", file, "--set", "TITLE=New")
+	if code != 0 || !strings.Contains(out, "duplicate-tag-block-dropped") {
+		t.Fatalf("set exit = %d, want 0 warning the drop:\n%s%s", code, out, errb)
+	}
+	if dumped := mustDumpJSON(t, file); strings.Contains(dumped, "duplicate-tag-block") {
+		t.Errorf("the rewritten file still holds a duplicate:\n%s", dumped)
+	}
+
+	var joined []byte
+	for _, name := range []string{"empty.mp3", "sample24.mp3"} {
+		b, err := os.ReadFile("../../testdata/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		joined = append(joined, b...)
+	}
+	file = writeTempFile(t, "joined.mp3", joined)
+	if got := tagValues(dumpJSON(t, file), "ALBUM"); len(got) != 1 {
+		t.Errorf("ALBUM = %q, want the tagged file's", got)
+	}
+	if _, errb, code := runCLI(t, "set", file, "--strict", "--set", "COMMENT=Note"); code != 0 {
+		t.Errorf("strict set on the joined file exit = %d, want 0 (the empty tag holds nothing): %s", code, errb)
+	}
+}
+
+// TestStrictRefusesDroppingUnreadableID3Bytes: a rewrite of an ID3v2 tag the frame walk could not
+// read to its end, or of a front tag declaring more bytes than the file holds, drops bytes it never
+// read: --strict refuses, a plain set warns malformed-tag-entry-dropped.
+func TestStrictRefusesDroppingUnreadableID3Bytes(t *testing.T) {
+	t.Parallel()
+	audio, err := os.ReadFile("../../testdata/notags.mp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pastEnd := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Cut"))
+	copy(pastEnd[6:10], testfile.Syncsafe(len(audio)+1000))
+	for name, front := range map[string][]byte{
+		"control byte in an ID": testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Song"), testfile.TextFrame(3, "T\x01LW", "junk")),
+		"cut header":            testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Song"), []byte("TPE")),
+		"tag past the end":      pastEnd,
+	} {
+		file := writeTempFile(t, "unreadable.mp3", slices.Concat(front, audio))
+		if _, errb, code := runCLI(t, "set", file, "--strict", "--set", "ARTIST=Band"); code != 2 {
+			t.Errorf("%s: strict exit = %d, want 2: %s", name, code, errb)
+		}
+		if out, errb, code := runCLI(t, "set", file, "--set", "ARTIST=Band"); code != 0 || !strings.Contains(out, "malformed-tag-entry-dropped") {
+			t.Errorf("%s: set exit = %d, want 0 warning the drop:\n%s%s", name, code, out, errb)
+		}
 	}
 }

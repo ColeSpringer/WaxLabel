@@ -54,10 +54,14 @@ func (p PaddingPolicy) ClampTarget() int64 {
 }
 
 // ReuseOrTarget sizes padding for a front metadata region (MP3/AAC ID3).
-// Reuses in place when content fits and leftover >= Min; else ClampTarget.
+// Reuses in place when content fits and leftover >= Min, capped at Max (when set);
+// else ClampTarget.
 func (p PaddingPolicy) ReuseOrTarget(origLen, contentLen int64) int64 {
 	if p.ReuseInPlace && origLen >= contentLen && origLen-contentLen >= p.Min {
-		return origLen - contentLen
+		if left := origLen - contentLen; p.Max <= 0 || left <= p.Max {
+			return left
+		}
+		return p.Max
 	}
 	return p.ClampTarget()
 }

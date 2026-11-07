@@ -84,7 +84,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 
 	media := &core.Media{Format: core.FormatMusepack, Native: d, Chapters: d.chapters}
-	projected, audioLen := d.trailer.Project(media, d.leadingID3, d.streamAt, opts.Limits.MaxElements)
+	projected, audioLen, unread := d.trailer.Project(media, d.leadingID3, d.streamAt, opts.Limits.MaxElements)
+	d.leadingUnread = unread
 	warnings = append(warnings, projected...)
 
 	d.track = buildTrack(h, audioLen)

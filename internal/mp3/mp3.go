@@ -69,8 +69,8 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	// MP3's front ID3 tag is the authoritative tag store, so numeric genre and v2.3
 	// original-date reductions follow the shared ID3 capability rules.
 	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatMP3), opts.NumericGenre, true)
-	// ID3 front-tag padding is grow-only (ReuseOrTarget): a forced rewrite can grow
-	// the region, but a fit-in-place edit reuses it and cannot shrink in place.
+	// ID3 front-tag padding is only partly controllable (ReuseOrTarget): a fit-in-place
+	// edit reuses the region's leftover, capped at the policy's Max.
 	return core.NewCapabilities(core.FormatMP3, false, fields, pictures, chapters, core.AccessPartial, perField).
 		WithSyncedLyrics(id3.SyncedLyricsCapability()).
 		WithFieldClassifier(id3.TransferClassifier)

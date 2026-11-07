@@ -166,3 +166,28 @@ func TestID3TXXXKeyMatroskaNativeSpellings(t *testing.T) {
 		}
 	}
 }
+
+// A TXXX description spelled as any alias tag.AliasKey knows reads as its canonical key, as the
+// Vorbis and APE read paths fold them: ffmpeg passes a FLAC's own field names through as TXXX
+// descriptions, and stores LYRICS as TXXX:USLT.
+func TestID3TXXXKeyFoldsAliases(t *testing.T) {
+	for desc, want := range map[string]tag.Key{
+		"TOTALTRACKS": tag.TrackTotal, "totaldiscs": tag.DiscTotal, "ALBUM ARTIST": tag.AlbumArtist,
+		"Album_Artist": tag.AlbumArtist, "UNSYNCEDLYRICS": tag.Lyrics, "USLT": tag.Lyrics, "ORGANIZATION": tag.Label,
+		"DATE": tag.RecordingDate, "DJ MIXER": tag.DJMixer, "LEAD_PERFORMER": tag.Artist,
+		"MUSICBRAINZ ALBUM ID": tag.MBReleaseID, "TCMP": tag.Compilation, "MY FIELD": "MY FIELD",
+	} {
+		if k, ok := ID3TXXXKey(desc); !ok || k != want {
+			t.Errorf("ID3TXXXKey(%q) = %q, %v; want %s", desc, k, ok, want)
+		}
+	}
+}
+
+// txxxAliases holds only spellings tag.AliasKey lacks, so the two tables cannot disagree.
+func TestTXXXAliasesAddOnlyWhatAliasKeyLacks(t *testing.T) {
+	for desc := range txxxAliases {
+		if k, ok := tag.AliasKey(desc); ok {
+			t.Errorf("txxxAliases[%q] repeats tag.AliasKey's %s", desc, k)
+		}
+	}
+}

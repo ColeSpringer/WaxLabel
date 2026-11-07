@@ -440,3 +440,47 @@ func warningCodes(doc *wl.Document) []wl.WarningCode {
 	}
 	return out
 }
+
+// A duplicate APE tag is graded as an ID3 one is: a cover the kept tag holds too is not a loss, so a
+// doubled tag edits under --strict, while a binary item only the duplicate holds is named.
+func TestDuplicateAPETagCoverAndBinaryItems(t *testing.T) {
+	clean := readFixture(t, notagsWV)
+	bare := clean[:apeTagStart(clean)] // the stream without the encoder's APE tag
+	cover := ape.EncodeCover(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()})
+	title := ape.Item{Key: "Title", Value: "Doubled"}
+	extra := ape.Item{Key: "Extra Data", Data: []byte{1, 2, 3}, Flags: 2} // binary, no picture
+	render := func(items ...ape.Item) []byte {
+		b, err := ape.Render(items, 2000, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	for _, c := range []struct {
+		name string
+		dup  []byte
+		want string // in the dropped warning; "" means none
+	}{
+		{"the kept tag's own cover", render(title, cover), ""},
+		{"a binary item only the duplicate holds", render(title, cover, extra), `1 "Extra Data" item(s)`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			src := slices.Concat(bare, c.dup, render(title, cover))
+			doc := mustParseBytes(t, src)
+			if !hasWarning(doc, wl.WarnDuplicateTagBlock) || len(doc.Pictures()) != 1 {
+				t.Fatalf("warnings %v, %d pictures; want the duplicate reported and the cover read", doc.Warnings(), len(doc.Pictures()))
+			}
+			plan, err := doc.Edit().Set(tag.Title, "New").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			msg := ""
+			if w, ok := warningFor(plan, wl.WarnDuplicateTagBlockDropped); ok {
+				msg = w.Message
+			}
+			if (msg == "") != (c.want == "") || !strings.Contains(msg, c.want) {
+				t.Errorf("dropped warning %q, want %q", msg, c.want)
+			}
+		})
+	}
+}

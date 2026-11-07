@@ -95,10 +95,10 @@ func TestAACFrontID3Detection(t *testing.T) {
 	}
 }
 
-// ADTS behind an ID3v2 tag and a gap or a second tag reads as AAC from the first tag: every frame is
-// counted from the first one, and the bytes before it are reported, are not legacy, are kept after
-// the tag by an edit and are left out of the essence, whose digest is the bare stream's.
-func TestAACBehindTagGapOrSecondTag(t *testing.T) {
+// ADTS behind an ID3v2 tag and a gap reads as AAC from the first tag: every frame is counted from
+// the first one, and the bytes before it are reported, are not legacy, are kept after the tag by an
+// edit and are left out of the essence, whose digest is the bare stream's.
+func TestAACBehindTagGap(t *testing.T) {
 	lead := testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Tagged ADTS"))
 	const frames = 20
 	stream := adtsStream(2, frames, 200)
@@ -108,7 +108,6 @@ func TestAACBehindTagGapOrSecondTag(t *testing.T) {
 		between []byte
 	}{
 		{"ten zero bytes", make([]byte, 10)},
-		{"second tag", testfile.ID3v2(4, testfile.TextFrame(4, "TALB", "Second Tag"))},
 		{"one byte", []byte{1}},
 		{"two bytes", []byte{1, 2}},
 		{"three bytes", []byte{1, 2, 3}},
@@ -500,5 +499,60 @@ func TestAACStreamEnd(t *testing.T) {
 				t.Error("the digest is not that of the audio alone")
 			}
 		})
+	}
+}
+
+// A second ID3v2 tag chained behind an ADTS stream's front tag is a duplicate, as after MP3: first
+// wins, the second is reported and out of the essence, and an edit drops it, warning about the
+// value only it held, not the title the written tag holds too.
+func TestAACDuplicateLeadingTag(t *testing.T) {
+	stream := adtsStream(2, 20, 200)
+	src := slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "First")),
+		testfile.ID3v2(4, testfile.TextFrame(4, "TALB", "Second Album"), testfile.TextFrame(4, "TIT2", "First")), stream)
+	doc := mustParseBytes(t, src)
+	if doc.Format() != wl.FormatAAC || !hasWarning(doc, wl.WarnDuplicateTagBlock) || hasWarning(doc, wl.WarnLeadingBytes) {
+		t.Fatalf("format %v, warnings %v; want AAC with duplicate-tag-block and no leading-bytes", doc.Format(), doc.Warnings())
+	}
+	if f := doc.Fields(); f.Title != "First" || f.Album != "" {
+		t.Errorf("title %q, album %q; want the first tag's alone", f.Title, f.Album)
+	}
+	essence := essenceOf(t, stream)
+	if !essenceOf(t, src).Equal(essence) {
+		t.Error("the digest is not the bare stream's")
+	}
+	plan, err := doc.Edit().Set(tag.Artist, "X").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(plan.Report().Warnings, func(w wl.Warning) bool {
+		return w.Code == wl.WarnDuplicateTagBlockDropped && slices.Equal(w.Keys, []tag.Key{tag.Album})
+	}) {
+		t.Errorf("plan warnings %v, want duplicate-tag-block-dropped naming ALBUM", plan.Report().Warnings)
+	}
+	out := applyToBytes(t, src, plan)
+	if !bytes.HasSuffix(out, stream) || bytes.Contains(out, []byte("Second Album")) || !essenceOf(t, out).Equal(essence) {
+		t.Error("the edit did not drop the duplicate and keep the stream and its digest")
+	}
+}
+
+// ADTS behind an ID3v2.5 front tag reads as after MP3: the tag is ignored and reported, the stream
+// keeps its digest, and an edit writes an ID3v2.4 tag in its place.
+func TestAACUnknownID3Version(t *testing.T) {
+	stream := adtsStream(2, 20, 200)
+	tagBytes := testfile.ID3v2(5, testfile.TextFrame(4, "TIT2", "Future"))
+	src := slices.Concat(tagBytes, stream)
+	doc := mustParseBytes(t, src)
+	if doc.Format() != wl.FormatAAC || !hasWarning(doc, wl.WarnMalformedTagEntry) || !essenceOf(t, src).Equal(essenceOf(t, stream)) {
+		t.Fatalf("format %v, warnings %v; want AAC, the tag reported, the bare stream's digest", doc.Format(), doc.Warnings())
+	}
+	plan, err := doc.Edit().Set(tag.Album, "X").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !planWarns(t, plan, wl.WarnMalformedTagEntryDropped) {
+		t.Errorf("plan warnings %v, want malformed-tag-entry-dropped", plan.Report().Warnings)
+	}
+	if out := applyToBytes(t, src, plan); out[3] != 4 || !bytes.HasSuffix(out, stream) {
+		t.Errorf("output tag version %d; want an ID3v2.4 tag ahead of the stream", out[3])
 	}
 }

@@ -24,7 +24,9 @@ import (
 // trailer.Start is the end of audio. Implements core.NativeDoc.
 type doc struct {
 	leadingID3 []byte // stray ID3v2 before the first block, preserved
-	streamAt   int64  // first block offset: past leadingID3 and any leading bytes kept with it
+	// leadingUnread is how many bytes of leadingID3 the parse could not read.
+	leadingUnread int64
+	streamAt      int64 // first block offset: past leadingID3 and any leading bytes kept with it
 
 	trailer tail.Trailer
 
@@ -44,5 +46,5 @@ func (d *doc) Clone() core.NativeDoc {
 
 // Describe summarizes native structure for dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
-	return d.trailer.Describe(d.leadingID3, d.streamAt, "WavPack blocks", d.track.Codec)
+	return d.trailer.Describe(d.leadingID3, d.leadingUnread, d.streamAt, "WavPack blocks", d.track.Codec)
 }

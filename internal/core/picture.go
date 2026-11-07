@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"hash/maphash"
 	"slices"
 	"strings"
 
@@ -250,6 +251,50 @@ func PictureUnsupportedMessage() string {
 // PicturesReadOnlyMessage is for read-only cover art (e.g. WebM attachments).
 func PicturesReadOnlyMessage() string {
 	return "cover art in this file is read-only; the picture edit was dropped and the file keeps its cover art"
+}
+
+// contentSeed seeds [ContentHash], once per process.
+var contentSeed = maphash.MakeSeed()
+
+// ContentHash returns a hash that stands for file content such as a picture, a frame or a tag item,
+// so a set of hashes ([HashSet]) can stand for the content itself. Its seed is drawn once per
+// process, so no file can pick contents that collide: two contents that hash alike differ only by
+// a 64-bit chance.
+func ContentHash() *maphash.Hash {
+	h := new(maphash.Hash)
+	h.SetSeed(contentSeed)
+	return h
+}
+
+// HashSet is a set of [ContentHash] values.
+type HashSet map[uint64]struct{}
+
+// Add puts h in s.
+func (s HashSet) Add(h uint64) { s[h] = struct{}{} }
+
+// Has reports whether s holds h.
+func (s HashSet) Has(h uint64) bool {
+	_, ok := s[h]
+	return ok
+}
+
+// PictureHashes is the set of the [PictureHash] values of the pictures ms hold.
+func PictureHashes(ms ...*Media) HashSet {
+	s := HashSet{}
+	for _, m := range ms {
+		for _, p := range m.Pictures {
+			s.Add(PictureHash(p))
+		}
+	}
+	return s
+}
+
+// PictureHash hashes what [EqualPictures] compares: equal pictures hash alike.
+func PictureHash(p Picture) uint64 {
+	h := ContentHash()
+	fmt.Fprintf(h, "%d\x00%s\x00%s\x00%d %d %d %d\x00", p.Type, p.MIME, p.Description, p.Width, p.Height, p.Depth, p.Colors)
+	h.Write(p.Data)
+	return h.Sum64()
 }
 
 // EqualPictures reports whether two picture slices are identical by content.

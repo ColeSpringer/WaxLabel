@@ -497,7 +497,7 @@ func TestChapterStartOverflowClamps(t *testing.T) {
 func TestDecodeCHAPTruncated(t *testing.T) {
 	// element id "a\x00" then only 8 bytes (need 16 for start+end+two offsets).
 	body := append([]byte("a\x00"), make([]byte, 8)...)
-	if _, _, ok := decodeCHAP(body, 4); ok {
+	if _, _, _, ok := decodeCHAP(body, 4); ok {
 		t.Error("a truncated CHAP body should not decode")
 	}
 }
@@ -607,7 +607,7 @@ func FuzzDecodeCHAP(f *testing.F) {
 	f.Add(good)
 	f.Fuzz(func(t *testing.T, body []byte) {
 		for _, major := range []byte{3, 4} {
-			if _, ch, ok := decodeCHAP(body, major); ok && !utf8.ValidString(ch.Title) {
+			if _, ch, _, ok := decodeCHAP(body, major); ok && !utf8.ValidString(ch.Title) {
 				t.Errorf("decodeCHAP title not valid UTF-8: %q", ch.Title)
 			}
 		}

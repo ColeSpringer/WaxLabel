@@ -12,7 +12,9 @@ import (
 // trailer.Start is the end of audio. Implements core.NativeDoc.
 type doc struct {
 	leadingID3 []byte // stray ID3v2 before the stream marker, preserved
-	streamAt   int64  // Musepack marker offset: past leadingID3 and any leading bytes kept with it
+	// leadingUnread is how many bytes of leadingID3 the parse could not read.
+	leadingUnread int64
+	streamAt      int64 // Musepack marker offset: past leadingID3 and any leading bytes kept with it
 
 	trailer tail.Trailer
 	header  header
@@ -45,7 +47,7 @@ func (d *doc) Describe() []core.NativeEntry {
 	if d.header.streamVersion >= 8 {
 		kind = "Musepack SV8 packets"
 	}
-	entries := d.trailer.Describe(d.leadingID3, d.streamAt, kind, d.track.Codec)
+	entries := d.trailer.Describe(d.leadingID3, d.leadingUnread, d.streamAt, kind, d.track.Codec)
 	if d.ctEnd > d.ctStart {
 		// Nested under the stream entry (size already includes it), like APEv2 items.
 		stream := slices.IndexFunc(entries, func(e core.NativeEntry) bool { return e.Kind == kind })

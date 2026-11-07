@@ -2,7 +2,9 @@ package waxlabel_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"errors"
 	"math"
 	"slices"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // Synthetic AIFF / AIFF-C builders. The SSND chunk is silence; tests assert on metadata structure
@@ -859,5 +862,80 @@ func TestAIFFLegacyStripWarnsAboutDestroyedTextValues(t *testing.T) {
 	}
 	if _, ok := warningFor(rescue, wl.WarnLegacyStripDropped); ok {
 		t.Errorf("an edit that writes the native value must not report it lost: %v", rescue.Report().Warnings)
+	}
+}
+
+// An AIFF ID3 chunk a rewrite drops is graded as a WAV one is: a frame the canonical view does not
+// carry, or a chunk that does not read, is named, so --strict refuses.
+func TestAIFFDroppedId3ChunkNamesWhatItLoses(t *testing.T) {
+	front := aiffID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Primary")))
+	popm := aiffID3(testfile.ID3v2(3, testfile.ID3Frame(3, "POPM", []byte("me@example.com\x00\xC8"))))
+	unreadable := aiffID3(testfile.ID3v2(5, testfile.TextFrame(4, "TALB", "Future")))
+	for _, c := range []struct {
+		name   string
+		chunks [][]byte
+		want   string
+	}{
+		{"a duplicate holding a POPM frame", [][]byte{front, popm}, `1 "POPM" frame(s)`},
+		{"an unreadable duplicate", [][]byte{front, unreadable}, "1 unreadable ID3 chunk(s)"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := testfile.AIFF("AIFF", slices.Concat([][]byte{stdCOMM(), stdSSND()}, c.chunks)...)
+			plan, err := mustParseBytes(t, data).Edit().Set(tag.Composer, "Stravinsky").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if msg := dupDroppedNames(plan); !strings.Contains(msg, c.want) {
+				t.Errorf("dropped warning %q, want it to name %s", msg, c.want)
+			}
+		})
+	}
+}
+
+// An AIFF ID3 chunk over the element cap refuses the parse wherever it sits, as a WAV one does.
+func TestAIFFId3ChunkOverTheElementCapRefuses(t *testing.T) {
+	front := aiffID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Primary")))
+	var frames [][]byte
+	for range 20 {
+		frames = append(frames, testfile.TextFrame(3, "TALB", "Album"))
+	}
+	big := aiffID3(testfile.ID3v2(3, frames...))
+	for name, chunks := range map[string][][]byte{"ahead of the kept chunk": {big, front}, "behind the kept chunk": {front, big}} {
+		data := testfile.AIFF("AIFF", slices.Concat([][]byte{stdCOMM(), stdSSND()}, chunks)...)
+		_, err := wl.Parse(context.Background(), wl.BytesSource(data), wl.WithLimits(wl.Limits{MaxElements: 8}))
+		if !errors.Is(err, waxerr.ErrSizeTooLarge) {
+			t.Errorf("%s: err = %v, want ErrSizeTooLarge", name, err)
+		}
+	}
+}
+
+// An AIFF ID3 chunk that does not parse, alone, is reported and its replacement warned as a WAV one
+// is; an empty ID3 chunk ahead of a populated one yields to it.
+func TestAIFFUnreadableAndEmptyId3Chunks(t *testing.T) {
+	unreadable := aiffID3(testfile.ID3v2(5, testfile.TextFrame(4, "TALB", "Future")))
+	data := testfile.AIFF("AIFF", stdCOMM(), stdSSND(), unreadable)
+	doc := mustParseBytes(t, data)
+	if !hasWarning(doc, wl.WarnMalformedTagEntry) {
+		t.Errorf("warnings %v, want the unreadable ID3 chunk reported", doc.Warnings())
+	}
+	plan, err := doc.Edit().Set(tag.Composer, "Stravinsky").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !planWarns(t, plan, wl.WarnMalformedTagEntryDropped) || dupDroppedNames(plan) != "" {
+		t.Errorf("plan warnings %v, want malformed-tag-entry-dropped and no duplicate drop", plan.Report().Warnings)
+	}
+	data = testfile.AIFF("AIFF", stdCOMM(), stdSSND(), aiffID3(testfile.ID3v2(3)),
+		aiffID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Kept"))))
+	doc = mustParseBytes(t, data)
+	if doc.Fields().Title != "Kept" {
+		t.Errorf("title %q, want the populated chunk's", doc.Fields().Title)
+	}
+	plan, err = doc.Edit().Set(tag.Composer, "Stravinsky").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg := dupDroppedNames(plan); msg != "" {
+		t.Errorf("dropped warning %q, want none for an empty chunk", msg)
 	}
 }

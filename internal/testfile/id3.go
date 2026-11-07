@@ -17,11 +17,16 @@ func ID3v2(version byte, frames ...[]byte) []byte {
 
 // ID3Frame wraps a body in a v2.3/v2.4 frame header: v2.4 sizes are sync-safe, v2.3 sizes plain.
 func ID3Frame(version byte, id string, body []byte) []byte {
+	return ID3FrameFlags(version, id, [2]byte{}, body)
+}
+
+// ID3FrameFlags is [ID3Frame] with the two flag bytes given: status, then format.
+func ID3FrameFlags(version byte, id string, flags [2]byte, body []byte) []byte {
 	size := BE32(len(body))
 	if version >= 4 {
 		size = Syncsafe(len(body))
 	}
-	return slices.Concat([]byte(id), size, []byte{0, 0}, body)
+	return slices.Concat([]byte(id), size, flags[:], body)
 }
 
 // TextFrame is a Latin-1 text frame.

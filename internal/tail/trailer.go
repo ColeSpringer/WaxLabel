@@ -51,28 +51,29 @@ func LegacyFamilies(auth tag.TagSet, t Trailer) ([]core.FamilyValue, bool) {
 
 // Project fills m from t, the leading ID3v2 tag kept ahead of the stream at streamAt and the bytes
 // between them: the essence, the store's tags and pictures, and the family view, where the ID3
-// containers are legacy only. It returns the store's warnings and how many bytes the essence covers,
-// the figure an average bitrate counts.
-func (t Trailer) Project(m *core.Media, leading []byte, streamAt int64, maxElements int) ([]core.Warning, int64) {
-	audioLen := t.SetEssence(m, streamAt)
+// containers are legacy only. It returns the store's warnings, how many bytes the essence covers,
+// the figure an average bitrate counts, and how many bytes of the leading tag could not be read,
+// for [Trailer.Describe].
+func (t Trailer) Project(m *core.Media, leading []byte, streamAt int64, maxElements int) (ws []core.Warning, audioLen, leadingUnread int64) {
+	audioLen = t.SetEssence(m, streamAt)
 	store := t.Tag()
 	proj := ape.Project(store)
 	m.Tags, m.Pictures = proj.Tags, proj.Pictures
-	ws := slices.Concat(proj.Warnings, ape.EncoderNoise(t.Items()), ape.InvalidUTF8Warnings(store), ape.InvalidKeyWarnings(store))
+	ws = slices.Concat(proj.Warnings, ape.EncoderNoise(t.Items()), ape.InvalidUTF8Warnings(store), ape.InvalidKeyWarnings(store))
 	trailing, trailingOpaque := LegacyFamilies(m.Tags, t)
-	lead, leadOpaque := id3.LegacyV2Families(m.Tags, leading, maxElements)
+	lead, leadOpaque, leadingUnread := id3.LegacyV2Families(m.Tags, leading, maxElements)
 	m.Families = slices.Concat(proj.Families, trailing, lead)
 	m.LegacyOpaqueContent = trailingOpaque || leadOpaque || streamAt > int64(len(leading))
-	return ws, audioLen
+	return ws, audioLen, leadingUnread
 }
 
-// Describe lists t for the native view: the leading ID3v2 tag if any and the bytes after it up to
-// streamAt, the audio from streamAt (named audioKind), then each region after it in file order, the
-// store's items under it.
-func (t Trailer) Describe(leading []byte, streamAt int64, audioKind, codec string) []core.NativeEntry {
+// Describe lists t for the native view: the leading ID3v2 tag if any, leadingUnread of its bytes
+// unreadable ([Trailer.Project]), and the bytes after it up to streamAt, the audio from streamAt
+// (named audioKind), then each region after it in file order, the store's items under it.
+func (t Trailer) Describe(leading []byte, leadingUnread, streamAt int64, audioKind, codec string) []core.NativeEntry {
 	var out []core.NativeEntry
 	if len(leading) > 0 {
-		out = append(out, core.LeadingID3Entry(len(leading)))
+		out = append(out, core.LeadingID3Entry(len(leading), leadingUnread))
 	}
 	if gap := streamAt - int64(len(leading)); gap > 0 {
 		out = append(out, core.LeadingBytesEntry(gap))
@@ -182,17 +183,49 @@ func (p TrailerPlan) Segments() []bits.Segment {
 	return append(segs, Segments(p.trailer.Without(KindAPEv2, KindJunk), p.strip)...)
 }
 
-// duplicates is what each APE tag but the store holds, for the warning a rewrite that drops them owes.
-func (t Trailer) duplicates() []core.DuplicateContent {
+// duplicates is what each APE tag but the store holds that the file holds nowhere else, for the
+// warning a rewrite that drops them owes: its values (graded by [core.AppendDuplicateBlockDropped]),
+// the pictures neither before nor after holds, and the items the canonical view does not carry that
+// the store holds neither as parsed nor as written. Pictures and items are indexed once, by hash.
+func (t Trailer) duplicates(written []ape.Item, before, after *core.Media) []core.DuplicateContent {
 	store := t.Tag()
+	var pictures, items core.HashSet
 	var out []core.DuplicateContent
 	for _, r := range t.Regions {
-		if r.Kind == KindAPEv2 && r.Tag != store {
-			p := ape.Project(r.Tag)
-			out = append(out, core.DuplicateContent{Tags: p.Tags, Pictures: len(p.Pictures)})
+		if r.Kind != KindAPEv2 || r.Tag == store {
+			continue
 		}
+		if pictures == nil {
+			pictures, items = core.PictureHashes(before, after), core.HashSet{}
+			for _, it := range slices.Concat(t.Items(), written) {
+				items.Add(itemHash(it))
+			}
+		}
+		p := ape.Project(r.Tag)
+		c := core.DuplicateContent{Tags: p.Tags}
+		for _, pic := range p.Pictures {
+			if !pictures.Has(core.PictureHash(pic)) {
+				c.Pictures++
+			}
+		}
+		var other core.Tally
+		for _, it := range r.Tag.Items {
+			if !ape.Carried(it) && !items.Has(itemHash(it)) {
+				other.Add(fmt.Sprintf("%q item(s)", it.Key), 1)
+			}
+		}
+		c.Other = other.Counts()
+		out = append(out, c)
 	}
 	return out
+}
+
+// itemHash hashes an APE item's name, flags and payload.
+func itemHash(it ape.Item) uint64 {
+	h := core.ContentHash()
+	fmt.Fprintf(h, "%s\x00%d\x00", it.Key, it.Flags)
+	h.Write(it.Payload())
+	return h.Sum64()
 }
 
 // TrailingWrite is what [PlanTrailingWrite] rewrites: an optional leading ID3v2 tag (Leading) and the
@@ -252,7 +285,7 @@ func PlanTrailingWrite(w TrailingWrite, base, edited *core.Media, opts core.Writ
 	report.BytesAfter = bits.OutputLen(segs)
 
 	res := result(tp, newLeadingLen, newLeadingLen+covered(w.Trailer.Essence(w.StreamAt)))
-	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "APE tag", res.Tags, w.Trailer.duplicates())
+	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "APE tag", base.Tags, res.Tags, w.Trailer.duplicates(tp.Items, base, res))
 	// Downgrade only catches rebuild drops; legacy strip is structural change.
 	if np := core.DowngradeNoOp(w.Format, edited.Identity.Size, base, res,
 		base.Tags.Equal(res.Tags), stripLeading || stripTrailing, report.Warnings); np != nil {

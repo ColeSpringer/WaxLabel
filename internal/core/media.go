@@ -97,9 +97,10 @@ func LeadingBytesEntry(n int64) NativeEntry {
 	return NativeEntry{Kind: "leading bytes", Size: int(n), Note: "preserved"}
 }
 
-// LeadingID3Entry describes an n-byte stray ID3v2 tag before a stream whose tags live elsewhere.
-func LeadingID3Entry(n int) NativeEntry {
-	return NativeEntry{Kind: "ID3v2", Size: n, Note: "leading, legacy, preserved"}
+// LeadingID3Entry describes an n-byte stray ID3v2 tag before a stream whose tags live elsewhere;
+// unread is how many of its bytes could not be read.
+func LeadingID3Entry(n int, unread int64) NativeEntry {
+	return NativeEntry{Kind: "ID3v2", Size: n, Note: "leading, legacy, preserved" + UnparsedNote(unread)}
 }
 
 // NativeDoc is a codec's editable native document (clone + describe only).

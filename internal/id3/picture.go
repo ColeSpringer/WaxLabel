@@ -165,9 +165,12 @@ func canonicalPictureMIME(declared string) string {
 	}
 }
 
-// mimeForFormat maps a v2.2 three-letter image format to a MIME type.
+// mimeForFormat maps a v2.2 three-letter image format to a MIME type; the "-->" format of a URL
+// link keeps the APIC link MIME.
 func mimeForFormat(format string) string {
 	switch strings.ToUpper(strings.TrimSpace(format)) {
+	case core.LinkMIME:
+		return core.LinkMIME
 	case "PNG":
 		return "image/png"
 	case "JPG", "JPEG":

@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -135,4 +136,36 @@ func (v *V1) Pairs() []struct {
 		add(tag.TrackNumber, strconv.Itoa(v.Track))
 	}
 	return out
+}
+
+// width is how many bytes the ID3v1 field key reads from holds: 30 for the text fields, 28 for a
+// v1.1 comment beside its track byte, 4 for the year, and 0 for the coded genre and track.
+func (v *V1) width(key tag.Key) int {
+	switch key {
+	case tag.Title, tag.Artist, tag.Album:
+		return 30
+	case tag.Comment:
+		if v.Track > 0 {
+			return 28
+		}
+		return 30
+	case tag.RecordingDate:
+		return 4
+	}
+	return 0
+}
+
+// V1Echoes reports whether value, read from an ID3v1 field width bytes wide, echoes a value auth
+// holds for key: that value cut to the width, as ID3v1 stores it (a title past 30 bytes, a date to
+// its 4-digit year), trailing spaces aside and case folded. A width of 0 echoes nothing.
+func V1Echoes(auth tag.TagSet, key tag.Key, value string, width int) bool {
+	if width <= 0 {
+		return false
+	}
+	return auth.AnyValue(key, func(v string) bool {
+		if r := []rune(v); len(r) > width {
+			v = string(r[:width])
+		}
+		return core.EqualFoldValue(strings.TrimRight(v, " "), value)
+	})
 }

@@ -55,7 +55,7 @@ func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
 		fmt.Fprintf(w, "  note:    %s only in a legacy container; see --native\n", pluralUnit(len(lo), "tag"))
 	}
 	if doc.HasOpaqueLegacyContent() {
-		fmt.Fprintln(w, "  note:    a legacy container holds non-tag content (picture, chapter, binary item, Lyrics3 block, or leading bytes) not shown; see --native")
+		fmt.Fprintln(w, "  note:    a legacy container holds non-tag content (picture, chapter, binary item, Lyrics3 block, leading bytes, or unreadable bytes) not shown; see --native")
 	}
 	renderPictures(w, doc.Pictures())
 	renderChapters(w, doc.Chapters())

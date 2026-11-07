@@ -16,13 +16,16 @@ type chunk struct {
 	id      [4]byte
 	bodyOff int64 // source offset of the body (after the 8-byte chunk header)
 	bodyLen int64 // declared body length, excluding any trailing pad byte
-	// dupTag marks a duplicate tag container (a second LIST/INFO or id3 chunk). The
-	// first of each kind is authoritative; duplicates survive a no-op but are dropped
-	// on rewrite.
+	// dupTag marks a duplicate tag container: a LIST/INFO after the first, or an id3 chunk
+	// other than the authoritative one (the first that parses and holds frames, else the
+	// first that parses). Duplicates survive a no-op but are dropped on rewrite.
 	dupTag bool
-	// dupContent is what this duplicate holds, graded against the written set at write time so
-	// a duplicate whose values the edit itself now stores is silent.
+	// dupContent is what a duplicate LIST/INFO holds, graded at write time against the parsed and
+	// written sets so a duplicate whose values the file holds anyway is silent. A duplicate id3
+	// chunk keeps its digest in dupID3 instead ([id3.PickTag], unreadable when it does not parse),
+	// graded by [id3.DupGrader].
 	dupContent core.DuplicateContent
+	dupID3     id3.DupDigest
 }
 
 // id4 returns the chunk identifier as a string.
@@ -138,6 +141,10 @@ func (d *doc) Format() core.Format { return core.FormatWAV }
 func (d *doc) Clone() core.NativeDoc {
 	c := *d
 	c.chunks = slices.Clone(d.chunks)
+	// A duplicate id3 chunk's digest is never modified, so the copies share it.
+	for i, ch := range c.chunks {
+		c.chunks[i].dupContent.Tags = ch.dupContent.Tags.Clone()
+	}
 	c.info = slices.Clone(d.info)
 	c.ds64 = d.ds64.clone()
 	if d.id3 != nil {

@@ -91,9 +91,9 @@ func NoOpPlan(report WriteReport, size int64, result *Media) *WritePlan {
 	}
 }
 
-// PaddingOp formats padding operation line for display.
-func PaddingOp(oldRegion, newContent, padAfter int64) string {
-	return fmt.Sprintf("padding %d -> %d", max(int64(0), oldRegion-newContent), padAfter)
+// PaddingOp formats the operation line of a padding-only edit: the padding before it and after it.
+func PaddingOp(padBefore, padAfter int64) string {
+	return fmt.Sprintf("padding %d -> %d", padBefore, padAfter)
 }
 
 // LeadingStripOp formats the legacy-strip line for a leading ID3v2 of tagLen bytes and the bytes
@@ -247,9 +247,9 @@ func DetectLeading(src ReaderAtSized, leadingLen func(header []byte) (int64, boo
 
 // StreamStart returns where c's stream starts in src behind its leading tags, found as
 // [DetectLeading] finds it: where the chained tags end when c sniffs there, else at c's first sync
-// confirmed within [ResyncWindow] of that end. ok is false when src starts with no tag or c finds no
-// stream. A window over limit is refused, and one that fails to read is an error as for
-// [DetectLeading].
+// confirmed within [ResyncWindow] of that end. A tag past the chain's bound is no stream start, though
+// c may sniff it as one. ok is false when src starts with no tag or c finds no stream. A window over
+// limit is refused, and one that fails to read is an error as for [DetectLeading].
 func StreamStart(src ReaderAtSized, leadingLen func(header []byte) (int64, bool), c Codec, limit int64) (int64, bool, error) {
 	if err := bits.CheckAlloc(min(SniffWindow, src.Size()), limit); err != nil {
 		return 0, false, err
@@ -264,14 +264,37 @@ func StreamStart(src ReaderAtSized, leadingLen func(header []byte) (int64, bool)
 		return 0, false, err
 	case end == 0:
 		return 0, false, nil
-	case c.Sniff(inner):
-		return end, true, nil
 	}
-	if err := bits.CheckAlloc(min(ResyncWindow, src.Size()-end), limit); err != nil {
+	return streamAt(src, end, inner, leadingLen, c, limit)
+}
+
+// StreamFrom returns where c's stream starts in src at or past at: at itself when c sniffs there,
+// else c's first sync confirmed within [ResyncWindow] of at. A codec that has read the leading tags
+// itself finds its stream from where they end as [StreamStart] would; a tag there (one leadingLen
+// sizes from its header) is no stream start, though c may sniff it as one. ok is false when c finds
+// no stream. A window over limit is refused, and one that fails to read is an error as for
+// [DetectLeading].
+func StreamFrom(src ReaderAtSized, at int64, leadingLen func(header []byte) (int64, bool), c Codec, limit int64) (int64, bool, error) {
+	if err := bits.CheckAlloc(min(SniffWindow, max(src.Size()-at, 0)), limit); err != nil {
 		return 0, false, err
 	}
-	_, at, ok, err := resync(src, end, []Codec{c})
-	return at, ok, err
+	window, err := readWindow(src, at, SniffWindow)
+	if err != nil {
+		return 0, false, err
+	}
+	return streamAt(src, at, window, leadingLen, c, limit)
+}
+
+// streamAt is where c's stream starts at or past at, given window, the sniff window there.
+func streamAt(src ReaderAtSized, at int64, window []byte, leadingLen func(header []byte) (int64, bool), c Codec, limit int64) (int64, bool, error) {
+	if _, tag := leadingLen(window); !tag && c.Sniff(window) {
+		return at, true, nil
+	}
+	if err := bits.CheckAlloc(min(ResyncWindow, src.Size()-at), limit); err != nil {
+		return 0, false, err
+	}
+	_, off, ok, err := resync(src, at, []Codec{c})
+	return off, ok, err
 }
 
 // leadingChain skips up to MaxLeadingTags chained leading tags at the start of src, each sized by

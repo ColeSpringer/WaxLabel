@@ -129,7 +129,8 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	// tag, that a strip cannot prove redundant.
 	media.Tags, media.Families = projectComments(d.comments)
 	tailWarnings, audioLen := d.layout.Project(media, d.audioStart, "after the FLAC stream")
-	leading, leadingOpaque := id3.LegacyV2Families(media.Tags, d.leadingID3, maxElements)
+	leading, leadingOpaque, unread := id3.LegacyV2Families(media.Tags, d.leadingID3, maxElements)
+	d.leadingUnread = unread
 	media.Families = append(media.Families, leading...)
 	media.LegacyOpaqueContent = media.LegacyOpaqueContent || leadingOpaque || d.flacStart > int64(len(d.leadingID3))
 	warnings = slices.Concat(warnings, tailWarnings, walkWarnings, vcWarnings)

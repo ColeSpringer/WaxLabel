@@ -62,7 +62,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	d.header = h
 
 	media := &core.Media{Format: core.FormatMonkeysAudio, Native: d}
-	projected, audioLen := d.trailer.Project(media, d.leadingID3, d.streamAt, opts.Limits.MaxElements)
+	projected, audioLen, unread := d.trailer.Project(media, d.leadingID3, d.streamAt, opts.Limits.MaxElements)
+	d.leadingUnread = unread
 	warnings = append(warnings, projected...)
 
 	d.track = buildTrack(h, audioLen)

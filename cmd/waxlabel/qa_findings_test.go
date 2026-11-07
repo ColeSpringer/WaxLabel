@@ -495,9 +495,11 @@ func TestMalformedYearDroppedNotTruncated(t *testing.T) {
 		if !strings.Contains(out, "value-dropped") || !strings.Contains(out, "4-digit year") {
 			t.Errorf("RECORDINGDATE=%s must warn value-dropped (no valid 4-digit year):\n%s", v, out)
 		}
-		dumped, _, _ := runCLI(t, "--json", "dump", f)
-		if strings.Contains(dumped, "1000") || strings.Contains(dumped, `"RECORDINGDATE"`) {
-			t.Errorf("RECORDINGDATE=%s stored a wrong/truncated year instead of dropping:\n%s", v, dumped)
+		// The tags alone: the dump's path is a temp directory whose random name can hold "1000".
+		for _, tg := range dumpJSON(t, f).Tags {
+			if tg.Key == "RECORDINGDATE" || slices.ContainsFunc(tg.Values, func(s string) bool { return strings.Contains(s, "1000") }) {
+				t.Errorf("RECORDINGDATE=%s stored a wrong/truncated year instead of dropping: %s=%q", v, tg.Key, tg.Values)
+			}
 		}
 	}
 }

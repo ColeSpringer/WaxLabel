@@ -11,9 +11,9 @@ import (
 )
 
 // Plan builds a preservation-first rewrite: re-render the front ID3v2 tag
-// (source version; unchanged/unmodelled frames kept), copy the bytes before the
-// first frame and the ADTS frames verbatim, then the tail, its legacy tags unless
-// stripped.
+// (source version; unchanged/unmodelled frames kept) and drop the duplicate tags
+// behind it, copy the bytes before the first frame and the ADTS frames verbatim,
+// then the tail, its legacy tags unless stripped.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -32,13 +32,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	report := core.WriteReport{Format: core.FormatAAC, BytesBefore: edited.Identity.Size}
 
-	// Preserve source version; format default for a new tag. Above fast path so
-	// the encoding predicate can see source frames.
+	// Preserve source version; format default for a new tag or one replacing an ignored
+	// tag, which holds nothing a rewrite keeps. Above fast path so the encoding predicate
+	// can see source frames.
+	version := id3.WriteVersionOr(d.id3, core.FormatAAC)
 	srcTag := d.id3
-	if srcTag == nil {
-		srcTag = id3.NewEmpty(core.DefaultID3Version(core.FormatAAC))
+	if srcTag == nil || srcTag.Ignored() != "" {
+		srcTag = id3.NewEmpty(version)
 	}
-	version := srcTag.WriteVersion()
 	// Same WriteOpts for predicate and rebuild so they cannot disagree.
 	wopts := id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre}
 	// --numeric-genre changes storage, not the value; tag Equal cannot see it.
@@ -74,15 +75,18 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	// Drop empty tag entirely (shared id3.RenderFrontTag policy with MP3).
 	ft := id3.RenderFrontTag(srcTag, version, newFrames, info, opts.Padding, d.id3Len,
-		d.id3 != nil, tagsChanged, picturesChanged, len(edited.Pictures), chaptersChanged, len(edited.Chapters),
+		d.id3, tagsChanged, picturesChanged, len(edited.Pictures), chaptersChanged, len(edited.Chapters),
 		syncedLyricsChanged, len(edited.SyncedLyrics))
 	report.PaddingAfter = ft.Padding
 	report.Operations = append(report.Operations, ft.Operations...)
 	report.Warnings = append(report.Warnings, ft.Warnings...)
+	if len(d.dups) > 0 {
+		report.Operations = append(report.Operations, "duplicate ID3v2 drop")
+	}
 	// Padding-only edit: size change is the edit.
 	regionDiffers := int64(len(ft.Bytes)) != d.id3Len
 	if regionDiffers && !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !legacyChange {
-		report.Operations = append(report.Operations, core.PaddingOp(d.id3Len, int64(len(ft.Bytes))-ft.Padding, ft.Padding))
+		report.Operations = append(report.Operations, core.PaddingOp(id3.FrontTagPadding(d.id3), ft.Padding))
 	}
 	if encodingRewrite {
 		report.Operations = append(report.Operations, core.EncodingRewriteOp("genre"))
@@ -92,7 +96,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if ft.Bytes != nil {
 		segs = append(segs, bits.Lit(ft.Bytes))
 	}
-	segs = append(segs, bits.Copy(d.id3Len, d.layout.Start-d.id3Len))
+	segs = append(segs, bits.Copy(d.frontEnd, d.layout.Start-d.frontEnd))
 	segs = append(segs, tail.Segments(d.layout, stripLegacy)...)
 	report.Operations = append(report.Operations, tail.Operations(d.layout, stripLegacy)...)
 
@@ -102,7 +106,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	result := buildResult(edited, d, ft.Tag, int64(len(ft.Bytes)), stripLegacy)
 	// Rebuild losses not visible in bytes (e.g. v2.3 date precision). Fresh tags are v2.4.
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, info, result.Tags)
-	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3)
+	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3, ft.Bytes != nil)
+	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "ID3v2 tag", base.Tags, result.Tags, id3.DupLosses(d.dups, base, result, srcTag.Frames(), newFrames))
 	// Collapse when rebuild matches base; a legacy strip or encoding rewrite alone still forces write.
 	if np := core.DowngradeNoOp(core.FormatAAC, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), legacyChange || regionDiffers || encodingRewrite, report.Warnings); np != nil {
 		return np, nil
@@ -123,6 +128,6 @@ func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagLen int64, s
 		Chapters:     core.ChaptersOpenedPastDuration(proj.Chapters, base.track.Duration),
 		SyncedLyrics: proj.SyncedLyrics,
 	}
-	base.layout.SetMovedEssence(m, base.firstFrameOff, tagLen+base.firstFrameOff-base.id3Len, strip)
+	base.layout.SetMovedEssence(m, base.firstFrameOff, tagLen+base.firstFrameOff-base.frontEnd, strip)
 	return m
 }

@@ -24,16 +24,24 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	limit := opts.Limits.MaxAllocBytes
 	d := &doc{}
 
-	// Front ID3v2 tag, and the stream behind it: past chained tags or a gap, which detection looks
-	// past too.
-	tg, id3Len, warnings, err := id3.ReadFront(src, size, limit, opts.Limits.MaxElements)
+	// Front ID3v2 tags, the one kept and its duplicates, and the stream behind them: past a gap,
+	// which detection looks past too.
+	front, warnings, err := id3.ReadFrontAll(src, size, limit, opts.Limits.MaxElements)
 	if err != nil {
 		return nil, err
 	}
-	d.id3, d.id3Len = tg, id3Len
-	at, _, ws, err := id3.StreamBehindFront(src, id3Len, limit, Codec{}, "ADTS frame", nil)
+	d.id3, d.id3Off, d.id3Len, d.dups, d.frontEnd = front.Tag, front.Off, front.Len, front.Dups, front.End
+	at, ok, ws, err := id3.StreamBehindFront(src, front.End, limit, Codec{}, "ADTS frame", nil)
 	if err != nil {
 		return nil, err
+	}
+	if front.Tag.Unbounded() {
+		// The tag declares more bytes than the file holds, so it reaches the stream, or the end of
+		// the file with none: one unreadable region a rewrite replaces, not a gap.
+		if !ok {
+			at = size
+		}
+		d.id3Len, d.frontEnd, ws = at, at, nil
 	}
 	d.firstFrameOff = at
 	warnings = append(warnings, ws...)

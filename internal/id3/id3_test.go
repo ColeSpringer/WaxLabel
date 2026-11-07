@@ -3,6 +3,7 @@ package id3
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"syscall"
@@ -241,6 +242,12 @@ func TestResolveGenres(t *testing.T) {
 		{"(hello", []string{"(hello"}, false},
 		{"(17)(hello", []string{"Rock", "(hello"}, true},
 		{"(17) ((Live)", []string{"Rock", "(Live)"}, true},
+		// A name keeps its whitespace, as a Vorbis GENRE does; a reference reads through it, and
+		// an all-whitespace value is nothing.
+		{"  padded  ", []string{"  padded  "}, false},
+		{" 17 ", []string{"Rock"}, true},
+		{" (17) ", []string{"Rock"}, true},
+		{"   ", nil, false},
 	}
 	for _, c := range cases {
 		got, num := resolveGenres(c.in)
@@ -797,26 +804,91 @@ func TestRebuildBreadthV24(t *testing.T) {
 	}
 }
 
-// TestRebuildRawMappedFrameID pins the raw frame-ID fallback: a value authored under a
-// mapped frame's own identifier (tag.Key("TBPM"), what --set TBPM=128 produces) still
-// emits the frame, which then projects back under the canonical BPM key.
-func TestRebuildRawMappedFrameID(t *testing.T) {
-	edited := tag.NewTagSet()
-	edited.Set(tag.Key("TBPM"), "128")
-	out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, StructuredEdit{}, WriteOpts{})
-
-	found := false
-	for _, f := range out {
-		if f.ID == "TBPM" {
-			found = true
+// A custom key spelled like a frame ID this package reads as something else (a mapped text frame,
+// a date, number-pair, genre, involved-people or user frame) is stored as a TXXX frame described by
+// that ID, so it reads back unchanged, whether or not the tag holds the canonical key's own frame,
+// which the edit leaves alone. TCMP is the exception: TXXX:TCMP is how ffmpeg stores COMPILATION,
+// so it reads back as that.
+func TestCustomFrameIDKeysGoToTXXX(t *testing.T) {
+	canonical := map[string][2]string{ // the key the frame stores and a value for it
+		"TIT1": {"GROUPING", "g"}, "TIT2": {"TITLE", "t"}, "TPE1": {"ARTIST", "a"}, "TPE2": {"ALBUMARTIST", "aa"},
+		"TPE3": {"CONDUCTOR", "c"}, "TPE4": {"REMIXER", "r"}, "TALB": {"ALBUM", "al"}, "TCOM": {"COMPOSER", "co"},
+		"TEXT": {"LYRICIST", "ly"}, "TCOP": {"COPYRIGHT", "cp"}, "TPUB": {"LABEL", "lb"}, "TMED": {"MEDIA", "m"},
+		"TSST": {"DISCSUBTITLE", "ds"}, "TSRC": {"ISRC", "USRC17607839"}, "TENC": {"ENCODEDBY", "e"},
+		"TSSE": {"ENCODER", "en"}, "TSOT": {"TITLESORT", "ts"}, "TSOP": {"ARTISTSORT", "as"}, "TSOA": {"ALBUMSORT", "als"},
+		"TSO2": {"ALBUMARTISTSORT", "aas"}, "TSOC": {"COMPOSERSORT", "cs"}, "TCMP": {"COMPILATION", "1"},
+		"TBPM": {"BPM", "120"}, "TCON": {"GENRE", "Rock"}, "TRCK": {"TRACKNUMBER", "3"}, "TPOS": {"DISCNUMBER", "1"},
+		"TYER": {"RECORDINGDATE", "2001-02-03T10:20"}, "TDAT": {"RECORDINGDATE", "2001-02-03T10:20"},
+		"TIME": {"RECORDINGDATE", "2001-02-03T10:20"}, "TDRC": {"RECORDINGDATE", "2001-02-03T10:20"},
+		"TORY": {"ORIGINALDATE", "1999"}, "TDOR": {"ORIGINALDATE", "1999"}, "TDRL": {"RELEASEDATE", "2005"},
+		"TIPL": {"PRODUCER", "p"}, "TXXX": {"MYKEY", "mine"},
+	}
+	for id, canon := range canonical {
+		for _, version := range []byte{3, 4} {
+			for _, holding := range []bool{false, true} {
+				var orig []Frame
+				if holding {
+					seed := tag.NewTagSet()
+					seed.Set(tag.Key(canon[0]), canon[1])
+					orig, _ = RebuildFrames(nil, tag.NewTagSet(), seed, version, StructuredEdit{}, WriteOpts{})
+				}
+				base := Project(buildTag(t, version, orig)).Tags
+				edited := base.Clone()
+				edited.Set(tag.Key(id), "custom")
+				out, _ := RebuildFrames(orig, base, edited, version, StructuredEdit{}, WriteOpts{})
+				name := fmt.Sprintf("%s v2.%d holding=%v", id, version, holding)
+				var txxx []string
+				for _, f := range out {
+					if desc, vals, ok := decodeUserText(f.Body); f.ID == "TXXX" && ok && desc == id {
+						txxx = append(txxx, vals...)
+					}
+				}
+				if !slices.Equal(txxx, []string{"custom"}) {
+					t.Errorf("%s: TXXX:%s values %v, want one frame holding [custom]", name, id, txxx)
+				}
+				for _, f := range orig {
+					if !slices.ContainsFunc(out, func(o Frame) bool { return o.ID == f.ID && bytes.Equal(o.Body, f.Body) }) {
+						t.Errorf("%s: the edit changed or dropped the %s frame", name, f.ID)
+					}
+				}
+				stored, viaTXXX := CustomFrameIDFate(tag.Key(id), version)
+				want := tag.Key(id)
+				if id == "TCMP" {
+					want = tag.Compilation
+				}
+				if stored != want || !viaTXXX {
+					t.Errorf("%s: CustomFrameIDFate = (%s, %v), want (%s, true)", name, stored, viaTXXX, want)
+				}
+				if v, _ := Project(buildTag(t, version, out)).Tags.Get(want); !slices.Contains(v, "custom") {
+					t.Errorf("%s: %s reads back %v, want it to hold custom", name, want, v)
+				}
+			}
 		}
 	}
-	if !found {
-		t.Fatalf("no TBPM frame in rebuild output (%d frames); the raw-ID value was silently lost", len(out))
+}
+
+// A custom key spelled like a T frame this package does not read as anything else is stored in a
+// frame of its own, which reads back as that key; any other custom key goes to TXXX.
+func TestCustomFrameIDFateOwnFrame(t *testing.T) {
+	for key, want := range map[tag.Key]struct {
+		stored  tag.Key
+		viaTXXX bool
+	}{
+		"TFOO": {"TFOO", false}, "TMCL": {"TMCL", false}, "MYKEY": {"MYKEY", true}, "TIT": {"TIT", true},
+		"COMM": {"COMM", true}, tag.ISRC: {tag.ISRC, false},
+	} {
+		if stored, via := CustomFrameIDFate(key, 4); stored != want.stored || via != want.viaTXXX {
+			t.Errorf("CustomFrameIDFate(%s) = (%s, %v), want (%s, %v)", key, stored, via, want.stored, want.viaTXXX)
+		}
 	}
-	got := Project(buildTag(t, 4, out)).Tags
-	if v, _ := got.Get(tag.BPM); !slices.Equal(v, []string{"128"}) {
-		t.Errorf("BPM read back = %v, want [128] (the raw TBPM frame projects under the canonical key)", v)
+	edited := tag.NewTagSet()
+	edited.Set("TFOO", "x")
+	out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, StructuredEdit{}, WriteOpts{})
+	if len(out) != 1 || out[0].ID != "TFOO" {
+		t.Fatalf("frames %+v, want one TFOO frame", out)
+	}
+	if v, _ := Project(buildTag(t, 4, out)).Tags.Get("TFOO"); !slices.Equal(v, []string{"x"}) {
+		t.Errorf("TFOO reads back %v, want [x]", v)
 	}
 }
 
@@ -1073,6 +1145,318 @@ func TestSpacePaddedFrameID(t *testing.T) {
 	}
 }
 
+// A frame whose ID is printable but not A-Z and 0-9 is read by its size and kept verbatim, so the
+// frames after it still read, and the warning names it. The frame renders back byte for byte.
+func TestPrintableNonStandardFrameIDReadBySize(t *testing.T) {
+	low := testfile.TextFrame(3, "Tlow", "odd")
+	data := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Title"), low,
+		testfile.TextFrame(3, "TPE1", "Artist"), testfile.TextFrame(3, "TALB", "Album"))
+	tg, err := ParseTag(data, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames := tg.Frames()
+	if len(frames) != 4 || frames[1].ID != "Tlow" || !frames[1].Opaque {
+		t.Fatalf("frames = %+v, want four with Tlow second and opaque", frames)
+	}
+	if id, n := tg.MalformedTail(); id != "" || n != 0 || tg.Padding() != 0 {
+		t.Errorf("malformed tail (%q, %d), padding %d; want neither", id, n, tg.Padding())
+	}
+	proj := Project(tg)
+	for k, want := range map[tag.Key]string{tag.Title: "Title", tag.Artist: "Artist", tag.Album: "Album"} {
+		if v, _ := proj.Tags.First(k); v != want {
+			t.Errorf("%s = %q, want %q", k, v, want)
+		}
+	}
+	if len(proj.Tags.Keys()) != 3 {
+		t.Errorf("projected keys %v, want the three standard frames only", proj.Tags.Keys())
+	}
+	ws := core.WarningsWithCode(proj.Warnings, core.WarnMalformedTagEntry)
+	if len(ws) != 1 || !strings.Contains(ws[0].Message, "Tlow") {
+		t.Errorf("warnings %v, want one malformed-tag-entry naming Tlow", proj.Warnings)
+	}
+	if !bytes.Contains(Render(3, frames, 0), low) {
+		t.Error("the Tlow frame does not render back byte for byte")
+	}
+}
+
+// A frame ID of spaces is printable, so it is read by its size, and the warnings quote it: bare, it
+// would read as a gap in the sentence.
+func TestSpaceFrameIDIsQuoted(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		frame []byte
+	}{
+		{"read by its size", testfile.TextFrame(3, "    ", "odd")},
+		{"running past the tag", testfile.OverrunFrame("    ")},
+	} {
+		tg, err := ParseTag(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Title"), c.frame), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ws := core.WarningsWithCode(Project(tg).Warnings, core.WarnMalformedTagEntry)
+		if len(ws) != 1 || !strings.Contains(ws[0].Message, `"    "`) {
+			t.Errorf("%s: warnings %v, want the ID quoted", c.name, ws)
+		}
+	}
+}
+
+// A frame ID holding a control or high byte ends the frame walk: what follows is an unreadable
+// tail, not padding, and a rewrite says it is not carried.
+func TestControlByteFrameIDEndsTheWalk(t *testing.T) {
+	for _, id := range []string{"T\x01LW", "TI\x00\x00", "T\xe9LW"} {
+		bad := testfile.TextFrame(3, id, "junk")
+		after := testfile.TextFrame(3, "TPE1", "Lost")
+		tg, err := ParseTag(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Title"), bad, after), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tg.Frames()) != 1 || tg.Padding() != 0 {
+			t.Errorf("%q: %d frames, padding %d; want the title alone and no padding", id, len(tg.Frames()), tg.Padding())
+		}
+		if got, n := tg.MalformedTail(); got == "" || n != int64(len(bad)+len(after)) {
+			t.Errorf("%q: malformed tail (%q, %d), want the %d bytes from the bad header", id, got, n, len(bad)+len(after))
+		}
+		if ws := core.WarningsWithCode(Project(tg).Warnings, core.WarnMalformedTagEntry); len(ws) != 1 {
+			t.Errorf("%q: warnings %v, want one malformed-tag-entry", id, Project(tg).Warnings)
+		}
+		if ws := AppendMalformedTailDropped(nil, tg, true); len(ws) != 1 || ws[0].Code != core.WarnMalformedTagEntryDropped {
+			t.Errorf("%q: rewrite warnings %v, want malformed-tag-entry-dropped", id, ws)
+		}
+	}
+}
+
+// plainV24Frame is an ID3v2.4 frame whose size is a plain 32-bit integer, as iTunes writes them.
+func plainV24Frame(id string, body []byte) []byte {
+	return slices.Concat([]byte(id), testfile.BE32(len(body)), []byte{0, 0}, body)
+}
+
+// apicOfLen is an APIC body of exactly n bytes: a PNG front cover whose description fills it out.
+func apicOfLen(n int) []byte {
+	head := slices.Concat([]byte{0}, []byte("image/png\x00"), []byte{3})
+	img := testfile.PNG()
+	desc := bytes.Repeat([]byte("d"), n-len(head)-1-len(img))
+	return slices.Concat(head, desc, []byte{0}, img)
+}
+
+// An ID3v2.4 tag whose frame sizes are plain 32-bit integers, as iTunes writes them, reads every
+// frame and its padding, and says so; a conformant tag with a frame over 127 bytes still reads its
+// sizes sync-safe. Frames under 128 bytes read the same either way, so the one larger frame decides.
+func TestV24PlainFrameSizes(t *testing.T) {
+	apic := apicOfLen(201)
+	title := testfile.TextFrame(4, "TIT2", "Title")
+	artist := testfile.TextFrame(4, "TPE1", "Artist")
+	pad := make([]byte, 100)
+	for _, c := range []struct {
+		name  string
+		frame []byte
+		plain bool
+	}{
+		{"plain", plainV24Frame("APIC", apic), true},
+		{"sync-safe", testfile.ID3Frame(4, "APIC", apic), false},
+	} {
+		tg, err := ParseTag(testfile.ID3v2(4, title, c.frame, artist, pad), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames := tg.Frames()
+		if len(frames) != 3 || frames[1].ID != "APIC" || !bytes.Equal(frames[1].Body, apic) || frames[2].ID != "TPE1" {
+			t.Errorf("%s: frames %+v, want TIT2, the 201-byte APIC, TPE1", c.name, frames)
+		}
+		if id, n := tg.MalformedTail(); id != "" || n != 0 || tg.Padding() != 100 {
+			t.Errorf("%s: malformed tail (%q, %d), padding %d; want 100 bytes of padding", c.name, id, n, tg.Padding())
+		}
+		if got := strings.Contains(FramesNote(tg), "non-sync-safe frame sizes"); got != c.plain {
+			t.Errorf("%s: note %q, plain sizes noted %v, want %v", c.name, FramesNote(tg), got, c.plain)
+		}
+	}
+}
+
+// A v2.4 tag whose sizes all read alike is sync-safe whatever its walk meets: here its last frame
+// runs a byte past the tag, which both readings see.
+func TestV24FrameSizesReadingAlikeAreSyncSafe(t *testing.T) {
+	last := testfile.TextFrame(4, "TPE1", "Artist")
+	data := testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Title"), last[:len(last)-1])
+	tg, err := ParseTag(data, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note := FramesNote(tg); strings.Contains(note, "non-sync-safe") {
+		t.Errorf("note %q; want no plain-size note where no size reads differently", note)
+	}
+}
+
+// A plain-size v2.4 tag holding one frame whose size is sync-safe, as no writer means to but a tag
+// edited by two can, reads that frame by the size that lands on the frame after it.
+func TestV24PlainTagWithASyncSafeFrame(t *testing.T) {
+	apic := apicOfLen(200)
+	txxx := slices.Concat([]byte{0}, []byte("DESC\x00"), bytes.Repeat([]byte("x"), 194))
+	tg, err := ParseTag(testfile.ID3v2(4, plainV24Frame("APIC", apic), testfile.ID3Frame(4, "TXXX", txxx),
+		testfile.TextFrame(4, "TPE1", "Artist"), make([]byte, 200)), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, f := range tg.Frames() {
+		ids = append(ids, f.ID)
+	}
+	if !slices.Equal(ids, []string{"APIC", "TXXX", "TPE1"}) || !bytes.Equal(tg.Frames()[1].Body, txxx) || tg.Padding() != 200 {
+		t.Errorf("frames %v, padding %d; want APIC, the 200-byte TXXX, TPE1 and 200 bytes of padding", ids, tg.Padding())
+	}
+	if v, _ := Project(tg).Tags.First(tag.Artist); v != "Artist" {
+		t.Errorf("ARTIST = %q, want Artist", v)
+	}
+}
+
+// A genuine plain-size frame ending where the padding begins reads whole even when its own body
+// holds a known frame ID at the offset its size reads as sync-safe: that ID's frame would not fit.
+func TestV24PlainFrameBeforePaddingReadsWhole(t *testing.T) {
+	lyrics := []byte(strings.Repeat("la ", 65))
+	copy(lyrics[67:], "TIME") // body offset 72: where 200 read sync-safe (0x48) lands
+	uslt := slices.Concat([]byte{0}, []byte("eng\x00"), lyrics)
+	tg, err := ParseTag(testfile.ID3v2(4, plainV24Frame("APIC", apicOfLen(418)), testfile.TextFrame(4, "TIT2", "Title"),
+		plainV24Frame("USLT", uslt), make([]byte, 300)), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames := tg.Frames()
+	if len(frames) != 3 || !bytes.Equal(frames[2].Body, uslt) || tg.Padding() != 300 {
+		t.Errorf("%d frames, padding %d; want the APIC, TIT2 and the whole 200-byte USLT before 300 bytes of padding", len(frames), tg.Padding())
+	}
+}
+
+// A v2.4 tag with sync-safe sizes whose padding holds junk, or the stale bytes an in-place shrink leaves, keeps
+// its sync-safe sizes: read plain, a large frame would jump past the frames after it, or over the
+// stale bytes, into the zeros beyond, a walk that also ends cleanly but swallows them.
+func TestV24SyncSafeTagsWithStalePaddingStaySyncSafe(t *testing.T) {
+	text := func(id, v string) []byte { return testfile.TextFrame(4, id, v) }
+	apic := slices.Concat([]byte{0}, []byte("image/jpeg\x00"), []byte{3, 0}, bytes.Repeat([]byte("A"), 285))
+	uslt := slices.Concat([]byte{0}, []byte("eng\x00"), bytes.Repeat([]byte("l"), 1494))
+	junkPad := make([]byte, 600)
+	copy(junkPad[20:], "JUNK")
+	stale := append([]byte("TXX"), make([]byte, 3000)...)
+	// Read plain, the APIC (sync-safe 299, plain 555) ends exactly on the tag's last byte, inside this junk.
+	endJunk := make([]byte, 223)
+	copy(endJunk[219:], "JUNK")
+	for _, c := range []struct {
+		name string
+		body [][]byte
+		ids  []string
+	}{
+		{"junk in the padding", [][]byte{text("TIT2", "Title"), testfile.ID3Frame(4, "APIC", apic), text("TPE1", "Artist"),
+			text("TALB", "Album"), junkPad}, []string{"TIT2", "APIC", "TPE1", "TALB"}},
+		{"junk ending the padding", [][]byte{text("TIT2", "Title"), testfile.ID3Frame(4, "APIC", apic), text("TPE1", "Artist"),
+			text("TALB", "Album"), endJunk}, []string{"TIT2", "APIC", "TPE1", "TALB"}},
+		{"stale bytes after the frames", [][]byte{text("TIT2", "Title"), testfile.ID3Frame(4, "USLT", uslt), text("TPE1", "Artist"),
+			text("TALB", "Album"), stale}, []string{"TIT2", "USLT", "TPE1", "TALB"}},
+		{"stale bytes after a large last frame", [][]byte{text("TIT2", "Title"), text("TPE1", "Artist"), text("TALB", "Album"),
+			testfile.ID3Frame(4, "USLT", uslt), stale}, []string{"TIT2", "TPE1", "TALB", "USLT"}},
+	} {
+		tg, err := ParseTag(testfile.ID3v2(4, c.body...), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, f := range tg.Frames() {
+			ids = append(ids, f.ID)
+			if f.ID == "USLT" && !bytes.Equal(f.Body, uslt) || f.ID == "APIC" && !bytes.Equal(f.Body, apic) {
+				t.Errorf("%s: the %s frame reads %d bytes, want its own", c.name, f.ID, len(f.Body))
+			}
+		}
+		if !slices.Equal(ids, c.ids) || strings.Contains(FramesNote(tg), "non-sync-safe") {
+			t.Errorf("%s: frames %v, note %q; want %v read sync-safe", c.name, ids, FramesNote(tg), c.ids)
+		}
+	}
+}
+
+// Where the two dry walks tie, both meeting the same frames and neither running past the tag, the
+// tag reads sync-safe, as mutagen, ffmpeg and TagLib read it. When that reading is wrong it stops at
+// a zero run inside a plain-size frame, and the frame's rest is non-zero: it is reported unreadable,
+// never taken for padding. Where it is right, junk or stale frames after the padding are reported
+// the same way, and the live frames read, not stale ones a plain reading would land on.
+func TestV24TiedVoteReadsSyncSafeAndReportsTheRest(t *testing.T) {
+	apicHead := slices.Concat([]byte{0}, []byte("image/png\x00"), []byte{3, 0})
+	cut := slices.Concat(apicHead, bytes.Repeat([]byte{0xAB}, 73-len(apicHead)), make([]byte, 10), bytes.Repeat([]byte{0xCD}, 201-83))
+	geob := slices.Concat([]byte("\x00application/octet-stream\x00\x00\x00"), bytes.Repeat([]byte{0x11}, 172-30),
+		make([]byte, 10), bytes.Repeat([]byte{0x22}, 300-182-10), make([]byte, 10))
+	apic := slices.Concat([]byte{0}, []byte("image/jpeg\x00"), []byte{3, 0}, bytes.Repeat([]byte("A"), 285)) // sync-safe 299, plain 555
+	title := testfile.TextFrame(4, "TIT2", "Title")
+	junkEnd := make([]byte, 256)
+	copy(junkEnd[252:], "JUNK")
+	// Read plain, the APIC's 555 bytes land on these stale frames, after 223 zeros.
+	stale := slices.Concat(make([]byte, 223), testfile.TextFrame(4, "TPE1", "OldArtist"), testfile.TextFrame(4, "TALB", "OldAlbum"), make([]byte, 40))
+	for _, c := range []struct {
+		name   string
+		frames [][]byte
+		ids    []string
+		artist string
+		tail   bool
+	}{
+		{"a plain APIC cut at a zero run", [][]byte{title, plainV24Frame("APIC", cut)}, []string{"TIT2", "APIC"}, "", true},
+		{"a plain GEOB cut at a zero run", [][]byte{title, plainV24Frame("GEOB", geob)}, []string{"TIT2", "GEOB"}, "", true},
+		{"a sync-safe APIC before padding ending in junk", [][]byte{title, testfile.ID3Frame(4, "APIC", apic), junkEnd},
+			[]string{"TIT2", "APIC"}, "", true},
+		{"stale frames where the plain reading lands", [][]byte{title, testfile.ID3Frame(4, "APIC", apic),
+			testfile.TextFrame(4, "TPE1", "Artist"), testfile.TextFrame(4, "TALB", "Album"), stale},
+			[]string{"TIT2", "APIC", "TPE1", "TALB"}, "Artist", true},
+	} {
+		tg, err := ParseTag(testfile.ID3v2(4, c.frames...), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, f := range tg.Frames() {
+			ids = append(ids, f.ID)
+		}
+		id, n := tg.MalformedTail()
+		if !slices.Equal(ids, c.ids) || strings.Contains(FramesNote(tg), "non-sync-safe") || (id != "" && n > 0) != c.tail || tg.Padding() != 0 {
+			t.Errorf("%s: frames %v, note %q, tail (%q, %d), padding %d; want %v read sync-safe and the rest unreadable",
+				c.name, ids, FramesNote(tg), id, n, tg.Padding(), c.ids)
+		}
+		if v, _ := Project(tg).Tags.First(tag.Artist); v != c.artist {
+			t.Errorf("%s: ARTIST = %q, want %q", c.name, v, c.artist)
+		}
+	}
+}
+
+// A frame header cut short by the end of the tag is an unreadable tail, not padding; zeros there
+// are still padding.
+func TestCutFrameHeaderIsAnUnreadableTail(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		major   byte
+		tail    []byte
+		padding int64
+	}{
+		{"v2.3 cut header", 3, []byte("TPE1\x00\x00"), 0},
+		{"v2.2 cut header", 2, []byte("TP"), 0},
+		{"short padding holding a byte", 3, []byte("\x00\x00AB"), 0},
+		{"zero padding", 3, make([]byte, 6), 6},
+	} {
+		first := testfile.TextFrame(c.major, "TIT2", "Title")
+		if c.major == 2 {
+			first = slices.Concat([]byte("TT2"), []byte{0, 0, 6}, []byte("\x00Title"))
+		}
+		tg, err := ParseTag(testfile.ID3v2(c.major, first, c.tail), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, n := tg.MalformedTail()
+		if c.padding > 0 {
+			if id != "" || tg.Padding() != c.padding {
+				t.Errorf("%s: malformed tail %q, padding %d; want %d bytes of padding", c.name, id, tg.Padding(), c.padding)
+			}
+			continue
+		}
+		if id == "" || n != int64(len(c.tail)) || tg.Padding() != 0 {
+			t.Errorf("%s: malformed tail (%q, %d), padding %d; want the %d cut bytes unreadable", c.name, id, n, tg.Padding(), len(c.tail))
+		}
+		if ws := AppendMalformedTailDropped(nil, tg, true); len(ws) != 1 {
+			t.Errorf("%s: rewrite warnings %v, want malformed-tag-entry-dropped", c.name, ws)
+		}
+	}
+}
+
 // TestNonConformantFrameIDMarkedOpaque covers the re-read half of unknown-v2.2-frame
 // preservation: a space-padded "TXY " ID (an unknown v2.2 frame modernized to v2.3 and
 // read back) is marked opaque at decode, which keeps it preserved verbatim, out of the
@@ -1165,6 +1549,129 @@ func TestReadFrontRaw(t *testing.T) {
 				t.Errorf("raw = %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+// ReadFrontAll reads the chain of tags a file opens with. The kept tag is the first that holds frames,
+// the rest are duplicates in file order, and a tag after a gap is not one. An empty tag, or one that
+// does not read, yields to a tag behind it that holds frames; with none, the first is kept. A
+// duplicate that cannot be parsed still is one; one over the limit is refused.
+func TestReadFrontAll(t *testing.T) {
+	first := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "First"))
+	second := testfile.ID3v2(4, testfile.TextFrame(4, "TALB", "Second"), testfile.TextFrame(4, "TIT2", "Again"))
+	third := testfile.ID3v2(3, testfile.FrontCover("image/png", testfile.PNG()))
+	empty := testfile.ID3v2(3)
+	unreadable := testfile.ID3v2(3, testfile.OverrunFrame("TIT2")) // parses, holding only an unreadable tail
+	broken := slices.Clone(second)
+	broken[3] = 1 // a major version no tag has
+	audio := []byte{0xFF, 0xFB, 0x90, 0x00, 1, 2, 3}
+	type dup struct {
+		off, n  int
+		version byte
+		holds   bool // parsed, with frames
+	}
+	n1, n2 := len(first), len(second)
+	for _, c := range []struct {
+		name         string
+		src          []byte
+		limit        int64
+		title        string // the kept tag's
+		keptOff, end int
+		dups         []dup
+		err          error
+	}{
+		{"one tag", slices.Concat(first, audio), 1 << 20, "First", 0, n1, nil, nil},
+		{"two tags", slices.Concat(first, second, audio), 1 << 20, "First", 0, n1 + n2, []dup{{n1, n2, 4, true}}, nil},
+		{"three tags", slices.Concat(first, second, third, audio), 1 << 20, "First", 0, n1 + n2 + len(third),
+			[]dup{{n1, n2, 4, true}, {n1 + n2, len(third), 3, true}}, nil},
+		{"an unparseable duplicate", slices.Concat(first, broken, audio), 1 << 20, "First", 0, n1 + len(broken),
+			[]dup{{n1, len(broken), 1, false}}, nil},
+		{"an empty tag ahead", slices.Concat(empty, first, audio), 1 << 20, "First", 10, 10 + n1, []dup{{0, 10, 3, false}}, nil},
+		{"an unreadable tag ahead", slices.Concat(broken, first, audio), 1 << 20, "First", len(broken), len(broken) + n1,
+			[]dup{{0, len(broken), 1, false}}, nil},
+		{"empty tags alone", slices.Concat(empty, empty, audio), 1 << 20, "", 0, 20, []dup{{10, 10, 3, false}}, nil},
+		{"a tag of unreadable bytes ahead", slices.Concat(unreadable, first, audio), 1 << 20, "First", len(unreadable),
+			len(unreadable) + n1, []dup{{0, len(unreadable), 3, false}}, nil},
+		{"a tag after a gap", slices.Concat(first, []byte{0}, second, audio), 1 << 20, "First", 0, n1, nil, nil},
+		{"a duplicate over the limit", slices.Concat(first, second, audio), int64(n2) - 1, "", 0, 0, nil, waxerr.ErrSizeTooLarge},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			src := core.BytesSource(c.src)
+			front, ws, err := ReadFrontAll(src, src.Size(), c.limit, 0)
+			if !errors.Is(err, c.err) {
+				t.Fatalf("err = %v, want %v", err, c.err)
+			}
+			if err != nil {
+				return
+			}
+			if v, _ := Project(front.Tag).Tags.First(tag.Title); v != c.title || front.Off != int64(c.keptOff) || front.End != int64(c.end) {
+				t.Errorf("kept tag title %q at %d, chain end %d; want %q at %d, end %d", v, front.Off, front.End, c.title, c.keptOff, c.end)
+			}
+			if len(front.Dups) != len(c.dups) {
+				t.Fatalf("duplicates %+v, want %+v", front.Dups, c.dups)
+			}
+			for i, d := range front.Dups {
+				w := c.dups[i]
+				g := d.digest
+				holds := g.readable && (g.tags.Len() > 0 || len(g.pictures) > 0 || len(g.chapters) > 0 || len(g.lyrics) > 0 || len(g.frames) > 0)
+				if d.Off != int64(w.off) || d.Len != int64(w.n) || d.Version != w.version || holds != w.holds {
+					t.Errorf("duplicate %d = %+v, want %+v", i, d, w)
+				}
+			}
+			if got := len(core.WarningsWithCode(ws, core.WarnDuplicateTagBlock)) == 1; got != (len(c.dups) > 0) {
+				t.Errorf("warnings %v, duplicate-tag-block reported %v, want %v", ws, got, len(c.dups) > 0)
+			}
+		})
+	}
+}
+
+// A front tag of a major version no specification defines is ignored, not a parse failure: it
+// spans its declared length, reads nothing, and is reported, and a rewrite says it is not carried.
+// ParseTag itself still refuses it; the tolerance is the front tag's alone.
+func TestReadFrontAllUnknownVersion(t *testing.T) {
+	audio := []byte{0xFF, 0xFB, 0x90, 0x00, 1, 2, 3}
+	for _, major := range []byte{0, 1, 5} {
+		tagBytes := testfile.ID3v2(major, testfile.TextFrame(4, "TIT2", "Unknown"))
+		src := core.BytesSource(slices.Concat(tagBytes, audio))
+		front, _, err := ReadFrontAll(src, src.Size(), 1<<20, 0)
+		if err != nil {
+			t.Fatalf("v2.%d: %v", major, err)
+		}
+		tg, n, dups := front.Tag, front.Len, front.Dups
+		if tg.Ignored() == "" || n != int64(len(tagBytes)) || len(dups) != 0 || len(tg.Frames()) != 0 {
+			t.Errorf("v2.%d: ignored %q, length %d, %d frames; want an ignored tag of %d bytes", major, tg.Ignored(), n, len(tg.Frames()), len(tagBytes))
+		}
+		if ws := core.WarningsWithCode(Project(tg).Warnings, core.WarnMalformedTagEntry); len(ws) != 1 {
+			t.Errorf("v2.%d: warnings %v, want one malformed-tag-entry", major, Project(tg).Warnings)
+		}
+		ws := AppendMalformedTailDropped(nil, tg, true)
+		if len(ws) != 1 || !strings.Contains(ws[0].Message, fmt.Sprintf("ID3v2.%d", major)) {
+			t.Errorf("v2.%d: rewrite warnings %v, want malformed-tag-entry-dropped naming the version", major, ws)
+		}
+		if _, err := ParseTag(tagBytes, 0); !errors.Is(err, waxerr.ErrInvalidData) {
+			t.Errorf("v2.%d: ParseTag err = %v, want invalid data", major, err)
+		}
+	}
+}
+
+// A front tag that declares more bytes than the file holds is an unreadable region, not essence: the
+// tag is ignored and reported, its extent past the header unknown, so it is unbounded and the codec
+// ends it where the stream starts; no duplicate is looked for behind it.
+func TestReadFrontAllTagPastTheEnd(t *testing.T) {
+	tagBytes := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Cut"))
+	copy(tagBytes[6:10], testfile.Syncsafe(1<<20))
+	src := core.BytesSource(slices.Concat(tagBytes, testfile.ID3v2(3), []byte{0xFF, 0xFB, 0x90, 0x00}))
+	front, ws, err := ReadFrontAll(src, src.Size(), 1<<20, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tg, n, dups := front.Tag, front.Len, front.Dups
+	if !tg.Unbounded() || !strings.Contains(tg.Ignored(), "declares") || n != 10 || len(dups) != 0 || len(ws) != 0 {
+		t.Errorf("unbounded %v, ignored %q, length %d, %d duplicates, warnings %v; want an unbounded ignored tag past its 10-byte header",
+			tg.Unbounded(), tg.Ignored(), n, len(dups), ws)
+	}
+	if got := core.WarningsWithCode(Project(tg).Warnings, core.WarnMalformedTagEntry); len(got) != 1 {
+		t.Errorf("warnings %v, want one malformed-tag-entry", Project(tg).Warnings)
 	}
 }
 
@@ -1577,5 +2084,83 @@ func TestSkipTags(t *testing.T) {
 	}
 	if got, tags, err := SkipTags(core.BytesSource(v1[:100]), 0, 200, 1<<20); err != nil || got != 0 || tags != 0 {
 		t.Errorf("a header past the end of the file: %d, %d tags, %v; want no tag", got, tags, err)
+	}
+}
+
+// An ID3v1 field echoes a canonical value when it holds what ID3v1 can store of it: the value cut to
+// the field's width (30 bytes for a title, the 4-digit year for a date), trailing spaces aside.
+func TestV1Echoes(t *testing.T) {
+	long := "A Title Far Longer Than Thirty Characters"
+	for _, c := range []struct {
+		key         tag.Key
+		auth, value string
+		width       int
+		echoes      bool
+	}{
+		{tag.Title, long, long[:30], 30, true},
+		{tag.Title, "A Title Whose 30th Char Is: Sp ace", "A Title Whose 30th Char Is: Sp", 30, true},
+		{tag.Title, long, long[:29], 30, false},
+		{tag.Title, "Song (Live)", "Song", 30, false},
+		{tag.Title, "Song", "song", 30, true},
+		{tag.RecordingDate, "2001-05-06", "2001", 4, true},
+		{tag.RecordingDate, "2001-05-06", "2002", 4, false},
+		{tag.Comment, strings.Repeat("c", 40), strings.Repeat("c", 28), 28, true},
+		{tag.Genre, "Rock", "Rock", 0, false},
+	} {
+		auth := tag.NewTagSet()
+		auth.Set(c.key, c.auth)
+		if got := V1Echoes(auth, c.key, c.value, c.width); got != c.echoes {
+			t.Errorf("V1Echoes(%s %q, %q, %d) = %v, want %v", c.key, c.auth, c.value, c.width, got, c.echoes)
+		}
+	}
+}
+
+// LegacyV1Families marks an echo selected, so a cut title and a bare year are not a conflict, while a
+// different value still is.
+func TestLegacyV1FamiliesEchoesAreSelected(t *testing.T) {
+	long := "A Title Far Longer Than Thirty Characters"
+	auth := tag.NewTagSet()
+	auth.Set(tag.Title, long)
+	auth.Set(tag.RecordingDate, "2001-05-06")
+	auth.Set(tag.Artist, "Song (Live)")
+	for _, f := range LegacyV1Families(auth, testfile.ID3v1(long, "Song", "", "2001", "", 255)) {
+		if want := f.Key != tag.Artist; f.Selected != want {
+			t.Errorf("%s %v selected %v, want %v", f.Key, f.Values, f.Selected, want)
+		}
+	}
+}
+
+// Grouping bytes and status flags survive a parse and a render byte for byte: a v2.3 and a v2.4
+// frame in group 7, and a v2.4 frame whose status says to discard it if the tag is altered. The
+// text still reads, the group byte stripped from it, and dump notes the group.
+func TestFrameGroupAndStatusRoundTrip(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		version byte
+		frame   []byte
+		group   bool
+	}{
+		{"v2.3 grouped", 3, testfile.ID3FrameFlags(3, "TPE1", [2]byte{0, 0x20}, []byte("\x07\x00Grouped")), true},
+		{"v2.4 grouped", 4, testfile.ID3FrameFlags(4, "TPE1", [2]byte{0, 0x40}, []byte("\x07\x00Grouped")), true},
+		{"v2.4 status", 4, testfile.ID3FrameFlags(4, "TPE1", [2]byte{0x40, 0}, []byte("\x00Grouped")), false},
+		{"v2.3 read-only", 3, testfile.ID3FrameFlags(3, "TPE1", [2]byte{0x20, 0}, []byte("\x00Grouped")), false},
+	} {
+		data := testfile.ID3v2(c.version, testfile.TextFrame(c.version, "TIT2", "Title"), c.frame)
+		tg, err := ParseTag(data, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v, _ := Project(tg).Tags.First(tag.Artist); v != "Grouped" {
+			t.Errorf("%s: ARTIST = %q, want Grouped", c.name, v)
+		}
+		if got := Render(c.version, tg.Frames(), 0); !bytes.Equal(got, data) {
+			t.Errorf("%s: render %q, want the source %q", c.name, got, data)
+		}
+		if got := RenderedSize(tg.Frames()); got != int64(len(data)) {
+			t.Errorf("%s: RenderedSize %d, want %d", c.name, got, len(data))
+		}
+		if note := FrameNote(tg.Frames()[1]); strings.Contains(note, "group 0x07") != c.group {
+			t.Errorf("%s: note %q, group noted want %v", c.name, note, c.group)
+		}
 	}
 }

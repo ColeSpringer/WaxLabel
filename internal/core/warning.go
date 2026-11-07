@@ -478,14 +478,20 @@ func NoChangesLine(discarded bool) string {
 	return "no changes (already up to date)"
 }
 
-// AppendDuplicateBlockDropped warns when a dropped duplicate held content the write omits.
-func AppendDuplicateBlockDropped(ws []Warning, container string, written tag.TagSet, dups []DuplicateContent) []Warning {
+// maxDroppedNames bounds how many losses a duplicate-tag-block-dropped message lists; Keys keeps
+// every key.
+const maxDroppedNames = 12
+
+// AppendDuplicateBlockDropped warns when a dropped duplicate held content the write omits: a value
+// neither before (the parsed set) nor written holds, the pictures, chapters and synced lyric sets
+// each duplicate counts as lost, and its other content, summed by kind.
+func AppendDuplicateBlockDropped(ws []Warning, container string, before, written tag.TagSet, dups []DuplicateContent) []Warning {
 	seen := map[tag.Key]bool{}
 	var keys []tag.Key
-	var extra []string
+	var tally Tally
 	var pics, chaps, lyrics int
 	for _, d := range dups {
-		for _, k := range UnsubsumedKeys(written, d.Tags) {
+		for _, k := range UnsubsumedKeys(d.Tags, before, written) {
 			if !seen[k] {
 				seen[k] = true
 				keys = append(keys, k)
@@ -494,8 +500,12 @@ func AppendDuplicateBlockDropped(ws []Warning, container string, written tag.Tag
 		pics += d.Pictures
 		chaps += d.Chapters
 		lyrics += d.SyncedLyrics
+		for _, o := range d.Other {
+			tally.Add(o.Kind, o.N)
+		}
 	}
-	names := make([]string, 0, len(keys)+3)
+	other := tally.Counts()
+	names := make([]string, 0, len(keys)+3+len(other))
 	for _, k := range keys {
 		names = append(names, string(k))
 	}
@@ -504,12 +514,17 @@ func AppendDuplicateBlockDropped(ws []Warning, container string, written tag.Tag
 		unit string
 	}{{pics, "picture"}, {chaps, "chapter"}, {lyrics, "synced lyric set"}} {
 		if c.n > 0 {
-			extra = append(extra, fmt.Sprintf("%d %s(s)", c.n, c.unit))
+			names = append(names, fmt.Sprintf("%d %s(s)", c.n, c.unit))
 		}
 	}
-	names = append(names, extra...)
+	for _, o := range other {
+		names = append(names, fmt.Sprintf("%d %s", o.N, o.Kind))
+	}
 	if len(names) == 0 {
 		return ws
+	}
+	if len(names) > maxDroppedNames {
+		names = append(names[:maxDroppedNames], fmt.Sprintf("%d more", len(names)-maxDroppedNames))
 	}
 	return WarnKeyed(ws, WarnDuplicateTagBlockDropped,
 		fmt.Sprintf("a duplicate %s held content no other container does (%s); this rewrite drops it",

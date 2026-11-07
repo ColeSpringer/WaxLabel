@@ -16,6 +16,8 @@ var keyAliases = map[string]Key{
 	"DISCTOTAL":      DiscTotal,
 	"ORGANIZATION":   Label,
 	"UNSYNCEDLYRICS": Lyrics,
+	// The ID3 lyrics frame's name, which ffmpeg writes as a TXXX description for LYRICS.
+	"USLT": Lyrics,
 	// Bare DISC/TRACK and spaced ALBUM ARTIST are common user spellings.
 	"DISC":         DiscNumber,
 	"TRACK":        TrackNumber,

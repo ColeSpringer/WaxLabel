@@ -2,6 +2,7 @@ package id3
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -93,9 +94,10 @@ type RebuildInfo struct {
 	// ChapterOverflow is set when a chapter edit clamped a start or end past the CHAP
 	// frame's 32-bit millisecond field (~49.7 days).
 	ChapterOverflow bool
-	// DroppedChapterSubframes is set when a chapter edit dropped a source CHAP subframe
-	// other than the TIT2 title (a per-chapter image or URL the flat model cannot hold).
-	DroppedChapterSubframes bool
+	// DroppedChapterContent is set when a chapter edit dropped chapter content the flat chapter
+	// list cannot hold: a CHAP sub-frame other than one title (an image, a URL, a second title,
+	// unreadable bytes), a CHAP that does not decode, or a table of contents' title or nesting.
+	DroppedChapterContent bool
 	// SyncedLyricsOverflow is set when a synced-lyrics edit clamped a line's timestamp past
 	// the SYLT frame's 32-bit millisecond field (~49.7 days).
 	SyncedLyricsOverflow bool
@@ -240,7 +242,20 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		info.CommentDescriptionDropped = true
 	}
 
-	for _, f := range orig {
+	// Render each changed unit once, ahead of the loop that places it where its first frame was:
+	// the values the units hold also tell which other frames they leave redundant.
+	rids := slices.Sorted(maps.Keys(dirty))
+	units := make(map[string]renderedUnit, len(rids))
+	var unitFrames []Frame
+	for _, rid := range rids {
+		frames, v23multi := renderUnit(rid, edited, version, opts, origLangs, origTXXXDesc, origInvolved, keepCommentDesc)
+		units[rid] = renderedUnit{frames, v23multi}
+		unitFrames = append(unitFrames, frames...)
+	}
+	held := frameValues(unitFrames, version)
+
+	root := rootTOC(orig)
+	for i, f := range orig {
 		if f.ID == "APIC" {
 			if !picturesChanged {
 				out = append(out, f.Clone())
@@ -264,11 +279,9 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 				continue
 			}
 			// Chapter edits replace decoded CHAP/CTOC frames with the edited flat list. Opaque
-			// CHAP/CTOC frames are preserved below because their body was never decoded. A CHAP
-			// with non-title subframes loses those subframes when replaced, so flag it once.
-			if !info.DroppedChapterSubframes && f.ID == "CHAP" && chapHasExtraSubframes(f.Body, version) {
-				info.DroppedChapterSubframes = true
-			}
+			// CHAP/CTOC frames are preserved below because their body was never decoded. A frame
+			// the chapter model does not carry whole loses the rest when replaced, so flag it once.
+			info.DroppedChapterContent = info.DroppedChapterContent || !carried(f, version, i == root)
 			continue
 		}
 		if f.ID == "SYLT" && !f.Opaque {
@@ -292,11 +305,11 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		}
 		if dirty[rid] {
 			if !emitted[rid] {
-				frames, v23multi := renderUnit(rid, edited, version, opts, origLangs, origTXXXDesc, origInvolved, keepCommentDesc)
-				out = append(out, frames...)
-				info.UsedV23Multi = info.UsedV23Multi || v23multi
+				u := units[rid]
+				out = append(out, u.frames...)
+				info.UsedV23Multi = info.UsedV23Multi || u.v23multi
 				emitted[rid] = true
-				produced[rid] = len(frames) > 0
+				produced[rid] = len(u.frames) > 0
 			}
 			continue // a changed key's frame is rendered once; drop duplicates
 		}
@@ -304,6 +317,12 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		// representation of a changed key (a TXXX:RELEASEDATE or TDRC left behind when the
 		// target is TDRL or TYER) so the value is not duplicated and the edit not lost.
 		if touchesChangedKey(f, changed) {
+			continue
+		}
+		// Drop a frame whose every value a re-rendered unit now holds too, such as a TXXX total
+		// beside the TRCK a track-number edit re-renders with that total: it would read back as
+		// a second copy. One holding a value the unit cannot hold, a second total, stays.
+		if heldBy(f, held, version) {
 			continue
 		}
 		// A managed text frame carried verbatim can itself hold a v2.3 NUL-separated
@@ -326,11 +345,11 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	}
 	slices.Sort(leftover)
 	for _, rid := range leftover {
-		frames, v23multi := renderUnit(rid, edited, version, opts, origLangs, origTXXXDesc, origInvolved, keepCommentDesc)
-		out = append(out, frames...)
-		info.UsedV23Multi = info.UsedV23Multi || v23multi
+		u := units[rid]
+		out = append(out, u.frames...)
+		info.UsedV23Multi = info.UsedV23Multi || u.v23multi
 		emitted[rid] = true
-		produced[rid] = len(frames) > 0
+		produced[rid] = len(u.frames) > 0
 	}
 
 	// Place new pictures where the originals were (or at the end if none existed).
@@ -421,16 +440,18 @@ func ContainerOps(picturesChanged bool, pictureCount int, chaptersChanged bool, 
 // RenderFrontTag sizes and renders the leading ID3v2 tag for a codec that stores tags only
 // as a front tag (MP3, AAC). It emits the tag only when at least one frame survives; an
 // edit or --legacy strip that leaves none drops the tag instead of writing an empty,
-// padding-only container, matching WAV/AIFF's len(frames)>0 chunk guard. hadTag makes a
-// full clear record an "ID3v2 removal" op; srcTagLen is the source tag's byte length for
-// in-place padding reuse; the counts feed the container operation lines.
+// padding-only container, matching WAV/AIFF's len(frames)>0 chunk guard. front is the front
+// tag as parsed, nil with none: dropping it records an "ID3v2 removal" op, an ignored one
+// ([Tag.Ignored]) too, and a tag written where none, or only an ignored one, stood records its
+// creation. srcTag is the tag the frames were rebuilt from and srcTagLen the source tag's byte
+// length for in-place padding reuse; the counts feed the container operation lines.
 func RenderFrontTag(srcTag *Tag, version byte, newFrames []Frame, info RebuildInfo, pad core.PaddingPolicy,
-	srcTagLen int64, hadTag, tagsChanged, picturesChanged bool, pictureCount int,
+	srcTagLen int64, front *Tag, tagsChanged, picturesChanged bool, pictureCount int,
 	chaptersChanged bool, chapterCount int, syncedLyricsChanged bool, syncedLyricsCount int) FrontTag {
 
 	if len(newFrames) == 0 {
 		var ft FrontTag
-		if hadTag {
+		if front != nil {
 			// A full clear of a tagged file: record the removal so it is not reported as a
 			// bare rewrite.
 			ft.Operations = []string{"ID3v2 removal"}
@@ -460,7 +481,7 @@ func RenderFrontTag(srcTag *Tag, version byte, newFrames []Frame, info RebuildIn
 	// The container op lines sit between the frame-rewrite and tag-creation ops.
 	ft.Operations = append(ft.Operations, ContainerOps(picturesChanged, pictureCount,
 		chaptersChanged, chapterCount, syncedLyricsChanged, syncedLyricsCount)...)
-	if !hadTag {
+	if front == nil || front.Ignored() != "" {
 		ft.Operations = append(ft.Operations, fmt.Sprintf("ID3v2.%d tag creation", version))
 	}
 	if info.UsedV23Multi {
@@ -614,6 +635,37 @@ func touchesChangedKey(f Frame, changed map[tag.Key]bool) bool {
 	return false
 }
 
+// renderedUnit is a changed render unit's frames and whether they use v2.3 multi-value storage.
+type renderedUnit struct {
+	frames   []Frame
+	v23multi bool
+}
+
+// frameValues is the canonical view of frames alone, as a read of a tag holding them gives it.
+func frameValues(frames []Frame, version byte) tag.TagSet {
+	return Project(&Tag{srcVersion: version, writeVersion: version, frames: frames}).Tags
+}
+
+// heldBy reports whether every value frame f reads as is one held already holds, so f adds
+// nothing but a second copy of them.
+func heldBy(f Frame, held tag.TagSet, version byte) bool {
+	if !slices.ContainsFunc(frameKeys(f), held.Has) {
+		return false
+	}
+	own := frameValues([]Frame{f}, version)
+	if own.Len() == 0 {
+		return false
+	}
+	for _, k := range own.Keys() {
+		vals, _ := own.Get(k)
+		have, _ := held.Get(k)
+		if slices.ContainsFunc(vals, func(v string) bool { return !slices.Contains(have, v) }) {
+			return false
+		}
+	}
+	return true
+}
+
 // keyRenderIDs returns the render tokens a change to key dirties under the write
 // version.
 func keyRenderIDs(key tag.Key, version byte) []string {
@@ -658,20 +710,43 @@ func keyRenderIDs(key tag.Key, version byte) []string {
 	if id, ok := mapping.ID3KeyFrame(key); ok {
 		return []string{id}
 	}
-	if rawFrameIDKey(key) {
+	if ownTextFrameKey(key) {
 		return []string{string(key)}
 	}
 	return []string{"TXXX\x00" + strings.ToUpper(mapping.ID3TXXXDesc(key))}
 }
 
-// rawFrameIDKey reports whether a canonical key is itself a plain ID3 text-frame
-// identifier (four characters beginning with T), so an otherwise-unmapped text
-// frame round-trips under its own identifier instead of via TXXX.
-func rawFrameIDKey(key tag.Key) bool {
-	// conformantFrameID guarantees len == 4, so s[0] is safe, and keeps the allowed byte
+// ownTextFrameKey reports whether a custom key is spelled as a text frame ID that the read
+// path projects as the custom key of that name, one with no meaning of its own here (TMCL,
+// or an unknown TFOO), so the key round-trips in that frame. Any other frame-ID spelling
+// (a mapped frame, a date, TCON, TRCK, TPOS, TIPL, TXXX) is stored as TXXX described by
+// the ID, since its own frame would read back as something else.
+func ownTextFrameKey(key tag.Key) bool {
+	// conformantFrameID guarantees len == 4, so id[0] is safe, and keeps the allowed byte
 	// set defined in one place.
-	s := string(key)
-	return conformantFrameID(s) && s[0] == 'T'
+	id := string(key)
+	if !conformantFrameID(id) || id[0] != 'T' || isDateFrame(id) {
+		return false
+	}
+	switch id {
+	case "TXXX", "TCON", "TRCK", "TPOS", "TIPL":
+		return false
+	}
+	_, mapped := mapping.ID3FrameKey(id)
+	return !mapped
+}
+
+// CustomFrameIDFate reports how version stores a custom key: in a TXXX frame (viaTXXX) or a
+// frame of its own, and stored, the key a re-read gives it. The keys spelled like frame IDs
+// are the ones it matters for: one this package reads as something else is stored as TXXX
+// described by the ID ([ownTextFrameKey]) and reads back unchanged, except TCMP, which reads
+// back as COMPILATION because TXXX:TCMP is how ffmpeg stores that.
+func CustomFrameIDFate(key tag.Key, version byte) (stored tag.Key, viaTXXX bool) {
+	ids := keyRenderIDs(key, version)
+	if len(ids) != 1 || !strings.HasPrefix(ids[0], "TXXX\x00") {
+		return key, false
+	}
+	return txxxKeyForToken(ids[0][len("TXXX\x00"):]), true
 }
 
 // renderUnit renders the frame(s) for a render token from the edited tag set,
@@ -681,6 +756,11 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, o
 	switch {
 	case strings.HasPrefix(token, "TXXX\x00"):
 		key := txxxKeyForToken(token[len("TXXX\x00"):])
+		if custom := tag.Key(token[len("TXXX\x00"):]); custom != key && edited.Has(custom) {
+			// A custom key spelled like a description the read path maps elsewhere (TCMP reads
+			// as COMPILATION): this token is that key's, so render its values.
+			key = custom
+		}
 		vals, ok := edited.Get(key)
 		if !ok || len(vals) == 0 {
 			return nil, false
@@ -779,16 +859,6 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, o
 			key = tag.Key(token)
 		}
 		vals, has := edited.Get(key)
-		if mapped && (!has || len(vals) == 0) {
-			// A raw frame-ID key (--set TBPM=128) carries its values under the frame's own
-			// name, not the canonical key. Without this fallback the authored value would be
-			// lost.
-			if raw := tag.Key(token); raw.Valid() {
-				if rv, rok := edited.Get(raw); rok && len(rv) > 0 {
-					key, vals, has = raw, rv, true
-				}
-			}
-		}
 		if !has || len(vals) == 0 {
 			return nil, false
 		}
@@ -1280,23 +1350,31 @@ func hasSubMinutePart(iso string) bool {
 	return len(iso) >= 18 && iso[16] == ':' && iso[17] >= '0' && iso[17] <= '9'
 }
 
-// AppendMalformedTailDropped appends a malformed-tag-entry-dropped warning when the
-// rewritten tag carried a region the parser could not read (see [Tag.MalformedTail]); a
-// rewrite renders frames plus padding, so those bytes are gone. It is the write-path
-// counterpart of the malformed-tag-entry warning [Project] raises. A nil srcTag warns
-// nothing. The four codecs that rewrite an ID3 tag share it.
-func AppendMalformedTailDropped(ws []core.Warning, srcTag *Tag) []core.Warning {
+// AppendMalformedTailDropped appends a malformed-tag-entry-dropped warning when a rewrite of
+// srcTag drops a region the parser could not read (see [Tag.MalformedTail]), or all of it when
+// it was ignored; a rewrite renders frames plus padding, so those bytes are gone. written
+// reports whether the rewrite writes a tag in srcTag's place. It is the write-path counterpart
+// of the malformed-tag-entry warning [Project] raises. A nil srcTag warns nothing. The four
+// codecs that rewrite an ID3 tag share it.
+func AppendMalformedTailDropped(ws []core.Warning, srcTag *Tag, written bool) []core.Warning {
 	if srcTag.Ignored() != "" {
-		return core.Warn(ws, core.WarnMalformedTagEntryDropped,
-			"the ignored ID3v2.2 tag is replaced by the rewritten tag and its contents are not carried")
+		fate := "replaced by the rewritten tag"
+		if !written {
+			fate = "removed"
+		}
+		return core.Warn(ws, core.WarnMalformedTagEntryDropped, fmt.Sprintf(
+			"the ignored ID3v2.%d tag is %s and its contents are not carried", srcTag.SrcVersion(), fate))
 	}
 	id, n := srcTag.MalformedTail()
 	if id == "" || n <= 0 {
 		return ws
 	}
+	fate := "are not carried into the rewritten tag"
+	if !written {
+		fate = "are removed with the tag"
+	}
 	return core.Warn(ws, core.WarnMalformedTagEntryDropped,
-		fmt.Sprintf("%d byte(s) after the malformed %s frame could not be read and are not carried into the rewritten tag",
-			n, core.WarnSnippet(id)))
+		fmt.Sprintf("the %d byte(s) from %s to the end of the tag could not be read and %s", n, srcTag.tailStop(), fate))
 }
 
 // AppendRebuildWarnings appends warnings for losses found while rebuilding ID3 frames,
@@ -1381,9 +1459,9 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 		ws = core.Warn(ws, core.WarnChapterStartOverflow,
 			"a chapter time exceeded the CHAP frame's 32-bit millisecond field (~49.7 days) and was clamped")
 	}
-	if info.DroppedChapterSubframes {
+	if info.DroppedChapterContent {
 		ws = core.Warn(ws, core.WarnChapterMetadataDropped,
-			"a per-chapter subframe other than the title (e.g. an image) could not be represented and was dropped")
+			"chapter content other than each chapter's times and title (an image, a URL, a second title, unreadable bytes, or a table of contents' title or nesting) could not be represented and was dropped")
 	}
 	if info.SyncedLyricsOverflow {
 		ws = core.Warn(ws, core.WarnSyncedLyricsTimestampClamped,

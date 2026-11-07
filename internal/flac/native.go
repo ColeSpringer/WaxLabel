@@ -48,7 +48,8 @@ type comment struct {
 
 // doc is the parsed FLAC native document. Implements [core.NativeDoc].
 type doc struct {
-	leadingID3 []byte // stray ID3v2 before "fLaC", preserved
+	leadingID3    []byte // stray ID3v2 before "fLaC", preserved
+	leadingUnread int64  // how many bytes of leadingID3 the parse could not read
 
 	blocks   []block   // all metadata blocks, in original order
 	vendor   string    // Vorbis comment vendor string
@@ -82,6 +83,7 @@ func (d *doc) Format() core.Format { return core.FormatFLAC }
 func (d *doc) Clone() core.NativeDoc {
 	c := &doc{
 		leadingID3:      slices.Clone(d.leadingID3),
+		leadingUnread:   d.leadingUnread,
 		vendor:          d.vendor,
 		comments:        slices.Clone(d.comments),
 		commentPictures: core.ClonePictures(d.commentPictures),
@@ -116,7 +118,7 @@ func cloneByteSlices(in [][]byte) [][]byte {
 func (d *doc) Describe() []core.NativeEntry {
 	var out []core.NativeEntry
 	if len(d.leadingID3) > 0 {
-		out = append(out, core.LeadingID3Entry(len(d.leadingID3)))
+		out = append(out, core.LeadingID3Entry(len(d.leadingID3), d.leadingUnread))
 	}
 	if gap := d.flacStart - int64(len(d.leadingID3)); gap > 0 {
 		out = append(out, core.LeadingBytesEntry(gap))

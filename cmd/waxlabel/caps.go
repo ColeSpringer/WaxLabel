@@ -105,7 +105,7 @@ type jsonCaps struct {
 	Pictures     *jsonCapDim `json:"pictures,omitempty"`
 	Chapters     *jsonCapDim `json:"chapters,omitempty"`
 	SyncedLyrics *jsonCapDim `json:"syncedLyrics,omitempty"`
-	// Padding: "none", "partial" (grow-only), or "full".
+	// Padding: "none", "partial" (an edit that fits reuses the existing region), or "full".
 	Padding string `json:"padding,omitempty"`
 	// OutputGain: "full" for Ogg Opus, "none" elsewhere.
 	OutputGain string       `json:"outputGain,omitempty"`

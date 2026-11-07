@@ -79,7 +79,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Padding-only report: gate on commentsChanged (tags OR chapters), not vorbisChanged alone.
 	if regionDiffers && !commentsChanged && !picturesChanged && !legacyChange && !vendorChanged {
 
-		report.Operations = append(report.Operations, core.PaddingOp(origRegion, int64(len(metaBytes))-int64(padSize), int64(padSize)))
+		report.Operations = append(report.Operations, core.PaddingOp(max(0, origRegion-(int64(len(metaBytes))-int64(padSize))), int64(padSize)))
 	}
 
 	var segs []bits.Segment
@@ -108,7 +108,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	result := buildResult(edited, d, newComments, audioOutStart, stripLegacy)
 	if dupDropped {
 
-		report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "Vorbis comment block", result.Tags, d.dupContent)
+		report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "Vorbis comment block", base.Tags, result.Tags, d.dupContent)
 	}
 
 	// Downgrade catches rebuild drops (e.g. empty strings). Legacy strip and vendor

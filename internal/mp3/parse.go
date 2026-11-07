@@ -27,23 +27,32 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	limit := opts.Limits.MaxAllocBytes
 	d := &doc{}
 
-	// Front ID3v2 tag, and the stream behind it: where the chained tags end when what opens there
-	// sniffs as MP3 (a frame header on its own), else at the first frame a second one confirms in the
-	// resync window from there, else at the first frame [lenientStart] accepts in the scanWindow bytes
-	// from the tag's end, short of the tags at the end of the file; with none, nowhere.
-	tg, id3Len, warnings, err := id3.ReadFront(src, size, limit, opts.Limits.MaxElements)
+	// Front ID3v2 tags, the one kept and its duplicates, and the stream behind them: where they end
+	// when what opens there sniffs as MP3 (a frame header on its own), else at the first frame a
+	// second one confirms in the resync window from there, else at the first frame [lenientStart]
+	// accepts in the scanWindow bytes from their end, short of the tags at the end of the file; with
+	// none, nowhere.
+	front, warnings, err := id3.ReadFrontAll(src, size, limit, opts.Limits.MaxElements)
 	if err != nil {
 		return nil, err
 	}
-	d.id3, d.id3Len = tg, id3Len
+	d.id3, d.id3Off, d.id3Len, d.dups, d.frontEnd = front.Tag, front.Off, front.Len, front.Dups, front.End
 	lenient := false // the start is the one lenientStart found
-	at, stream, leading, err := id3.StreamBehindFront(src, id3Len, limit, Codec{}, "MPEG frame", func(from int64) (at int64, ok bool, err error) {
+	at, stream, leading, err := id3.StreamBehindFront(src, d.frontEnd, limit, Codec{}, "MPEG frame", func(from int64) (at int64, ok bool, err error) {
 		at, ok, err = lenientStart(src, from, limit, opts.Limits.MaxElements)
 		lenient = ok
 		return at, ok, err
 	})
 	if err != nil {
 		return nil, err
+	}
+	if front.Tag.Unbounded() {
+		// The tag declares more bytes than the file holds, so it reaches the stream, or the end of
+		// the file with none: one unreadable region a rewrite replaces, not a gap.
+		if !stream {
+			at = size
+		}
+		d.id3Len, d.frontEnd, leading = at, at, nil
 	}
 	d.firstFrameOff = at
 
@@ -93,7 +102,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if lenient && !found {
 		// The scan above, reading on to the tags it peels, finds no audio at the frame lenientStart
 		// took, so that frame starts nothing and no gap sits before it; the tags stay as scanned.
-		d.firstFrameOff, leading = id3Len, nil
+		d.firstFrameOff, leading = d.frontEnd, nil
 	}
 	warnings = append(warnings, leading...)
 

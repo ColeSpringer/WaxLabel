@@ -36,8 +36,9 @@ func TestMP4MetaZeroTailExit4(t *testing.T) {
 	}
 }
 
-// TestID3CorruptVersionExit4: ID3v2 major version 5 is exit 4, not unsupported format.
-func TestID3CorruptVersionExit4(t *testing.T) {
+// TestID3UnknownVersionIgnored: a front tag of ID3v2 major version 5 is ignored and reported, not a
+// refused file; a write that replaces it says so, and --strict refuses that.
+func TestID3UnknownVersionIgnored(t *testing.T) {
 	frames, err := os.ReadFile(filepath.Join("..", "..", "testdata", "notags.mp3"))
 	if err != nil {
 		t.Fatal(err)
@@ -48,8 +49,14 @@ func TestID3CorruptVersionExit4(t *testing.T) {
 	if err := os.WriteFile(path, corrupt, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, stderr, code := runCLI(t, "dump", path); code != 4 {
-		t.Errorf("dump exit = %d, want 4 (invalid-data); stderr=%q", code, stderr)
+	if out, stderr, code := runCLI(t, "dump", path); code != 0 || !strings.Contains(out, "major version 5") {
+		t.Errorf("dump exit = %d, want 0 reporting the ignored tag; stdout=%q stderr=%q", code, out, stderr)
+	}
+	if _, _, code := runCLI(t, "set", path, "--strict", "--set", "TITLE=New"); code != 2 {
+		t.Errorf("strict set exit = %d, want 2 (the rewrite drops the ignored tag)", code)
+	}
+	if out, stderr, code := runCLI(t, "set", path, "--set", "TITLE=New"); code != 0 || !strings.Contains(out, "malformed-tag-entry-dropped") {
+		t.Errorf("set exit = %d, want 0 warning the drop; stdout=%q stderr=%q", code, out, stderr)
 	}
 }
 

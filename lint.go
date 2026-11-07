@@ -174,7 +174,7 @@ func lintOpaqueLegacy(opaque bool) []Finding {
 		return nil
 	}
 	return []Finding{{Severity: LintInfo, Code: "legacy-opaque-content",
-		Message: "a legacy container holds non-tag content (picture, chapter, binary item, Lyrics3 block, or leading bytes) not shown; see dump --native"}}
+		Message: "a legacy container holds non-tag content (picture, chapter, binary item, Lyrics3 block, leading bytes, or unreadable bytes) not shown; see dump --native"}}
 }
 
 // Shared wording for duplicate-picture / multiple-front-covers (lint and editor).

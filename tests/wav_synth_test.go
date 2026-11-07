@@ -1225,3 +1225,83 @@ func TestWAVTechnicianAndEngineerItemsProject(t *testing.T) {
 		t.Errorf("ENCODEDBY should write to ITCH without an id3 chunk; ITCH=%q", infoItemsOf(t, out)["ITCH"])
 	}
 }
+
+// A WAV id3 chunk a rewrite drops, a duplicate or a stale one a fresh chunk replaces, is graded like
+// a duplicate front tag: the warning names a frame the canonical view does not carry, and a chunk
+// that does not read at all, so --strict refuses instead of losing it unsaid.
+func TestWAVDroppedId3ChunkNamesWhatItLoses(t *testing.T) {
+	front := wavID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Primary")))
+	popm := wavID3(testfile.ID3v2(3, testfile.ID3Frame(3, "POPM", []byte("me@example.com\x00\xC8"))))
+	unreadable := wavID3(testfile.ID3v2(5, testfile.TextFrame(4, "TALB", "Future")))
+	for _, c := range []struct {
+		name   string
+		chunks [][]byte
+		want   string
+	}{
+		{"a duplicate holding a POPM frame", [][]byte{front, popm}, `1 "POPM" frame(s)`},
+		{"an unreadable duplicate", [][]byte{front, unreadable}, "1 unreadable id3 chunk(s)"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := testfile.WAV(slices.Concat([][]byte{testfile.WAVFmtPCM()}, c.chunks, [][]byte{testfile.WAVData(400)})...)
+			plan, err := mustParseBytes(t, data).Edit().Set(tag.Composer, "Stravinsky").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if msg := dupDroppedNames(plan); !strings.Contains(msg, c.want) {
+				t.Errorf("dropped warning %q, want it to name %s", msg, c.want)
+			}
+		})
+	}
+}
+
+// An id3 chunk holding more frames than the element cap refuses the parse wherever it sits, as a
+// chained front tag over the cap does in an MP3; behind the kept chunk it is not taken for an
+// unreadable duplicate the next edit drops.
+func TestWAVId3ChunkOverTheElementCapRefuses(t *testing.T) {
+	front := wavID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Primary")))
+	var frames [][]byte
+	for range 20 {
+		frames = append(frames, testfile.TextFrame(3, "TALB", "Album"))
+	}
+	big := wavID3(testfile.ID3v2(3, frames...))
+	for name, chunks := range map[string][][]byte{"ahead of the kept chunk": {big, front}, "behind the kept chunk": {front, big}} {
+		data := testfile.WAV(slices.Concat([][]byte{testfile.WAVFmtPCM()}, chunks, [][]byte{testfile.WAVData(400)})...)
+		_, err := wl.Parse(context.Background(), wl.BytesSource(data), wl.WithLimits(wl.Limits{MaxElements: 8}))
+		if !errors.Is(err, waxerr.ErrSizeTooLarge) {
+			t.Errorf("%s: err = %v, want ErrSizeTooLarge", name, err)
+		}
+	}
+}
+
+// A lone WAV id3 chunk that does not parse is reported on read, kept by an edit that writes no id3
+// chunk, and when a fresh one replaces it the drop is warned as an unreadable chunk's, so --strict
+// refuses. An empty id3 chunk ahead of a populated one yields to it, and an edit drops the empty one
+// without a word.
+func TestWAVUnreadableAndEmptyId3Chunks(t *testing.T) {
+	unreadable := wavID3(testfile.ID3v2(5, testfile.TextFrame(4, "TALB", "Future")))
+	data := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"INAM", "T"}), unreadable, testfile.WAVData(400))
+	doc := mustParseBytes(t, data)
+	if !hasWarning(doc, wl.WarnMalformedTagEntry) {
+		t.Errorf("warnings %v, want the unreadable id3 chunk reported", doc.Warnings())
+	}
+	plan, err := doc.Edit().Set(tag.Composer, "Stravinsky").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !planWarns(t, plan, wl.WarnMalformedTagEntryDropped) || dupDroppedNames(plan) != "" {
+		t.Errorf("plan warnings %v, want malformed-tag-entry-dropped and no duplicate drop", plan.Report().Warnings)
+	}
+	empty := wavID3(testfile.ID3v2(3))
+	data = testfile.WAV(testfile.WAVFmtPCM(), empty, wavID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Kept"))), testfile.WAVData(400))
+	doc = mustParseBytes(t, data)
+	if doc.Fields().Title != "Kept" {
+		t.Errorf("title %q, want the populated chunk's", doc.Fields().Title)
+	}
+	plan, err = doc.Edit().Set(tag.Composer, "Stravinsky").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg := dupDroppedNames(plan); msg != "" {
+		t.Errorf("dropped warning %q, want none for an empty chunk", msg)
+	}
+}

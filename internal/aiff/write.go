@@ -118,7 +118,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags, changed)...)
 	}
 
-	outs, ops, dupLost := planChunks(d, newText, newID3, emitText, emitID3, stripText, textBytesChange(d, newText))
+	outs, ops, dropped, staleDropped := planChunks(d, newText, newID3, emitText, emitID3, stripText, textBytesChange(d, newText))
 
 	segs, lay, err := assemble(d, outs)
 	if err != nil {
@@ -165,9 +165,22 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	result := buildResult(edited, d, newText, newID3, lay)
 	// Surface ID3 rebuild losses the bytes cannot show. AIFF's native text chunks store
 	// no dates, so a v2.3 ID3 date drop or reduction is a file-level loss.
-	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "ID3 chunk", result.Tags, dupLost)
+	var written []id3.Frame
+	if emitID3 {
+		written = newID3.Frames()
+	}
+	g := id3.NewDupGrader(base, result, d.id3.Frames(), written)
+	losses := make([]core.DuplicateContent, len(dropped))
+	for i, ch := range dropped {
+		losses[i] = g.Loss(ch.dupID3, "unreadable ID3 chunk(s)")
+	}
+	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "ID3 chunk", base.Tags, result.Tags, losses)
+	if staleDropped {
+		report.Warnings = core.Warn(report.Warnings, core.WarnMalformedTagEntryDropped,
+			"the ID3 chunk that could not be read is replaced by the rewritten one and its contents are not carried")
+	}
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, id3Info, result.Tags)
-	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3)
+	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3, emitID3)
 	// Collapse to a no-op when the containers re-projected to base's values.
 	// DowngradeNoOp carries the value-dropped warning forward.
 	if np := core.DowngradeNoOp(core.FormatAIFF, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripText || encodingRewrite || textRewrite, report.Warnings); np != nil {
@@ -177,8 +190,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 }
 
 // planChunks builds the output chunk list in source order, re-rendering or dropping the
-// tag containers and copying everything else (including the SSND sound chunk) verbatim.
-func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, stripText, textBytesChange bool) (outs []outChunk, ops []string, dupLost []core.DuplicateContent) {
+// tag containers and copying everything else (including the SSND sound chunk) verbatim. It
+// returns the duplicate ID3 chunks the rewrite drops and whether it drops a stale one, one that
+// could not be read, that a fresh chunk replaces.
+func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, stripText, textBytesChange bool) (outs []outChunk, ops []string, dropped []chunk, staleDropped bool) {
 	textGroupEmitted, id3Rewritten := false, false
 
 	firstTextIdx := -1
@@ -229,7 +244,7 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 		case ch.dupTag:
 			// A duplicate ID3 chunk: dropped so the output carries one copy.
 			ops = append(ops, "duplicate ID3 chunk drop")
-			dupLost = append(dupLost, ch.dupContent)
+			dropped = append(dropped, ch)
 			continue
 		default:
 			// An ID3-identified chunk reaches here only when it is neither the authoritative
@@ -237,6 +252,7 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 			// fresh ID3 chunk is written, so the output never carries two.
 			if emitID3 && isID3Chunk(ch.id4()) {
 				ops = append(ops, "stale ID3 chunk drop")
+				staleDropped = true
 				continue
 			}
 			role := roleOther
@@ -261,7 +277,7 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 	if len(created) > 0 {
 		outs = insertBeforeSSND(outs, created)
 	}
-	return outs, ops, dupLost
+	return outs, ops, dropped, staleDropped
 }
 
 // id3Out builds the "ID3 " output chunk from a rendered ID3v2 tag.
