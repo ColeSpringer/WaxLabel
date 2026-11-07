@@ -33,11 +33,15 @@ const chapterMediaTimescale = 90_000
 // resolveChapters decodes both chapter representations into the doc's projected list
 // and records the structural facts the writer needs (the chpl version to preserve,
 // whether a QuickTime track is present).
-func resolveChapters(src core.ReaderAtSized, moov, chpl node, haveChpl bool, d *doc, limit int64) (conflict bool) {
+func resolveChapters(src core.ReaderAtSized, moov, chpl node, haveChpl bool, d *doc, limit int64) (conflict bool, err error) {
 	d.chplVersion = 1 // ffmpeg's form; used if a chpl is later created from scratch
 	var chplChapters []core.Chapter
 	if haveChpl {
-		if ver, chs, ok := decodeChpl(src, chpl, limit); ok && len(chs) > 0 {
+		ver, chs, ok, err := decodeChpl(src, chpl, limit)
+		if err != nil {
+			return false, err
+		}
+		if ok && len(chs) > 0 {
 			d.chplVersion = ver
 			d.chplCount = len(chs)
 			chplChapters = chs
@@ -47,10 +51,13 @@ func resolveChapters(src core.ReaderAtSized, moov, chpl node, haveChpl bool, d *
 			haveChpl = false
 		}
 	}
-	qt, qtSaturated, haveQT := decodeQTChapters(src, moov, limit)
+	qt, qtSaturated, haveQT, err := decodeQTChapters(src, moov, limit)
+	if err != nil {
+		return false, err
+	}
 	d.hasQTChapters = haveQT
 	d.chapters, conflict = mergeChapters(chplChapters, haveChpl, qt, haveQT, qtSaturated)
-	return conflict
+	return conflict, nil
 }
 
 // chplHasReserved reports whether a Nero chpl atom carries the 32-bit reserved field
@@ -61,14 +68,14 @@ func chplHasReserved(version uint8) bool { return version != 0 }
 // version(1) + flags(3), then a reserved 4-byte field (see chplHasReserved), then an
 // 8-bit chapter count, then each entry as a 64-bit 100 ns start plus a length-prefixed
 // UTF-8 title.
-func decodeChpl(src core.ReaderAtSized, chpl node, limit int64) (version uint8, chapters []core.Chapter, ok bool) {
+func decodeChpl(src core.ReaderAtSized, chpl node, limit int64) (version uint8, chapters []core.Chapter, ok bool, err error) {
 	b, err := readPayloadWhole(src, chpl, maxMetaChunk, limit)
 	if err != nil {
-		return 0, nil, false
+		return 0, nil, false, bits.Fatal(err)
 	}
 	n := int64(len(b))
 	if n < 5 {
-		return 0, nil, false
+		return 0, nil, false, nil
 	}
 	version = b[0]
 	pos := int64(4) // version(1) + flags(3)
@@ -76,21 +83,21 @@ func decodeChpl(src core.ReaderAtSized, chpl node, limit int64) (version uint8, 
 		pos += 4 // skip the reserved 32-bit field
 	}
 	if pos+1 > n {
-		return 0, nil, false
+		return 0, nil, false, nil
 	}
 	count := int64(b[pos])
 	pos++
 	chapters = make([]core.Chapter, 0, count)
 	for range count {
 		if pos+9 > n { // 8-byte start + 1-byte length
-			return 0, nil, false
+			return 0, nil, false, nil
 		}
 		start := binary.BigEndian.Uint64(b[pos : pos+8])
 		pos += 8
 		titleLen := int64(b[pos])
 		pos++
 		if pos+titleLen > n {
-			return 0, nil, false
+			return 0, nil, false, nil
 		}
 		// Match the QuickTime path: an invalid-UTF-8 title reads as empty (a JSON dump would
 		// mangle the raw bytes), so both chapter sources behave the same.
@@ -102,7 +109,7 @@ func decodeChpl(src core.ReaderAtSized, chpl node, limit int64) (version uint8, 
 		chapters = append(chapters, core.Chapter{Start: scaleToDuration(start, chplStartUnit), Title: title})
 	}
 	core.FillInteriorEnds(chapters)
-	return version, chapters, true
+	return version, chapters, true, nil
 }
 
 // renderChpl encodes chapters into a Nero chpl atom, preserving the parsed version
@@ -131,11 +138,13 @@ func renderChpl(version uint8, chapters []core.Chapter) []byte {
 // on, where its mdia begins (the tref insertion point), any existing tref, the existing
 // chapter text track to replace, and the movie header fields (timescale/duration and a
 // free track id) a new track is built from.
-func collectChapterRefs(src core.ReaderAtSized, moov node, d *doc, limit int64) {
+func collectChapterRefs(src core.ReaderAtSized, moov node, d *doc, limit int64) error {
 	traks := moov.findAll("trak", nil)
 	if mvhd, ok := moov.find("mvhd"); ok {
 		d.mvhd = refPtr(mvhd)
-		collectMvhd(src, mvhd, d, limit)
+		if err := collectMvhd(src, mvhd, d, limit); err != nil {
+			return err
+		}
 	}
 	// A track id free of every existing track, used when mvhd's next_track_ID is
 	// missing, the all-ones sentinel, or stale (not past every track). nextTrackID 0
@@ -144,7 +153,11 @@ func collectChapterRefs(src core.ReaderAtSized, moov node, d *doc, limit int64) 
 	maxID := uint32(0)
 	for _, t := range traks {
 		if tkhd, ok := t.find("tkhd"); ok {
-			if id, ok := trackID(src, tkhd, limit); ok && id > maxID {
+			id, ok, err := trackID(src, tkhd, limit)
+			if err != nil {
+				return err
+			}
+			if ok && id > maxID {
 				maxID = id
 			}
 		}
@@ -156,9 +169,9 @@ func collectChapterRefs(src core.ReaderAtSized, moov node, d *doc, limit int64) 
 		d.nextTrackID = maxID + 1
 	}
 
-	audio, ok := trakOfHandler(src, traks, "soun", limit)
-	if !ok {
-		return
+	audio, ok, err := trakOfHandler(src, traks, "soun", limit)
+	if err != nil || !ok {
+		return err
 	}
 	d.audioTrak = refPtr(audio)
 	if mdia, ok := audio.find("mdia"); ok {
@@ -166,30 +179,41 @@ func collectChapterRefs(src core.ReaderAtSized, moov node, d *doc, limit int64) 
 	}
 	if tref, ok := audio.find("tref"); ok {
 		d.audioTref = refPtr(tref)
-		if raw, err := readPayloadWhole(src, tref, maxMetaChunk, limit); err == nil {
-			d.audioTrefRaw = raw
+		raw, err := readPayloadWhole(src, tref, maxMetaChunk, limit)
+		if bits.Fatal(err) != nil {
+			return err
+		}
+		d.audioTrefRaw = raw
+	}
+	ids, err := chapterTrackIDs(src, audio, limit)
+	if err != nil || len(ids) == 0 {
+		return err
+	}
+	d.audioHasChap = true // a "chap" reference exists, even if it does not resolve
+	text, ok, err := trakByID(src, traks, ids, limit)
+	if err != nil || !ok {
+		return err
+	}
+	d.chapTrak = refPtr(text)
+	if tkhd, ok := text.find("tkhd"); ok {
+		id, ok, err := trackID(src, tkhd, limit)
+		if err != nil {
+			return err
+		}
+		if ok {
+			d.chapTrackID = id // reused when the track is rebuilt in place
 		}
 	}
-	if ids := chapterTrackIDs(src, audio, limit); len(ids) > 0 {
-		d.audioHasChap = true // a "chap" reference exists, even if it does not resolve
-		if text, ok := trakByID(src, traks, ids, limit); ok {
-			d.chapTrak = refPtr(text)
-			if tkhd, ok := text.find("tkhd"); ok {
-				if id, ok := trackID(src, tkhd, limit); ok {
-					d.chapTrackID = id // reused when the track is rebuilt in place
-				}
-			}
-		}
-	}
+	return nil
 }
 
 // collectMvhd reads the movie header's timescale, duration, and next_track_ID: a new
 // chapter track shares the movie timescale, ends its last chapter at the movie
 // duration, and takes next_track_ID as its track id.
-func collectMvhd(src core.ReaderAtSized, mvhd node, d *doc, limit int64) {
+func collectMvhd(src core.ReaderAtSized, mvhd node, d *doc, limit int64) error {
 	b, err := readPayloadPrefix(src, mvhd, 120, limit)
 	if err != nil || len(b) < 1 {
-		return
+		return bits.Fatal(err)
 	}
 	po := mvhd.payloadOff()
 	// Read the timescale/duration through readMvhdTiming, the decode movieTimingOf uses on
@@ -208,6 +232,7 @@ func collectMvhd(src core.ReaderAtSized, mvhd node, d *doc, limit int64) {
 			d.nextTrackIDOff = po + 108
 		}
 	}
+	return nil
 }
 
 // sentinelToZero64 maps an MP4 "unknown duration" all-ones sentinel to zero so a
@@ -223,44 +248,51 @@ func sentinelToZero64(v, sentinel uint64) uint64 {
 // decodeQTChapters reads a QuickTime chapter text track: it resolves the audio track's
 // tref "chap" reference to a text track, walks that track's sample tables, and decodes
 // each text sample (a 16-bit length prefix plus UTF-8) into a chapter.
-func decodeQTChapters(src core.ReaderAtSized, moov node, limit int64) (chapters []core.Chapter, saturated, ok bool) {
+func decodeQTChapters(src core.ReaderAtSized, moov node, limit int64) (chapters []core.Chapter, saturated, ok bool, err error) {
 	traks := moov.findAll("trak", nil) // collected once, scanned for both the audio and text track
-	audio, ok := trakOfHandler(src, traks, "soun", limit)
-	if !ok {
-		return nil, false, false
+	audio, ok, err := trakOfHandler(src, traks, "soun", limit)
+	if err != nil || !ok {
+		return nil, false, false, err
 	}
-	ids := chapterTrackIDs(src, audio, limit)
-	if len(ids) == 0 {
-		return nil, false, false
+	ids, err := chapterTrackIDs(src, audio, limit)
+	if err != nil || len(ids) == 0 {
+		return nil, false, false, err
 	}
-	text, ok := trakByID(src, traks, ids, limit)
-	if !ok {
-		return nil, false, false
+	text, ok, err := trakByID(src, traks, ids, limit)
+	if err != nil || !ok {
+		return nil, false, false, err
 	}
 	// A chapter text track's stts decode times always run from zero, so a first chapter
 	// that starts after t=0 carries that offset in a leading empty edit in the track's
 	// elst (the standard MP4 delayed-track form WaxLabel writes).
-	movieTimescale, movieDuration := movieTimingOf(src, moov, limit)
-	offset, offsetSaturated := chapterEditOffset(src, text, movieTimescale, limit)
-	chapters, saturated, ok = decodeTextTrack(src, text, offset, movieTimescale, movieDuration, limit)
+	movieTimescale, movieDuration, err := movieTimingOf(src, moov, limit)
+	if err != nil {
+		return nil, false, false, err
+	}
+	offset, offsetSaturated, err := chapterEditOffset(src, text, movieTimescale, limit)
+	if err != nil {
+		return nil, false, false, err
+	}
+	chapters, saturated, ok, err = decodeTextTrack(src, text, offset, movieTimescale, movieDuration, limit)
 	// A clamped leading empty edit (a first chapter past the u32 movie-timescale ceiling)
 	// is a saturation the stts-delta scan cannot see, since the over-range start lives in
 	// the edit list, so fold it in here too.
-	return chapters, saturated || offsetSaturated, ok
+	return chapters, saturated || offsetSaturated, ok, err
 }
 
 // movieTimingOf reads moov's mvhd movie timescale and duration at resolveChapters time,
 // before collectMvhd populates d.
-func movieTimingOf(src core.ReaderAtSized, moov node, limit int64) (timescale uint32, duration uint64) {
+func movieTimingOf(src core.ReaderAtSized, moov node, limit int64) (timescale uint32, duration uint64, err error) {
 	mvhd, ok := moov.find("mvhd")
 	if !ok {
-		return 0, 0
+		return 0, 0, nil
 	}
 	b, err := readPayloadPrefix(src, mvhd, 32, limit)
 	if err != nil {
-		return 0, 0
+		return 0, 0, bits.Fatal(err)
 	}
-	return readMvhdTiming(b)
+	timescale, duration = readMvhdTiming(b)
+	return timescale, duration, nil
 }
 
 // readMvhdTiming decodes the movie timescale and duration from a mvhd payload prefix
@@ -292,17 +324,17 @@ func readMvhdTiming(b []byte) (timescale uint32, duration uint64) {
 // chapterEditOffset returns the presentation delay a leading empty edit in trak's elst
 // imposes: the standard MP4 way to position a chapter track whose first chapter starts
 // after t=0, since its stts decode times run from zero.
-func chapterEditOffset(src core.ReaderAtSized, trak node, movieTimescale uint32, limit int64) (offset time.Duration, saturated bool) {
+func chapterEditOffset(src core.ReaderAtSized, trak node, movieTimescale uint32, limit int64) (offset time.Duration, saturated bool, err error) {
 	if movieTimescale == 0 {
-		return 0, false
+		return 0, false, nil
 	}
 	edts, ok := trak.find("edts")
 	if !ok {
-		return 0, false
+		return 0, false, nil
 	}
 	b, err := readPayloadWhole(src, edts, maxMetaChunk, limit)
 	if err != nil {
-		return 0, false
+		return 0, false, bits.Fatal(err)
 	}
 	n := int64(len(b))
 	for pos := int64(0); pos+8 <= n; {
@@ -314,11 +346,12 @@ func chapterEditOffset(src core.ReaderAtSized, trak node, movieTimescale uint32,
 			break
 		}
 		if string(b[pos+4:pos+8]) == "elst" {
-			return emptyEditOffset(b[pos+8:pos+size], movieTimescale)
+			offset, saturated = emptyEditOffset(b[pos+8:pos+size], movieTimescale)
+			return offset, saturated, nil
 		}
 		pos += size
 	}
-	return 0, false
+	return 0, false, nil
 }
 
 // emptyEditOffset reads an elst box payload (version/flags, entry_count, then the
@@ -351,17 +384,17 @@ func emptyEditOffset(p []byte, movieTimescale uint32) (offset time.Duration, sat
 // trackEditedDuration returns trak's total edit-list playable duration, or 0 when the
 // track has no edit list. This is the track's own trimmed length, not the movie duration;
 // for AAC, it removes encoder priming that is still present in the raw mdhd duration.
-func trackEditedDuration(src core.ReaderAtSized, trak node, movieTimescale uint32, limit int64) time.Duration {
+func trackEditedDuration(src core.ReaderAtSized, trak node, movieTimescale uint32, limit int64) (time.Duration, error) {
 	if movieTimescale == 0 {
-		return 0
+		return 0, nil
 	}
 	edts, ok := trak.find("edts")
 	if !ok {
-		return 0
+		return 0, nil
 	}
 	b, err := readPayloadWhole(src, edts, maxMetaChunk, limit)
 	if err != nil {
-		return 0
+		return 0, bits.Fatal(err)
 	}
 	n := int64(len(b))
 	for pos := int64(0); pos+8 <= n; {
@@ -370,11 +403,11 @@ func trackEditedDuration(src core.ReaderAtSized, trak node, movieTimescale uint3
 			break
 		}
 		if string(b[pos+4:pos+8]) == "elst" {
-			return scaleToDuration(elstSegmentDurationSum(b[pos+8:pos+size]), movieTimescale)
+			return scaleToDuration(elstSegmentDurationSum(b[pos+8:pos+size]), movieTimescale), nil
 		}
 		pos += size
 	}
-	return 0
+	return 0, nil
 }
 
 // elstSegmentDurationSum sums the segment_duration field of every edit-list entry (in
@@ -408,30 +441,38 @@ func elstSegmentDurationSum(p []byte) uint64 {
 
 // trakOfHandler returns the first trak whose media handler matches want (e.g.
 // "soun" for audio, "text" for a chapter track).
-func trakOfHandler(src core.ReaderAtSized, traks []node, want string, limit int64) (node, bool) {
+func trakOfHandler(src core.ReaderAtSized, traks []node, want string, limit int64) (node, bool, error) {
 	for _, t := range traks {
 		mdia, ok := t.find("mdia")
 		if !ok {
 			continue
 		}
-		if hdlr, ok := mdia.find("hdlr"); ok && handlerType(src, hdlr, limit) == want {
-			return t, true
+		hdlr, ok := mdia.find("hdlr")
+		if !ok {
+			continue
+		}
+		h, err := handlerType(src, hdlr, limit)
+		if err != nil {
+			return node{}, false, err
+		}
+		if h == want {
+			return t, true, nil
 		}
 	}
-	return node{}, false
+	return node{}, false, nil
 }
 
 // chapterTrackIDs returns the track IDs referenced by the audio track's tref
 // "chap" entry (the QuickTime way an audio track points at its chapter track).
 // tref is a leaf to the atom walker, so its sub-atoms are parsed here by hand.
-func chapterTrackIDs(src core.ReaderAtSized, trak node, limit int64) []uint32 {
+func chapterTrackIDs(src core.ReaderAtSized, trak node, limit int64) ([]uint32, error) {
 	tref, ok := trak.find("tref")
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	body, err := readPayloadWhole(src, tref, maxMetaChunk, limit)
 	if err != nil {
-		return nil
+		return nil, bits.Fatal(err)
 	}
 	n := int64(len(body))
 	for pos := int64(0); pos+8 <= n; {
@@ -444,76 +485,76 @@ func chapterTrackIDs(src core.ReaderAtSized, trak node, limit int64) []uint32 {
 			for off := pos + 8; off+4 <= pos+size; off += 4 {
 				ids = append(ids, binary.BigEndian.Uint32(body[off:off+4]))
 			}
-			return ids
+			return ids, nil
 		}
 		pos += size
 	}
-	return nil
+	return nil, nil
 }
 
 // trakByID returns the trak whose tkhd track_id is one of ids.
-func trakByID(src core.ReaderAtSized, traks []node, ids []uint32, limit int64) (node, bool) {
+func trakByID(src core.ReaderAtSized, traks []node, ids []uint32, limit int64) (node, bool, error) {
 	for _, t := range traks {
 		tkhd, ok := t.find("tkhd")
 		if !ok {
 			continue
 		}
-		id, ok := trackID(src, tkhd, limit)
-		if !ok {
-			continue
+		id, ok, err := trackID(src, tkhd, limit)
+		if err != nil {
+			return node{}, false, err
 		}
-		if slices.Contains(ids, id) {
-			return t, true
+		if ok && slices.Contains(ids, id) {
+			return t, true, nil
 		}
 	}
-	return node{}, false
+	return node{}, false, nil
 }
 
 // trackID reads the track_id from a tkhd atom (version 0 places it at byte 12;
 // version 1's 64-bit times push it to byte 20).
-func trackID(src core.ReaderAtSized, tkhd node, limit int64) (uint32, bool) {
+func trackID(src core.ReaderAtSized, tkhd node, limit int64) (uint32, bool, error) {
 	b, err := readPayloadPrefix(src, tkhd, 32, limit)
 	if err != nil || len(b) < 1 {
-		return 0, false
+		return 0, false, bits.Fatal(err)
 	}
 	off := 12
 	if b[0] == 1 {
 		off = 20
 	}
 	if len(b) < off+4 {
-		return 0, false
+		return 0, false, nil
 	}
-	return binary.BigEndian.Uint32(b[off : off+4]), true
+	return binary.BigEndian.Uint32(b[off : off+4]), true, nil
 }
 
 // decodeTextTrack reconstructs chapters from a text track's sample tables: the
 // per-sample decode time (stts) gives each chapter's start, and the sample's bytes in
 // mdat (located via stsc/stsz/stco|co64) carry its title.
-func decodeTextTrack(src core.ReaderAtSized, trak node, offset time.Duration, movieTimescale uint32, movieDuration uint64, limit int64) (chapters []core.Chapter, saturated, ok bool) {
+func decodeTextTrack(src core.ReaderAtSized, trak node, offset time.Duration, movieTimescale uint32, movieDuration uint64, limit int64) (chapters []core.Chapter, saturated, ok bool, err error) {
 	mdia, ok := trak.find("mdia")
 	if !ok {
-		return nil, false, false
+		return nil, false, false, nil
 	}
 	mdhd, ok := mdia.find("mdhd")
 	if !ok {
-		return nil, false, false
+		return nil, false, false, nil
 	}
-	timescale, ok := mdhdTimescale(src, mdhd, limit)
-	if !ok {
-		return nil, false, false
+	timescale, ok, err := mdhdTimescale(src, mdhd, limit)
+	if err != nil || !ok {
+		return nil, false, false, err
 	}
 	minf, ok := mdia.find("minf")
 	if !ok {
-		return nil, false, false
+		return nil, false, false, nil
 	}
 	stbl, ok := minf.find("stbl")
 	if !ok {
-		return nil, false, false
+		return nil, false, false, nil
 	}
 
-	times, endTime, completed, ok := sampleTimes(src, stbl, limit)
-	if !ok || len(times) == 0 {
-		return nil, false, false
+	times, endTime, completed, ok, err := sampleTimes(src, stbl, limit)
+	if err != nil || !ok || len(times) == 0 {
+		return nil, false, false, err
 	}
 	// A written stts delta that clamped is read back as exactly MaxUint32.
 	for i := 1; i < len(times); i++ {
@@ -522,14 +563,17 @@ func decodeTextTrack(src core.ReaderAtSized, trak node, offset time.Duration, mo
 			break
 		}
 	}
-	offsets, ok := sampleOffsets(src, stbl, len(times), limit)
-	if !ok {
-		return nil, false, false
+	offsets, ok, err := sampleOffsets(src, stbl, len(times), limit)
+	if err != nil || !ok {
+		return nil, false, false, err
 	}
 
 	chapters = make([]core.Chapter, 0, len(offsets))
 	for i, so := range offsets {
-		title := readTextSample(src, so.off, so.size, limit)
+		title, err := readTextSample(src, so.off, so.size, limit)
+		if err != nil {
+			return nil, false, false, err
+		}
 		ch := core.Chapter{Start: addClamp(scaleToDuration(times[i], timescale), offset), Title: title}
 		if i+1 < len(times) {
 			ch.End = addClamp(scaleToDuration(times[i+1], timescale), offset)
@@ -548,7 +592,7 @@ func decodeTextTrack(src core.ReaderAtSized, trak node, offset time.Duration, mo
 			chapters[last].End = lastEnd
 		}
 	}
-	return chapters, saturated, true
+	return chapters, saturated, true, nil
 }
 
 // sampleOffset is one decoded sample's file location and byte length.
@@ -561,18 +605,18 @@ type sampleOffset struct {
 // from the stts table, plus endTime, the running total past the final sample. The
 // maxChapterSamples early return leaves endTime mid-table (completed false), so the
 // caller must not treat it as the last chapter's end there.
-func sampleTimes(src core.ReaderAtSized, stbl node, limit int64) (times []uint64, endTime uint64, completed, ok bool) {
+func sampleTimes(src core.ReaderAtSized, stbl node, limit int64) (times []uint64, endTime uint64, completed, ok bool, err error) {
 	stts, found := stbl.find("stts")
 	if !found {
-		return nil, 0, false, false
+		return nil, 0, false, false, nil
 	}
 	b, err := readPayloadWhole(src, stts, maxMetaChunk, limit)
 	if err != nil || len(b) < 8 {
-		return nil, 0, false, false
+		return nil, 0, false, false, bits.Fatal(err)
 	}
 	count := int64(binary.BigEndian.Uint32(b[4:8]))
 	if !boundedCount(count, 8, 8, int64(len(b))) {
-		return nil, 0, false, false
+		return nil, 0, false, false, nil
 	}
 	var t uint64
 	for i := range count {
@@ -581,30 +625,30 @@ func sampleTimes(src core.ReaderAtSized, stbl node, limit int64) (times []uint64
 		delta := binary.BigEndian.Uint32(b[o+4 : o+8])
 		for range n {
 			if len(times) >= maxChapterSamples {
-				return times, t, false, true // capped: t is not the true final boundary
+				return times, t, false, true, nil // capped: t is not the true final boundary
 			}
 			times = append(times, t)
 			t += uint64(delta)
 		}
 	}
-	return times, t, true, true
+	return times, t, true, true, nil
 }
 
 // sampleOffsets locates each of the first nSamples samples in mdat by combining
 // the sample sizes (stsz), the sample-to-chunk map (stsc), and the chunk offsets
 // (stco/co64).
-func sampleOffsets(src core.ReaderAtSized, stbl node, nSamples int, limit int64) ([]sampleOffset, bool) {
-	sizes, ok := sampleSizes(src, stbl, nSamples, limit)
-	if !ok {
-		return nil, false
+func sampleOffsets(src core.ReaderAtSized, stbl node, nSamples int, limit int64) ([]sampleOffset, bool, error) {
+	sizes, ok, err := sampleSizes(src, stbl, nSamples, limit)
+	if err != nil || !ok {
+		return nil, false, err
 	}
-	chunks, ok := chunkOffsets(src, stbl, limit)
-	if !ok || len(chunks) == 0 {
-		return nil, false
+	chunks, ok, err := chunkOffsets(src, stbl, limit)
+	if err != nil || !ok || len(chunks) == 0 {
+		return nil, false, err
 	}
-	stsc, ok := stscEntries(src, stbl, limit)
-	if !ok {
-		return nil, false
+	stsc, ok, err := stscEntries(src, stbl, limit)
+	if err != nil || !ok {
+		return nil, false, err
 	}
 	perChunk := expandStsc(stsc, len(chunks))
 
@@ -620,21 +664,21 @@ func sampleOffsets(src core.ReaderAtSized, stbl node, nSamples int, limit int64)
 		}
 	}
 	if len(out) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
-	return out, true
+	return out, true, nil
 }
 
 // sampleSizes returns the size of each of the first nSamples samples from stsz
 // (a single shared size, or a per-sample table).
-func sampleSizes(src core.ReaderAtSized, stbl node, nSamples int, limit int64) ([]uint32, bool) {
+func sampleSizes(src core.ReaderAtSized, stbl node, nSamples int, limit int64) ([]uint32, bool, error) {
 	stsz, ok := stbl.find("stsz")
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	b, err := readPayloadWhole(src, stsz, maxMetaChunk, limit)
 	if err != nil || len(b) < 12 {
-		return nil, false
+		return nil, false, bits.Fatal(err)
 	}
 	shared := binary.BigEndian.Uint32(b[4:8])
 	count := min(int64(binary.BigEndian.Uint32(b[8:12])), int64(nSamples), maxChapterSamples)
@@ -643,51 +687,51 @@ func sampleSizes(src core.ReaderAtSized, stbl node, nSamples int, limit int64) (
 		for i := range sizes {
 			sizes[i] = shared
 		}
-		return sizes, true
+		return sizes, true, nil
 	}
 	if !boundedCount(count, 12, 4, int64(len(b))) {
-		return nil, false
+		return nil, false, nil
 	}
 	for i := range count {
 		o := 12 + i*4
 		sizes[i] = binary.BigEndian.Uint32(b[o : o+4])
 	}
-	return sizes, true
+	return sizes, true, nil
 }
 
 // chunkOffsets returns the chunk file offsets from stco (32-bit) or co64 (64-bit).
-func chunkOffsets(src core.ReaderAtSized, stbl node, limit int64) ([]uint64, bool) {
+func chunkOffsets(src core.ReaderAtSized, stbl node, limit int64) ([]uint64, bool, error) {
 	if stco, ok := stbl.find("stco"); ok {
 		t, err := parseOffsetTable(src, stco, limit)
 		if err != nil {
-			return nil, false
+			return nil, false, bits.Fatal(err)
 		}
-		return t.entries, true
+		return t.entries, true, nil
 	}
 	if co64, ok := stbl.find("co64"); ok {
 		t, err := parseOffsetTable(src, co64, limit)
 		if err != nil {
-			return nil, false
+			return nil, false, bits.Fatal(err)
 		}
-		return t.entries, true
+		return t.entries, true, nil
 	}
-	return nil, false
+	return nil, false, nil
 }
 
 // stscEntries parses the sample-to-chunk table (first_chunk, samples_per_chunk;
 // the sample-description index is not needed here).
-func stscEntries(src core.ReaderAtSized, stbl node, limit int64) ([]stscEntry, bool) {
+func stscEntries(src core.ReaderAtSized, stbl node, limit int64) ([]stscEntry, bool, error) {
 	stsc, ok := stbl.find("stsc")
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	b, err := readPayloadWhole(src, stsc, maxMetaChunk, limit)
 	if err != nil || len(b) < 8 {
-		return nil, false
+		return nil, false, bits.Fatal(err)
 	}
 	count := int64(binary.BigEndian.Uint32(b[4:8]))
 	if !boundedCount(count, 8, 12, int64(len(b))) {
-		return nil, false
+		return nil, false, nil
 	}
 	out := make([]stscEntry, count)
 	for i := range count {
@@ -697,7 +741,7 @@ func stscEntries(src core.ReaderAtSized, stbl node, limit int64) ([]stscEntry, b
 			samplesPerChunk: binary.BigEndian.Uint32(b[o+4 : o+8]),
 		}
 	}
-	return out, true
+	return out, true, nil
 }
 
 // stscEntry is one sample-to-chunk run: the first chunk it applies to (1-based)
@@ -726,26 +770,29 @@ func expandStsc(entries []stscEntry, nChunks int) []uint32 {
 	return out
 }
 
-// readTextSample reads a QuickTime text/tx3g sample and returns its title: a
-// 16-bit big-endian length prefix followed by that many UTF-8 bytes (trailing
-// style atoms, if any, are ignored). Invalid UTF-8 yields an empty title.
-func readTextSample(src core.ReaderAtSized, off, size, limit int64) string {
+// readTextSample reads a QuickTime text/tx3g sample's title: a 16-bit big-endian length, then
+// that many UTF-8 bytes, cut to the sample. Style atoms after it are never read. A title the file
+// does not fully hold, or invalid UTF-8, reads as empty.
+func readTextSample(src core.ReaderAtSized, off, size, limit int64) (string, error) {
 	if size < 2 {
-		return ""
+		return "", nil
 	}
-	b, err := bits.ReadSlice(src, off, min(size, maxMetaChunk), limit)
-	if err != nil || len(b) < 2 {
-		return ""
+	head, err := bits.ReadSlice(src, off, 2, limit)
+	if err != nil {
+		return "", bits.Fatal(err)
 	}
-	textLen := int64(binary.BigEndian.Uint16(b[0:2]))
-	if 2+textLen > int64(len(b)) {
-		textLen = int64(len(b)) - 2
+	n := min(int64(binary.BigEndian.Uint16(head)), size-2)
+	if n > src.Size()-off-2 {
+		return "", nil
 	}
-	title := b[2 : 2+textLen]
+	title, err := bits.ReadSlice(src, off+2, n, limit)
+	if err != nil {
+		return "", bits.Fatal(err)
+	}
 	if !utf8.Valid(title) {
-		return ""
+		return "", nil
 	}
-	return string(title)
+	return string(title), nil
 }
 
 // mergeChapters projects the two MP4 chapter representations into one list.
@@ -829,32 +876,32 @@ func isPlaceholderTail(lastStart time.Duration, lastDeltaUnits uint64, mediaTime
 
 // mdhdFields decodes a mdhd atom's media timescale and duration (version 0 or 1). The
 // audio-property duration read and the chapter-track timescale read share it.
-func mdhdFields(src core.ReaderAtSized, mdhd node, limit int64) (timescale uint32, duration uint64, ok bool) {
+func mdhdFields(src core.ReaderAtSized, mdhd node, limit int64) (timescale uint32, duration uint64, ok bool, err error) {
 	b, err := readPayloadPrefix(src, mdhd, 32, limit)
 	if err != nil || len(b) < 4 {
-		return 0, 0, false
+		return 0, 0, false, bits.Fatal(err)
 	}
 	switch b[0] {
 	case 0:
 		if len(b) < 20 {
-			return 0, 0, false
+			return 0, 0, false, nil
 		}
-		return binary.BigEndian.Uint32(b[12:16]), uint64(binary.BigEndian.Uint32(b[16:20])), true
+		return binary.BigEndian.Uint32(b[12:16]), uint64(binary.BigEndian.Uint32(b[16:20])), true, nil
 	case 1:
 		if len(b) < 32 {
-			return 0, 0, false
+			return 0, 0, false, nil
 		}
-		return binary.BigEndian.Uint32(b[20:24]), binary.BigEndian.Uint64(b[24:32]), true
+		return binary.BigEndian.Uint32(b[20:24]), binary.BigEndian.Uint64(b[24:32]), true, nil
 	default:
-		return 0, 0, false
+		return 0, 0, false, nil
 	}
 }
 
 // mdhdTimescale reads the media timescale from a mdhd atom. A zero timescale is
 // rejected: it is invalid and would collapse every chapter time to zero.
-func mdhdTimescale(src core.ReaderAtSized, mdhd node, limit int64) (uint32, bool) {
-	ts, _, ok := mdhdFields(src, mdhd, limit)
-	return ts, ok && ts != 0
+func mdhdTimescale(src core.ReaderAtSized, mdhd node, limit int64) (uint32, bool, error) {
+	ts, _, ok, err := mdhdFields(src, mdhd, limit)
+	return ts, ok && ts != 0, err
 }
 
 // addClamp returns a + b saturated at MaxInt64, so adding the edit-list offset to a

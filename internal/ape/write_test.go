@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/core"
@@ -15,7 +16,7 @@ import (
 // parseRendered: Render then ParseAt (only check the reader accepts).
 func parseRendered(t *testing.T, items []Item) *Tag {
 	t.Helper()
-	raw, err := Render(items, writeVersion, true)
+	raw, err := Render(items, WriteVersion, true)
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -35,8 +36,8 @@ func TestRenderRoundTrip(t *testing.T) {
 		{Key: "Artist", Value: "First\x00Second"},
 	}
 	tg := parseRendered(t, items)
-	if tg.Version != writeVersion {
-		t.Errorf("version = %d, want %d", tg.Version, writeVersion)
+	if tg.Version != WriteVersion {
+		t.Errorf("version = %d, want %d", tg.Version, WriteVersion)
 	}
 	if !slices.EqualFunc(tg.Items, items, func(a, b Item) bool { return a.Key == b.Key && a.Value == b.Value }) {
 		t.Errorf("items = %+v, want %+v", tg.Items, items)
@@ -49,7 +50,7 @@ func TestRenderRoundTrip(t *testing.T) {
 
 // TestRenderHeaderAndFooterFlags: same version/size/count; size = items+footer.
 func TestRenderHeaderAndFooterFlags(t *testing.T) {
-	raw, err := Render([]Item{{Key: "Title", Value: "x"}}, writeVersion, true)
+	raw, err := Render([]Item{{Key: "Title", Value: "x"}}, WriteVersion, true)
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -539,7 +540,7 @@ func TestPartitionCoverSlotsAddedPriority(t *testing.T) {
 // TestRenderRejectsOversizedTag: refuse tags past reader size cap.
 func TestRenderRejectsOversizedTag(t *testing.T) {
 	huge := Item{Key: coverFrontKey, Data: make([]byte, maxTagBytes+1), Flags: itemTypeBinary << itemTypeShift}
-	if _, err := Render([]Item{huge}, writeVersion, true); !errors.Is(err, waxerr.ErrPictureTooLarge) {
+	if _, err := Render([]Item{huge}, WriteVersion, true); !errors.Is(err, waxerr.ErrPictureTooLarge) {
 		t.Errorf("err = %v, want ErrPictureTooLarge", err)
 	}
 }
@@ -564,7 +565,7 @@ func TestRenderPreservesVersionAndShape(t *testing.T) {
 
 // TestParseAtRejectsUnbackedHeaderFlag: has-header bit needs a backing APETAGEX record.
 func TestParseAtRejectsUnbackedHeaderFlag(t *testing.T) {
-	raw, err := Render([]Item{{Key: "Title", Value: "x"}}, writeVersion, false)
+	raw, err := Render([]Item{{Key: "Title", Value: "x"}}, WriteVersion, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -587,7 +588,7 @@ func TestParseAtRejectsUnbackedHeaderFlag(t *testing.T) {
 
 // TestParseTruncatedItemList: Truncated set when element cap cuts Items.
 func TestParseTruncatedItemList(t *testing.T) {
-	raw, err := Render([]Item{{Key: "A", Value: "1"}, {Key: "B", Value: "2"}, {Key: "C", Value: "3"}}, writeVersion, true)
+	raw, err := Render([]Item{{Key: "A", Value: "1"}, {Key: "B", Value: "2"}, {Key: "C", Value: "3"}}, WriteVersion, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,6 +598,28 @@ func TestParseTruncatedItemList(t *testing.T) {
 	}
 	if len(tg.Items) != 2 || !tg.Truncated {
 		t.Errorf("items = %d truncated = %v, want 2 and true", len(tg.Items), tg.Truncated)
+	}
+}
+
+// A tag the allocation limit cannot hold, footer or items, is refused; a region too short for a
+// footer holds no tag.
+func TestParseAtRefusesOverLimit(t *testing.T) {
+	raw, err := Render([]Item{{Key: "Title", Value: strings.Repeat("t", 100)}}, WriteVersion, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := core.BytesSource(raw)
+	itemsLen := int64(len(raw)) - 2*footerLen
+	for _, limit := range []int64{footerLen - 1, itemsLen - 1} {
+		if _, ok, err := ParseAt(src, int64(len(raw)), limit, 0); ok || !errors.Is(err, waxerr.ErrSizeTooLarge) {
+			t.Errorf("limit %d: ok=%v err=%v, want declared size too large", limit, ok, err)
+		}
+	}
+	if _, ok, err := ParseAt(src, int64(len(raw)), itemsLen, 0); !ok || err != nil {
+		t.Errorf("limit %d: ok=%v err=%v, want the tag read", itemsLen, ok, err)
+	}
+	if _, ok, err := ParseAt(src, footerLen-1, 1, 0); ok || err != nil {
+		t.Errorf("short region: ok=%v err=%v, want no tag and no error", ok, err)
 	}
 }
 

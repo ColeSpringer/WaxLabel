@@ -1,6 +1,9 @@
 package testfile
 
-import "slices"
+import (
+	"fmt"
+	"slices"
+)
 
 func Syncsafe(n int) []byte {
 	return []byte{byte(n>>21) & 0x7f, byte(n>>14) & 0x7f, byte(n>>7) & 0x7f, byte(n) & 0x7f}
@@ -48,4 +51,18 @@ func ID3v1(title, artist, album, year, comment string, genre byte) []byte {
 	copy(b[97:127], comment)
 	b[127] = genre
 	return b
+}
+
+// Lyrics3v1 is a Lyrics3 v1.00 block, the lyrics between LYRICSBEGIN and LYRICSEND.
+func Lyrics3v1(lyrics string) []byte {
+	return slices.Concat([]byte("LYRICSBEGIN"), []byte(lyrics), []byte("LYRICSEND"))
+}
+
+// Lyrics3v2 is a Lyrics3 v2.00 block holding fields, each a three-letter ID and its value.
+func Lyrics3v2(fields ...[2]string) []byte {
+	b := []byte("LYRICSBEGIN")
+	for _, f := range fields {
+		b = fmt.Appendf(b, "%s%05d%s", f[0], len(f[1]), f[1])
+	}
+	return fmt.Appendf(b, "%06dLYRICS200", len(b))
 }

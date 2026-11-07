@@ -483,6 +483,21 @@ func TestVerifyEssenceStableAcrossTagEdit(t *testing.T) {
 	}
 }
 
+// verify names the v2 extent of each format whose essence now ends with the stream.
+func TestVerifyLabelsStreamEndExtents(t *testing.T) {
+	t.Parallel()
+	for name, extent := range map[string]string{"sample.wv": "wavpack-v2", "sample.ape": "monkeys-audio-v2",
+		"chapters.mpc": "musepack-v2", "sample.mp3": "mp3-frames-v2", "sample.aac": "aac-adts-v2"} {
+		out, _, code := runCLI(t, "--json", "verify", td(name))
+		if code != 0 {
+			t.Fatalf("verify %s exit = %d", name, code)
+		}
+		if v := decodeJSONOne[jsonVerify](t, out); !strings.HasPrefix(v.Essence, "sha256/"+extent+":") {
+			t.Errorf("%s essence = %q, want the %s extent", name, v.Essence, extent)
+		}
+	}
+}
+
 func TestVerifyWholeFileFlag(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "verify", "--whole-file", sampleFLAC)

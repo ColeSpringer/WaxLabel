@@ -2,8 +2,10 @@ package id3
 
 import (
 	"bytes"
+	"errors"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"unicode/utf8"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // TestSizeErrHumanized checks the size-limit messages report humanized binary magnitudes
@@ -1130,6 +1133,113 @@ func TestHugeFrameSizeNoPanic(t *testing.T) {
 	}
 }
 
+// ReadFrontRaw returns the bytes of a leading tag that fits the source, nil when there is none, and
+// refuses a header or tag over the allocation limit.
+func TestReadFrontRaw(t *testing.T) {
+	lead := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Lead"))
+	stream := []byte("fLaC\x00\x00\x00\x22")
+	past := slices.Clone(lead)
+	past[9]++ // the declared size runs one byte past the tag
+	for _, c := range []struct {
+		name  string
+		src   []byte
+		limit int64
+		want  []byte
+		err   error
+	}{
+		{"tag before a stream", slices.Concat(lead, stream), 1 << 20, lead, nil},
+		{"tag filling the source", lead, 1 << 20, lead, nil},
+		{"no tag", stream, 1 << 20, nil, nil},
+		{"shorter than a header", lead[:6], 1 << 20, nil, nil},
+		{"size past the source", past, 1 << 20, nil, nil},
+		{"header over the limit", slices.Concat(lead, stream), 5, nil, waxerr.ErrSizeTooLarge},
+		{"tag over the limit", slices.Concat(lead, stream), int64(len(lead)) - 1, nil, waxerr.ErrSizeTooLarge},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			src := core.BytesSource(c.src)
+			got, err := ReadFrontRaw(src, src.Size(), c.limit)
+			if !errors.Is(err, c.err) {
+				t.Fatalf("err = %v, want %v", err, c.err)
+			}
+			if !bytes.Equal(got, c.want) || (got == nil) != (c.want == nil) {
+				t.Errorf("raw = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// markerCodec is a stream that opens with "MARK"; ReadFrontStray only sniffs and resyncs it.
+type markerCodec struct{ core.Codec }
+
+func (markerCodec) Sniff(b []byte) bool { return bytes.HasPrefix(b, []byte("MARK")) }
+
+func (markerCodec) SkipsLeadingID3() bool { return true }
+
+func (markerCodec) Resync(window []byte) (int, bool) {
+	i := bytes.Index(window, []byte("MARK"))
+	return i, i >= 0
+}
+
+// ReadFrontStray returns the first leading tag and where the stream starts behind it: past chained
+// tags and a gap, which go with the tag, or at the tag's end when no stream is found there. The
+// windows it searches are refused over the limit.
+func TestReadFrontStray(t *testing.T) {
+	lead := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Lead"))
+	second := testfile.ID3v2(3, testfile.TextFrame(3, "TALB", "Second"))
+	gap := []byte{1, 2, 3}
+	stray := []core.WarningCode{core.WarnStrayLeadingID3}
+	strayAndGap := []core.WarningCode{core.WarnStrayLeadingID3, core.WarnLeadingBytes}
+	for _, c := range []struct {
+		name     string
+		src      []byte
+		limit    int64
+		raw      []byte
+		streamAt int
+		codes    []core.WarningCode
+		err      error
+	}{
+		{"no tag", []byte("MARK"), 1 << 20, nil, 0, nil, nil},
+		{"tag then stream", slices.Concat(lead, []byte("MARK")), 1 << 20, lead, len(lead), stray, nil},
+		{"tag, gap, stream", slices.Concat(lead, gap, []byte("MARK")), 1 << 20, lead, len(lead) + len(gap), strayAndGap, nil},
+		{"two tags then stream", slices.Concat(lead, second, []byte("MARK")), 1 << 20, lead, len(lead) + len(second), strayAndGap, nil},
+		{"tag, no stream", slices.Concat(lead, gap), 1 << 20, lead, len(lead), stray, nil},
+		{"sniff window over the limit", slices.Concat(lead, []byte("MARK"), make([]byte, 600)), 512, nil, 0, nil, waxerr.ErrSizeTooLarge},
+		{"resync window over the limit", slices.Concat(lead, gap, make([]byte, 2000), []byte("MARK")), 1024, nil, 0, nil, waxerr.ErrSizeTooLarge},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			src := core.BytesSource(c.src)
+			raw, streamAt, ws, err := ReadFrontStray(src, src.Size(), c.limit, markerCodec{}, "marker")
+			if !errors.Is(err, c.err) {
+				t.Fatalf("err = %v, want %v", err, c.err)
+			}
+			var codes []core.WarningCode
+			for _, w := range ws {
+				codes = append(codes, w.Code)
+			}
+			if !bytes.Equal(raw, c.raw) || streamAt != int64(c.streamAt) || !slices.Equal(codes, c.codes) {
+				t.Errorf("raw %d bytes, streamAt %d, warnings %v; want %d bytes, %d, %v",
+					len(raw), streamAt, codes, len(c.raw), c.streamAt, c.codes)
+			}
+		})
+	}
+	// The windows lie inside the file, so a read of one that fails is an error, not a missing stream.
+	big := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", strings.Repeat("x", 2000))) // past the first window
+	for _, c := range []struct {
+		name string
+		src  []byte
+		from int
+	}{
+		{"the first window, past a small tag", slices.Concat(lead, []byte("MARK"), make([]byte, 600)), len(lead) + 1},
+		{"the window behind the tag", slices.Concat(big, []byte("MARK")), len(big)},
+		{"the resync window", slices.Concat(big, gap, make([]byte, 2000), []byte("MARK")), len(big) + 1100},
+	} {
+		src := &testfile.Faulty{Src: core.BytesSource(c.src), Fails: testfile.From(int64(c.from))}
+		if _, _, _, err := ReadFrontStray(src, src.Size(), 1<<20, markerCodec{}, "marker"); !errors.Is(err, syscall.EIO) {
+			t.Errorf("a read failing in %s: err = %v, want the read's own failure", c.name, err)
+		}
+	}
+}
+
 func TestParseV1(t *testing.T) {
 	b := make([]byte, 128)
 	copy(b[0:3], "TAG")
@@ -1148,6 +1258,27 @@ func TestParseV1(t *testing.T) {
 	if v1.Title != "The Title" || v1.Artist != "The Artist" || v1.Album != "The Album" ||
 		v1.Year != "2020" || v1.Comment != "A comment" || v1.Track != 7 || v1.Genre != "Rock" {
 		t.Errorf("v1 = %+v", v1)
+	}
+}
+
+// TestLegacyV1FamiliesRun: every 128-byte tag of a stacked run projects once, in file order.
+func TestLegacyV1FamiliesRun(t *testing.T) {
+	auth := tag.NewTagSet()
+	auth.Set(tag.Title, "Second")
+	run := slices.Concat(testfile.ID3v1("First", "", "", "", "", 255), testfile.ID3v1("Second", "", "", "", "", 255))
+	type entry struct {
+		value    string
+		selected bool
+	}
+	var got []entry
+	for _, f := range LegacyV1Families(auth, run) {
+		if f.Family != core.FamilyID3v1 || f.Key != tag.Title || !f.Legacy || len(f.Values) != 1 {
+			t.Fatalf("family %+v, want one legacy ID3v1 title", f)
+		}
+		got = append(got, entry{f.Values[0], f.Selected})
+	}
+	if want := []entry{{"First", false}, {"Second", true}}; !slices.Equal(got, want) {
+		t.Errorf("families = %+v, want %+v", got, want)
 	}
 }
 
@@ -1407,5 +1538,44 @@ func TestV22CompressionFlagIgnoresTag(t *testing.T) {
 	v3, err := ParseTag(wrapTag(3, 0x40, append([]byte{0, 0, 0, 6, 0, 0, 0, 0, 0, 0}, rawFrame(3, "TIT2", []byte("\x00T"))...)), 0)
 	if err != nil || len(v3.Frames()) != 1 {
 		t.Errorf("v2.3 extended header: err=%v frames=%d", err, len(v3.Frames()))
+	}
+}
+
+// SkipTags passes the ID3v1 and ID3v2 tags that open at an offset, each by its header, at most
+// core.MaxLeadingTags of them, and counts them; a tag that runs past the end stops it, and a read
+// over the limit is refused.
+func TestSkipTags(t *testing.T) {
+	v1 := testfile.ID3v1("T", "", "", "", "", 255)
+	v2 := testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "x"))
+	frame := []byte{0xFF, 0xFB, 0x90, 0x00, 0, 0, 0, 0}
+	for _, c := range []struct {
+		name string
+		data []byte
+		want int
+		tags int
+	}{
+		{"an ID3v1 tag and two ID3v2 tags", slices.Concat(v1, v2, v2, frame), len(v1) + 2*len(v2), 3},
+		{"no tag", frame, 0, 0},
+		{"a tag running past the end", slices.Concat(v1, v2[:len(v2)-1]), len(v1), 1},
+		{"more tags than the bound", bytes.Repeat(v2, core.MaxLeadingTags+1), core.MaxLeadingTags * len(v2), core.MaxLeadingTags},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, tags, err := SkipTags(core.BytesSource(c.data), 0, int64(len(c.data)), 1<<20)
+			if err != nil || got != int64(c.want) || tags != c.tags {
+				t.Errorf("SkipTags = %d, %d tags, %v; want %d, %d tags", got, tags, err, c.want, c.tags)
+			}
+		})
+	}
+	if _, _, err := SkipTags(core.BytesSource(slices.Concat(v1, frame)), 0, 200, 64); !errors.Is(err, waxerr.ErrSizeTooLarge) {
+		t.Errorf("a header read over the limit: err = %v, want declared size too large", err)
+	}
+	// The headers lie inside the file, so a read of one that fails is an error; one past the end of
+	// the file is no tag.
+	data := slices.Concat(v1, v2, frame)
+	if _, _, err := SkipTags(&testfile.Faulty{Src: core.BytesSource(data), Fails: testfile.From(int64(len(v1)))}, 0, int64(len(data)), 1<<20); !errors.Is(err, syscall.EIO) {
+		t.Errorf("a header read failing inside the file: err = %v, want the read's own failure", err)
+	}
+	if got, tags, err := SkipTags(core.BytesSource(v1[:100]), 0, 200, 1<<20); err != nil || got != 0 || tags != 0 {
+		t.Errorf("a header past the end of the file: %d, %d tags, %v; want no tag", got, tags, err)
 	}
 }

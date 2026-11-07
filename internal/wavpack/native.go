@@ -1,12 +1,13 @@
 // Package wavpack implements WavPack (.wv) metadata for the public waxlabel
 // package. The codec is internal.
 //
-// Layout: "wvpk" blocks, optional APEv2, optional trailing ID3v1. APEv2
-// (internal/ape) is authoritative; ID3v1 is preserved only. Blocks are copied
-// verbatim; only the tail is rewritten.
+// Layout: optional leading ID3v2, "wvpk" blocks, then the tail internal/tail reads: APE tags,
+// Lyrics3 blocks, ID3v1 tags and junk. The APE tag nearest the end of the file (internal/ape) is
+// authoritative; the ID3 containers and Lyrics3 blocks are preserved as legacy only. Blocks are
+// copied verbatim; only the tags around them are rewritten.
 //
 // Correction files (.wvc) are out of scope; editing .wv leaves a companion .wvc
-// valid because audio bytes do not move.
+// valid because the blocks are unchanged.
 //
 // Reimplemented from the public WavPack block-format docs; reference code informed
 // design only.
@@ -15,19 +16,20 @@ package wavpack
 import (
 	"slices"
 
-	"github.com/colespringer/waxlabel/internal/ape"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/tail"
 )
 
-// doc is the native document: first-block config plus trailing APEv2/ID3v1.
-// Trailer.Start is the end of audio. Implements core.NativeDoc.
+// doc is the native document: first-block config, optional leading ID3v2, the trailing tags.
+// trailer.Start is the end of audio. Implements core.NativeDoc.
 type doc struct {
-	trailer ape.Trailer
+	leadingID3 []byte // stray ID3v2 before the first block, preserved
+	streamAt   int64  // first block offset: past leadingID3 and any leading bytes kept with it
+
+	trailer tail.Trailer
 
 	header blockHeader // first block; properties and essence config
 	track  core.AudioTrack
-
-	size int64
 }
 
 func (d *doc) Format() core.Format { return core.FormatWavPack }
@@ -35,12 +37,12 @@ func (d *doc) Format() core.Format { return core.FormatWavPack }
 // Clone deep-copies so Document accessors stay detached.
 func (d *doc) Clone() core.NativeDoc {
 	c := *d
-	c.trailer.Tag = d.trailer.Tag.Clone()
-	c.trailer.ID3v1 = slices.Clone(d.trailer.ID3v1)
+	c.leadingID3 = slices.Clone(d.leadingID3)
+	c.trailer = d.trailer.Clone()
 	return &c
 }
 
 // Describe summarizes native structure for dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
-	return d.trailer.Describe("WavPack blocks", d.track.Codec)
+	return d.trailer.Describe(d.leadingID3, d.streamAt, "WavPack blocks", d.track.Codec)
 }

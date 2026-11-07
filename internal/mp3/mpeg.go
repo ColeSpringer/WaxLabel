@@ -13,6 +13,7 @@ type mpegInfo struct {
 	frameBitrate    int // the first frame's bitrate (bps); 0 for "free"
 	samplesPerFrame int
 	vbrFrames       uint32 // frame count from a Xing/Info/VBRI header, else 0
+	vbrBytes        uint32 // stream bytes from a Xing/Info/VBRI header, this frame included, else 0
 	codec           string
 }
 
@@ -47,37 +48,66 @@ var sampleRateTable = [3][4]int{
 	{11025, 12000, 8000, 0},
 }
 
-// parseMPEG finds the first valid MPEG frame in window and decodes properties,
-// including a VBR frame count when Xing/Info/VBRI is present. Requires a second
+// parseMPEG finds the first valid MPEG frame in window, returning its offset and properties,
+// including the VBR frame and byte counts when Xing/Info/VBRI is present. Requires a second
 // agreeing frame at the computed length (padding false-sync guard).
-func parseMPEG(window []byte) (mpegInfo, bool) {
-	for i := 0; i+4 <= len(window); i++ {
-		info, ok := decodeHeader(window[i:])
-		if !ok {
-			continue
-		}
-		if !confirmNextFrame(window, i, info) {
-			continue // likely a false sync; keep scanning
-		}
+func parseMPEG(window []byte) (int, mpegInfo, bool) {
+	i, info, ok := firstFrame(window, confirmNextFrame)
+	if ok {
 		readVBR(window[i:], &info)
-		return info, true
 	}
-	return mpegInfo{}, false
+	return i, info, ok
+}
+
+// firstFrame returns the offset and header of the first frame in window that confirm accepts; a
+// rejected header is likely a false sync, so the scan goes on.
+func firstFrame(window []byte, confirm func(window []byte, i int, info mpegInfo) bool) (int, mpegInfo, bool) {
+	for i := 0; i+4 <= len(window); i++ {
+		if info, ok := decodeHeader(window[i:]); ok && confirm(window, i, info) {
+			return i, info, true
+		}
+	}
+	return 0, mpegInfo{}, false
 }
 
 // confirmNextFrame: second frame at computed length agrees on version/layer/rate.
 // Free-format or near window end: accept alone.
 func confirmNextFrame(window []byte, i int, info mpegInfo) bool {
+	agrees, checked := nextFrameAgrees(window, i, info)
+	return agrees || !checked
+}
+
+// nextFrameConfirms: second frame at computed length, inside window, agrees on version/layer/rate.
+// Nothing confirms a frame alone.
+func nextFrameConfirms(window []byte, i int, info mpegInfo) bool {
+	agrees, _ := nextFrameAgrees(window, i, info)
+	return agrees
+}
+
+// nextFrameAgrees reports whether the header one computed frame length past i agrees on version,
+// layer and sample rate; checked is false when there is none to compare: a free-format or unknown
+// length, or a next frame past the window.
+func nextFrameAgrees(window []byte, i int, info mpegInfo) (agrees, checked bool) {
 	flen := frameLength(info)
-	if flen <= 0 {
-		return true // free-format or unknown length: cannot cross-check
+	if flen <= 0 || i+flen+4 > len(window) {
+		return false, false
 	}
-	next := i + flen
-	if next+4 > len(window) {
-		return true // the next frame is past the scan window; do not reject
+	n, ok := decodeHeader(window[i+flen:])
+	return ok && sameStream(info, n), true
+}
+
+// sameStream reports whether frame h agrees with frame f on version, layer and sample rate.
+func sameStream(f, h mpegInfo) bool {
+	return h.version == f.version && h.layer == f.layer && h.sampleRate == f.sampleRate
+}
+
+// byteCount is the stream's byte count from f's VBR header, or 0 when it has none or one that does
+// not cover f's own frame.
+func (f mpegInfo) byteCount() int64 {
+	if n := int64(f.vbrBytes); n > 0 && n >= int64(frameLength(f)) {
+		return n
 	}
-	n, ok := decodeHeader(window[next:])
-	return ok && n.version == info.version && n.layer == info.layer && n.sampleRate == info.sampleRate
+	return 0
 }
 
 // frameLength returns the size in bytes of the frame described by info, or 0 for
@@ -164,7 +194,7 @@ func codecName(version, layer int) string {
 
 // readVBR looks for a Xing/Info or VBRI header inside the first frame and records
 // the total frame count, which gives an accurate duration for variable-bitrate
-// streams. frame points at the start of the first frame header.
+// streams, and the stream's byte count. frame points at the start of the first frame header.
 func readVBR(frame []byte, info *mpegInfo) {
 	// Xing/Info sits after the header and side information, plus a 2-byte MPEG CRC when
 	// the protection bit is clear. Probe the CRC-less offset first, then the CRC-present
@@ -178,14 +208,20 @@ func readVBR(frame []byte, info *mpegInfo) {
 		}
 		if tag := string(frame[off : off+4]); tag == "Xing" || tag == "Info" {
 			flags := binary.BigEndian.Uint32(frame[off+4 : off+8])
+			field := off + 8
 			if flags&0x1 != 0 { // frame count present
-				info.vbrFrames = binary.BigEndian.Uint32(frame[off+8 : off+12])
+				info.vbrFrames = binary.BigEndian.Uint32(frame[field : field+4])
+				field += 4
+			}
+			if flags&0x2 != 0 && field+4 <= len(frame) { // byte count present
+				info.vbrBytes = binary.BigEndian.Uint32(frame[field : field+4])
 			}
 			return
 		}
 	}
 	// VBRI sits at a fixed offset of 32 bytes after the header.
 	if off := 4 + 32; off+18 <= len(frame) && string(frame[off:off+4]) == "VBRI" {
+		info.vbrBytes = binary.BigEndian.Uint32(frame[off+10 : off+14])
 		info.vbrFrames = binary.BigEndian.Uint32(frame[off+14 : off+18])
 	}
 }

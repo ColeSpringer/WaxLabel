@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math"
+	"slices"
 	"testing"
 	"time"
 
@@ -31,12 +32,14 @@ func TestCollectMvhdAgreesWithMovieTimingOf(t *testing.T) {
 	if !ok {
 		t.Fatal("mvhd not found in the walked moov")
 	}
-	ts, dur := movieTimingOf(src, moov, limit)
-	if ts != 1000 || dur != 9000 {
-		t.Errorf("movieTimingOf = (%d, %d), want (1000, 9000) from the truncated mvhd", ts, dur)
+	ts, dur, err := movieTimingOf(src, moov, limit)
+	if err != nil || ts != 1000 || dur != 9000 {
+		t.Errorf("movieTimingOf = (%d, %d, %v), want (1000, 9000) from the truncated mvhd", ts, dur, err)
 	}
 	var d doc
-	collectMvhd(src, mvhd, &d, limit)
+	if err := collectMvhd(src, mvhd, &d, limit); err != nil {
+		t.Fatal(err)
+	}
 	if d.movieTimescale != ts || d.movieDuration != dur {
 		t.Errorf("collectMvhd = (%d, %d) but movieTimingOf = (%d, %d): a truncated mvhd desyncs the write vs reparse timing",
 			d.movieTimescale, d.movieDuration, ts, dur)
@@ -57,8 +60,8 @@ func TestDecodeChplV2SkipsReservedField(t *testing.T) {
 	raw := append(make([]byte, 8), payload...) // 8-byte dummy atom header; payloadOff() = 8
 	n := node{name: [4]byte{'c', 'h', 'p', 'l'}, offset: 0, headerLen: 8, size: int64(len(raw))}
 
-	version, chapters, ok := decodeChpl(core.BytesSource(raw), n, int64(len(raw)))
-	if !ok {
+	version, chapters, ok, err := decodeChpl(core.BytesSource(raw), n, int64(len(raw)))
+	if err != nil || !ok {
 		t.Fatal("decodeChpl(v2) returned ok=false; the reserved field was not skipped for version 2")
 	}
 	if version != 2 {
@@ -390,5 +393,32 @@ func TestIsPlaceholderTail(t *testing.T) {
 	// Unknown movie timing disables the test entirely.
 	if isPlaceholderTail(past, 1, mts, 0, 0) {
 		t.Error("an unknown movie duration must not recognize a placeholder")
+	}
+}
+
+// readLog records the offset and length of every read it serves.
+type readLog struct {
+	core.ReaderAtSized
+	reads [][2]int64
+}
+
+func (r *readLog) ReadAt(p []byte, off int64) (int, error) {
+	r.reads = append(r.reads, [2]int64{off, int64(len(p))})
+	return r.ReaderAtSized.ReadAt(p, off)
+}
+
+// A chapter sample's title is read once, after its 2-byte length, and only the title counts
+// against the limit: the length is not read again with it, and the style atoms after it are not
+// read at all.
+func TestReadTextSampleReadsTitleAlone(t *testing.T) {
+	sample := append([]byte{0, 5}, "Intro"...)
+	sample = append(sample, make([]byte, 100)...) // style atoms after the title
+	src := &readLog{ReaderAtSized: core.BytesSource(sample)}
+	title, err := readTextSample(src, 0, int64(len(sample)), 5)
+	if err != nil || title != "Intro" {
+		t.Fatalf("readTextSample = %q, %v, want Intro", title, err)
+	}
+	if want := [][2]int64{{0, 2}, {2, 5}}; !slices.Equal(src.reads, want) {
+		t.Errorf("reads (offset, length) = %v, want %v", src.reads, want)
 	}
 }

@@ -52,6 +52,18 @@ func essenceOf(t *testing.T, data []byte) wl.AudioDigest {
 	return d
 }
 
+// An Ogg file whose first page begins a Skeleton stream is detected as Ogg and refused as unsupported,
+// naming that layout: the Skeleton and the streams multiplexed with it are not read.
+func TestOggSkeletonFirstRefused(t *testing.T) {
+	fishead := slices.Concat([]byte("fishead\x00"), testfile.LE16(3), testfile.LE16(0), make([]byte, 52))
+	data := slices.Concat(testfile.OggPage(2, 0, 7, 0, fishead), readFixture(t, sampleOgg))
+	_, err := wl.Parse(context.Background(), wl.BytesSource(data))
+	if !errors.Is(err, waxerr.ErrUnsupportedFormat) || !strings.Contains(err.Error(), "Skeleton") ||
+		strings.Contains(err.Error(), "unrecognized Ogg codec") {
+		t.Errorf("err = %v, want unsupported format naming the Skeleton stream", err)
+	}
+}
+
 func TestOggParse(t *testing.T) {
 	cases := []struct {
 		path    string

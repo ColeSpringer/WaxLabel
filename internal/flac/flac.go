@@ -27,6 +27,18 @@ func (Codec) Sniff(header []byte) bool {
 	return len(header) >= 4 && string(header[:4]) == string(flacMagic)
 }
 
+// Resync finds the first "fLaC" in window followed by a STREAMINFO block header, the block the
+// parser requires first ([core.Resyncer]).
+func (c Codec) Resync(window []byte) (int, bool) {
+	for i := range window {
+		if b := window[i:]; c.Sniff(b) && len(b) >= 8 && b[4]&0x7F == blkStreamInfo &&
+			int(b[5])<<16|int(b[6])<<8|int(b[7]) >= streamInfoLen {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 // Capabilities: tags as Vorbis comments, art as PICTURE blocks, both fully writable.
 // Chapters use CHAPTERxxx (start+title); CUESHEET is preserved opaque, not projected.
 func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
@@ -54,8 +66,9 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 
 // EssenceExtent: versioned name plus STREAMINFO config mixed ahead of audio frames.
 // v2 excludes trailing junk found by the frame-tail walk (v1 hashed it as audio);
-// AudioDigest requires a new name for that refinement. Search is bounded by
-// min(4 MiB, alloc limit), so exclusion is deterministic for a given file/config.
+// AudioDigest requires a new name for that refinement. The walk's window stops at
+// 4 MiB and its scan of a zero run at the allocation limit, so exclusion is
+// deterministic for a given file and limit.
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	t := m.Properties.First()
 	var b [16]byte

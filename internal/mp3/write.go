@@ -7,10 +7,12 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
+	"github.com/colespringer/waxlabel/internal/tail"
 )
 
 // Plan builds the rewrite. Front ID3v2 re-rendered (source version; untouched
-// frames kept); MPEG and trailing legacy copied unless stripped.
+// frames kept); the bytes before the first frame and the MPEG frames copied, then the
+// tail, its legacy tags unless stripped.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -20,7 +22,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return nil, fmt.Errorf("mp3: edited media has no MP3 native document")
 	}
 
-	legacyPresent := len(d.ape) > 0 || len(d.id3v1) > 0
+	legacyPresent := d.layout.HasTags()
 
 	tagsChanged := !base.Tags.Equal(edited.Tags)
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
@@ -92,41 +94,20 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Operations = append(report.Operations, core.EncodingRewriteOp("genre"))
 	}
 
-	// Assemble the output: the new ID3v2 tag (when any), the verbatim audio, then the
-	// preserved (or stripped) trailing legacy containers.
-	audioLen := d.audioEnd - d.audioStart
+	// Assemble the output: the new ID3v2 tag (when any), the bytes before the first frame and the
+	// verbatim audio, then the tail, its legacy tags preserved or stripped.
 	var segs []bits.Segment
 	if ft.Bytes != nil {
 		segs = append(segs, bits.Lit(ft.Bytes))
 	}
-	segs = append(segs, bits.Copy(d.audioStart, audioLen))
-
-	apeLen := int64(len(d.ape))
-	id3v1Len := int64(len(d.id3v1))
-	if stripLegacy {
-		if apeLen > 0 {
-			report.Operations = append(report.Operations, "APEv2 strip")
-		}
-		if id3v1Len > 0 {
-			report.Operations = append(report.Operations, "ID3v1 strip")
-		}
-	} else {
-		if apeLen > 0 {
-			segs = append(segs, bits.Copy(d.apeOffset, apeLen))
-			report.Operations = append(report.Operations, "APEv2 preservation")
-		}
-		if id3v1Len > 0 {
-			// Copy the whole detected ID3v1 run (id3v1Len), not a literal 128: a stacked trailer
-			// is 256+ bytes, and 128 would keep only the last block.
-			segs = append(segs, bits.Copy(d.size-id3v1Len, id3v1Len))
-			report.Operations = append(report.Operations, "ID3v1 preservation")
-		}
-	}
+	segs = append(segs, bits.Copy(d.id3Len, d.layout.Start-d.id3Len))
+	segs = append(segs, tail.Segments(d.layout, stripLegacy)...)
+	report.Operations = append(report.Operations, tail.Operations(d.layout, stripLegacy)...)
 
 	newSize := bits.OutputLen(segs)
 	report.BytesAfter = newSize
 
-	result := buildResult(edited, d, ft.Tag, ft.Bytes, audioLen)
+	result := buildResult(edited, d, ft.Tag, int64(len(ft.Bytes)), stripLegacy)
 	// Surface ID3 rebuild losses the bytes cannot show. MP3 has no other tag container, so
 	// an ID3 date drop or reduction is always a file-level loss.
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, info, result.Tags)
@@ -139,19 +120,19 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 
-// buildResult constructs the plan's result. The written frames
-// are re-projected, so the canonical view equals a fresh parse of the bytes.
-func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte, audioLen int64) *core.Media {
-	id3Len := int64(len(tagBytes))
+// buildResult constructs the plan's result. The written frames are re-projected, so the
+// canonical view equals a fresh parse of the bytes, and the essence moves to just past the new tag
+// of tagLen bytes and the bytes kept before the first frame.
+func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagLen int64, strip bool) *core.Media {
 	proj := id3.Project(newTag)
-	return &core.Media{
+	m := &core.Media{
 		Format:       core.FormatMP3,
 		Properties:   edited.Properties.Clone(),
 		Tags:         proj.Tags,
 		Pictures:     core.ClonePictures(edited.Pictures),
 		Chapters:     core.ChaptersOpenedPastDuration(proj.Chapters, base.track.Duration),
 		SyncedLyrics: proj.SyncedLyrics,
-		AudioStart:   id3Len,
-		AudioEnd:     id3Len + audioLen,
 	}
+	base.layout.SetMovedEssence(m, base.firstFrameOff, tagLen+base.firstFrameOff-base.id3Len, strip)
+	return m
 }

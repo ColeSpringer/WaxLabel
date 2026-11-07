@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/colespringer/waxlabel/internal/ape"
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/id3"
+	"github.com/colespringer/waxlabel/internal/tail"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -14,66 +15,78 @@ import (
 // 32 channels need 16; the cap stops a corrupt stream with no final-block flag.
 const maxChannelBlocks = 64
 
-// parse reads geometry from the first block, tags from APEv2, and legacy ID3v1
-// into the family view. Peel is end-first (ID3v1 after APEv2). Bytes before the
-// trailer are audio and are copied verbatim on write.
+// parse reads geometry from the first block, tags from the APE tag that is the store, and legacy
+// containers (leading ID3v2, trailing ID3v1) into the family view. The block chain says where the
+// audio ends; the blocks up to there are copied verbatim on write.
 func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	size := src.Size()
 	limit := opts.Limits.MaxAllocBytes
-	d := &doc{size: size}
+	d := &doc{}
 	var warnings []core.Warning
 
-	head, err := bits.ReadSlice(src, 0, min(size, blockHeaderLen), limit)
+	// Optional leading ID3v2; preserved, never authoritative.
+	var err error
+	d.leadingID3, d.streamAt, warnings, err = id3.ReadFrontStray(src, size, limit, Codec{}, "WavPack")
+	if err != nil {
+		return nil, err
+	}
+
+	head, err := bits.ReadSlice(src, d.streamAt, min(size-d.streamAt, blockHeaderLen), limit)
+	if fatal := bits.Fatal(err); fatal != nil {
+		return nil, fatal
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: WavPack file shorter than a block header", waxerr.ErrInvalidData)
 	}
-	h, err := parseBlockHeader(head, size)
+	h, err := parseBlockHeader(head, size-d.streamAt)
 	if err != nil {
 		return nil, err
 	}
 	d.header = h
 
-	// Floor: a trailing tag must start after the first block.
-	trailer, tailWarnings := ape.PeelTrailer(src, size, h.totalLen(), limit, opts.Limits.MaxElements)
-	d.trailer = trailer
-	warnings = append(warnings, tailWarnings...)
-
-	media := &core.Media{
-		Format:     core.FormatWavPack,
-		Native:     d,
-		AudioStart: 0,
-		AudioEnd:   d.trailer.Start,
+	// The tags start past the first block.
+	var walk chain
+	layout, err := tail.Scan(src, size, d.streamAt+h.totalLen(), limit, opts.Limits.MaxElements,
+		func(src core.ReaderAtSized, boundary int64) (int64, error) {
+			w, err := blockChainEnd(ctx, src, d.streamAt, boundary, limit, opts.Limits.MaxElements)
+			walk = w
+			return w.end, err
+		})
+	if err != nil {
+		return nil, err
 	}
-	proj := ape.Project(d.trailer.Tag)
-	media.Tags = proj.Tags
-	media.Families = proj.Families
-	media.Pictures = proj.Pictures
-	warnings = append(warnings, proj.Warnings...)
-	warnings = append(warnings, ape.EncoderNoise(d.trailer.Items())...)
-	warnings = append(warnings, ape.InvalidUTF8Warnings(d.trailer.Tag)...)
-	warnings = append(warnings, ape.InvalidKeyWarnings(d.trailer.Tag)...)
-	// ID3v1 is family-only; never promoted into the canonical set.
-	media.Families = append(media.Families, ape.LegacyFamilies(media.Tags, d.trailer.ID3v1)...)
+	d.trailer = tail.Trailer{Layout: layout}
+	warnings = append(warnings, d.trailer.Warnings("after the WavPack stream")...)
 
-	d.track = buildTrack(ctx, src, d, limit)
+	media := &core.Media{Format: core.FormatWavPack, Native: d}
+	projected, audioLen := d.trailer.Project(media, d.leadingID3, d.streamAt, opts.Limits.MaxElements)
+	warnings = append(warnings, projected...)
+
+	d.track, err = buildTrack(ctx, src, d, walk, audioLen, limit)
+	if err != nil {
+		return nil, err
+	}
 	media.Properties = core.Properties{Container: "WavPack", Tracks: []core.AudioTrack{d.track}}
-	if d.track.TotalSamples == 0 && d.trailer.Start > 0 {
+	if walk.end >= 0 && !walk.audio && d.trailer.Start > d.streamAt {
 		warnings = core.Warn(warnings, core.WarnNoAudioFrames,
 			"no WavPack audio samples were found; the file may not be audio")
 	}
 
 	media.Warnings = warnings
-	media.Identity = core.Identity{Size: size}
-	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media)
+	if err := core.SetIdentity(src, media); err != nil {
+		return nil, err
+	}
 	return media, nil
 }
 
 // buildTrack: first-block geometry, optional ID_SAMPLE_RATE sub-block, channel sum
-// over the first sample group (multichannel chains several blocks).
-func buildTrack(ctx context.Context, src core.ReaderAtSized, d *doc, limit int64) core.AudioTrack {
+// over the first sample group (multichannel chains several blocks), the length a first block at
+// index 0 states or else the one walk measured, and the bitrate of the audioLen essence bytes. A read
+// over limit is refused, and one that fails with a device error is that error.
+func buildTrack(ctx context.Context, src core.ReaderAtSized, d *doc, walk chain, audioLen, limit int64) (core.AudioTrack, error) {
 	h := d.header
 	t := core.AudioTrack{
 		Codec:         "WavPack",
@@ -85,26 +98,35 @@ func buildTrack(ctx context.Context, src core.ReaderAtSized, d *doc, limit int64
 		// Magnitude is the integer range samples came from, not storage; float is 32-bit.
 		t.BitsPerSample = 32
 	}
-	if h.totalSamples32 != totalSamplesUnknown {
+	switch {
+	case h.blockIndex == 0 && h.statesTotal():
 		t.TotalSamples = h.totalSamples
+	case walk.end >= 0:
+		t.TotalSamples = walk.samples
 	}
 
-	off := int64(0)
+	off := d.streamAt
 	channels := 0
 	for i := 0; i < maxChannelBlocks && off+blockHeaderLen <= d.trailer.Start; i++ {
 		if ctx.Err() != nil {
 			break
 		}
 		hb, err := bits.ReadSlice(src, off, blockHeaderLen, limit)
+		if fatal := bits.Fatal(err); fatal != nil {
+			return t, fatal
+		}
 		if err != nil {
 			break
 		}
 		bh, err := parseBlockHeader(hb, d.trailer.Start-off)
-		if err != nil || bh.blockIndex != 0 {
+		if err != nil || bh.blockIndex != h.blockIndex {
 			break
 		}
 		if i == 0 && (t.SampleRate == 0 || bh.dsd()) {
 			body, err := bits.ReadSlice(src, off+blockHeaderLen, min(bh.totalLen()-blockHeaderLen, maxSubBlockScan), limit)
+			if fatal := bits.Fatal(err); fatal != nil {
+				return t, fatal
+			}
 			if err == nil {
 				rate, isDSD := subBlockRate(body)
 				if rate > 0 {
@@ -127,6 +149,6 @@ func buildTrack(ctx context.Context, src core.ReaderAtSized, d *doc, limit int64
 	}
 
 	t.Duration = core.SamplesToDuration(t.TotalSamples, t.SampleRate)
-	t.Bitrate = core.AverageBitrate(d.trailer.Start, t.Duration.Seconds())
-	return t
+	t.Bitrate = core.AverageBitrate(audioLen, t.Duration.Seconds())
+	return t, nil
 }

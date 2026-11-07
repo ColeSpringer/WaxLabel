@@ -60,6 +60,18 @@ func TestMusepackNativeDescribe(t *testing.T) {
 	}
 }
 
+// WavPack flag-word bits for wvBlock, beside bit 0 (2 bytes per sample): rate index 9 (44.1 kHz)
+// or 15 (the rate is in an ID_SAMPLE_RATE sub-block), mono, the sample group's initial and final
+// blocks, DSD.
+const (
+	wvRate44k     = 9 << 23
+	wvRateUnknown = 15 << 23
+	wvMono        = 1 << 2
+	wvInitial     = 1 << 11
+	wvFinal       = 1 << 12
+	wvDSD         = 1 << 31
+)
+
 // wvBlock builds a WavPack block header with the given flags, so the flag-derived
 // geometry can be exercised without an encoder that emits it.
 func wvBlock(flags uint32, totalSamples uint32, body []byte) []byte {
@@ -71,6 +83,15 @@ func wvBlock(flags uint32, totalSamples uint32, body []byte) []byte {
 	binary.LittleEndian.PutUint32(b[20:24], totalSamples)
 	binary.LittleEndian.PutUint32(b[24:28], flags)
 	return append(b, body...)
+}
+
+// wvGroupBlock is a block of the sample group that starts at index and holds samples samples, in a
+// stream stating total samples (0xFFFFFFFF states none).
+func wvGroupBlock(flags, total, index, samples uint32, body []byte) []byte {
+	b := wvBlock(flags, total, body)
+	binary.LittleEndian.PutUint32(b[16:20], index)
+	binary.LittleEndian.PutUint32(b[20:24], samples)
+	return b
 }
 
 // wvSubBlock frames one WavPack metadata sub-block: the id byte, a word count, and the
@@ -90,10 +111,10 @@ func wvSubBlock(id byte, data []byte) []byte {
 // ID_SAMPLE_RATE sub-block walk: with the rate index set to "unknown", the rate can only come from
 // the block body, and a break there would leave every such file reporting 0 Hz and no duration.
 func TestWavPackNonStandardSampleRate(t *testing.T) {
-	const rateIndexUnknown, magShift = 15, 18
+	const magShift = 18
 	flags := uint32(1) | // 2 bytes per sample
 		uint32(15)<<magShift | // magnitude, not the bit depth
-		uint32(rateIndexUnknown)<<23
+		wvRateUnknown
 	sub := wvSubBlock(0x27, []byte{0x40, 0x1F, 0x00}) // ID_SAMPLE_RATE: 8000 Hz, 24-bit LE
 	data := wvBlock(flags, 8000, sub)
 
@@ -110,8 +131,7 @@ func TestWavPackNonStandardSampleRate(t *testing.T) {
 }
 
 func TestWavPackDSDBlock(t *testing.T) {
-	const rateIndexUnknown = 15
-	flags := uint32(1) | uint32(rateIndexUnknown)<<23 | 1<<31 // DSD
+	flags := uint32(1) | wvRateUnknown | wvDSD
 	body := append(wvSubBlock(0x0E, []byte{0x01}), wvSubBlock(0x27, []byte{0x00, 0x11, 0x2B})...)
 	data := wvBlock(flags, 2822400, body)
 

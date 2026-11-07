@@ -1,9 +1,13 @@
 package wavpack
 
 import (
+	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 
+	"github.com/colespringer/waxlabel/internal/bits"
+	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -27,6 +31,7 @@ const (
 	flagShiftMask          = 0x1f
 	flagRateIndexShift     = 23
 	flagRateIndexMask      = 0xf
+	flagInitialBlock       = 1 << 11
 	flagFinalBlock         = 1 << 12
 	flagDSD                = 1 << 31
 	// totalSamplesUnknown: all-ones low uint32 when length was unknown at encode.
@@ -61,6 +66,7 @@ type blockHeader struct {
 	totalSamples   uint64
 	totalSamples32 uint32
 	blockIndex     uint64
+	blockSamples   uint32
 	flags          uint32
 }
 
@@ -77,14 +83,13 @@ func parseBlockHeader(b []byte, avail int64) (blockHeader, error) {
 	}
 	h.blockSize = binary.LittleEndian.Uint32(b[4:8])
 	h.version = binary.LittleEndian.Uint16(b[8:10])
-	// 40-bit counts: high byte + low uint32. Sample-count high nibble is a subtractive
-	// correction, not a shift-in.
+	// 40-bit counts: a high byte and a low uint32. The encoder stores the total plus
+	// total/0xFFFFFFFF, which keeps the low word off the all-ones escape, so the high byte is
+	// subtracted back out.
 	h.totalSamples32 = binary.LittleEndian.Uint32(b[12:16])
-	h.totalSamples = uint64(b[11]&0x0F)<<32 | uint64(h.totalSamples32)
-	if corr := uint64(b[11] >> 4); corr <= h.totalSamples {
-		h.totalSamples -= corr
-	}
+	h.totalSamples = uint64(h.totalSamples32) + uint64(b[11])<<32 - uint64(b[11])
 	h.blockIndex = uint64(b[10])<<32 | uint64(binary.LittleEndian.Uint32(b[16:20]))
+	h.blockSamples = binary.LittleEndian.Uint32(b[20:24])
 	h.flags = binary.LittleEndian.Uint32(b[24:28])
 	if h.version < minVersion || h.version > maxVersion {
 		return h, fmt.Errorf("%w: WavPack stream version %#x is outside the supported range %#x-%#x",
@@ -103,6 +108,198 @@ func parseBlockHeader(b []byte, avail int64) (blockHeader, error) {
 
 // totalLen is on-disk length: 8 bytes before the size field plus the declared size.
 func (h blockHeader) totalLen() int64 { return 8 + int64(h.blockSize) }
+
+// statesTotal reports whether the block states the stream's total samples: the encoder writes the
+// all-ones escape when it never learned the length, and ffmpeg leaves 0 when it writes to a pipe.
+func (h blockHeader) statesTotal() bool {
+	return h.totalSamples32 != totalSamplesUnknown && h.totalSamples != 0
+}
+
+// chain is what a walk of the block headers finds.
+type chain struct {
+	end     int64  // where the stream ends, -1 when unknown
+	samples uint64 // the samples its blocks hold, when end is known
+	audio   bool   // a block holds samples
+}
+
+// tailWindow bounds the bytes before the tags searched for the final block of a stream whose first
+// block states its total.
+const tailWindow = 64 << 10
+
+// blockChainEnd finds where the stream of blocks whose first block is at start ends: after the final
+// block of the sample group that reaches the total a first block at index 0 states, before a block
+// whose index restarts or goes backward, or before a position that opens no block. A stream that
+// starts past index 0 is a cut, whose stated total places no end: ffmpeg's -ss back-patches the cut's
+// own count, a byte carve keeps the original's. The blocks of one multichannel sample group share its
+// index. A block running past boundary, where the tags begin, a header past the end of the file, or
+// more than maxBlocks headers leave the end unknown. With a total every block states, the blocks in
+// the tailWindow bytes before boundary settle the end when they reach it ([finalBlock]). They are
+// checked only against one another, so a break, or a stream of that total joined on, at or before
+// the first of their headers goes unseen, and such a stream ends at boundary. Otherwise the headers
+// are walked from start ([walkBlocks]). Reads are as [bits.ReadWithin] makes them: a failed read or
+// one over limit is an error.
+func blockChainEnd(ctx context.Context, src core.ReaderAtSized, start, boundary, limit int64, maxBlocks int) (chain, error) {
+	if err := ctx.Err(); err != nil {
+		return chain{}, err
+	}
+	if c, ok, err := finalBlock(src, start, boundary, limit); err != nil || ok {
+		return c, err
+	}
+	return walkBlocks(ctx, src, start, boundary, limit, maxBlocks)
+}
+
+// finalBlock settles the end of a stream whose first block, at start, is at index 0, holds samples
+// and states the total, from the tailWindow bytes before boundary alone. The first block header among
+// them decides: from there the blocks, each of the first one's version and stating its total, must run
+// back to back to boundary, the first of them holding samples, follow one another as a walk requires,
+// open no stream past start at index 0, and end with the group that first reaches the total, which
+// starts before it. Then the stream ends at boundary, as a walk ends it when the blocks before that
+// header lead into it. Anything else, or a window that would read over limit, leaves it to the walk;
+// ok is false then.
+func finalBlock(src core.ReaderAtSized, start, boundary, limit int64) (chain, bool, error) {
+	b, err := bits.ReadWithin(src, start, blockHeaderLen, limit)
+	if err != nil || b == nil {
+		return chain{}, false, err
+	}
+	first, err := parseBlockHeader(b, 0)
+	if err != nil || first.blockIndex != 0 || first.blockSamples == 0 || !first.statesTotal() {
+		return chain{}, false, nil
+	}
+	lo := max(start, boundary-tailWindow)
+	if boundary-lo > limit {
+		return chain{}, false, nil
+	}
+	w, err := bits.ReadWithin(src, lo, boundary-lo, limit)
+	if err != nil || w == nil {
+		return chain{}, false, err
+	}
+	for i := 0; i < len(w); i++ {
+		j := bytes.Index(w[i:], []byte(blockMagic))
+		if j < 0 {
+			break
+		}
+		i += j
+		if _, err := parseBlockHeader(w[i:min(i+blockHeaderLen, len(w))], 0); err != nil {
+			continue // no block header opens here
+		}
+		hs := backToBack(w[i:], first)
+		if hs == nil {
+			return chain{}, false, nil
+		}
+		if hs[0].blockSamples == 0 {
+			return chain{}, false, nil // metadata blocks lead, behind which a joined stream would hide
+		}
+		g := groups{total: first.totalSamples}
+		off := lo + int64(i)
+		for _, h := range hs {
+			before := g.reached
+			if !g.next(h) || !before && g.reached && g.index >= g.total ||
+				h.blockSamples > 0 && h.blockIndex == 0 && h.flags&flagInitialBlock != 0 && off > start {
+				return chain{}, false, nil
+			}
+			off += h.totalLen()
+		}
+		if !g.reached {
+			return chain{}, false, nil
+		}
+		return chain{end: boundary, samples: g.index + uint64(g.samples), audio: true}, true, nil
+	}
+	return chain{}, false, nil
+}
+
+// backToBack decodes the headers of the blocks w holds back to back from its start, each of first's
+// version and stating its total, and returns them when the last ends at w's end, else nil.
+func backToBack(w []byte, first blockHeader) []blockHeader {
+	var hs []blockHeader
+	for i := 0; i < len(w); {
+		if len(w)-i < blockHeaderLen {
+			return nil
+		}
+		h, err := parseBlockHeader(w[i:i+blockHeaderLen], int64(len(w)-i))
+		if err != nil || h.version != first.version || !h.statesTotal() || h.totalSamples != first.totalSamples {
+			return nil
+		}
+		hs = append(hs, h)
+		i += int(h.totalLen())
+	}
+	return hs
+}
+
+// walkBlocks walks the block headers from the first block at start, one read each, and ends the
+// stream as [blockChainEnd] says.
+func walkBlocks(ctx context.Context, src core.ReaderAtSized, start, boundary, limit int64, maxBlocks int) (chain, error) {
+	var g groups
+	unknown := func() (chain, error) { return chain{end: -1, audio: g.seen}, nil }
+	off := start
+	for n := 0; boundary-off >= blockHeaderLen; n++ {
+		if err := ctx.Err(); err != nil {
+			return chain{}, err
+		}
+		if maxBlocks > 0 && n >= maxBlocks {
+			return unknown()
+		}
+		b, err := bits.ReadWithin(src, off, blockHeaderLen, limit)
+		if err != nil {
+			return chain{}, err
+		}
+		if b == nil {
+			return unknown()
+		}
+		h, err := parseBlockHeader(b, 0)
+		if err != nil {
+			break
+		}
+		if n == 0 && h.blockIndex == 0 && h.statesTotal() {
+			g.total = h.totalSamples
+		}
+		if !g.next(h) {
+			break
+		}
+		if h.totalLen() > boundary-off {
+			return unknown()
+		}
+		off += h.totalLen()
+	}
+	c := chain{end: off, audio: g.seen}
+	if g.seen {
+		c.samples = g.index + uint64(g.samples) - g.first
+	}
+	return c, nil
+}
+
+// groups follows the sample groups of a stream's blocks in file order.
+type groups struct {
+	total   uint64 // stated by a first block at index 0
+	first   uint64 // the first sample group's index
+	index   uint64 // the last group's
+	samples uint32 // the last group's
+	seen    bool   // a sample group began
+	inGroup bool   // its final block is still to come
+	reached bool   // a group reached total
+}
+
+// next takes the next block's header and reports whether the block belongs to the stream. A block of
+// no samples holds the stream's metadata (an MD5 sum, a RIFF trailer) and belongs at any index, so one
+// that is junk after a tag is taken for stream once a rewrite moves it up behind the audio. One with
+// samples continues its group, or opens the next past the last one before a group reaches the total.
+func (g *groups) next(h blockHeader) bool {
+	if h.blockSamples == 0 {
+		return true
+	}
+	if g.inGroup && h.flags&flagInitialBlock == 0 {
+		if h.blockIndex != g.index {
+			return false
+		}
+	} else if g.seen && (g.reached || h.blockIndex <= g.index) {
+		return false
+	}
+	if !g.seen {
+		g.first = h.blockIndex
+	}
+	g.seen, g.index, g.samples, g.inGroup = true, h.blockIndex, h.blockSamples, h.flags&flagFinalBlock == 0
+	g.reached = g.reached || !g.inGroup && g.total > 0 && g.index+uint64(g.samples) >= g.total
+	return true
+}
 
 // channels is 1 (mono) or 2. File channel count is the sum over the sample group.
 func (h blockHeader) channels() int {

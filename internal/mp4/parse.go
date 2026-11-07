@@ -58,7 +58,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		case "ftyp":
 			// The major brand (e.g. "M4B ") signals an audiobook; it is preserved
 			// verbatim on write (ftyp is copied) and surfaced in the native view.
-			if b, err := readPayloadPrefix(src, a, 4, limit); err == nil && len(b) >= 4 {
+			b, err := readPayloadPrefix(src, a, 4, limit)
+			if fatal := bits.Fatal(err); fatal != nil {
+				return nil, fatal
+			}
+			if err == nil && len(b) >= 4 {
 				d.majorBrand = string(b[:4])
 			}
 		case "moof":
@@ -97,7 +101,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// moov.end() (write.go, the default branch), but a re-parse resolves moov's children at
 	// their recorded ends, so the path sits past a stray all-zero remainder, misaligned.
 	if _, ok := moov.find("udta"); !ok {
-		if gap := trailingGap(src, moov, limit); gap > 0 {
+		gap, err := trailingGap(src, moov, limit)
+		if err != nil {
+			return nil, err
+		}
+		if gap > 0 {
 			// No "(truncated)" qualifier: the gap can come from a truncated download or a muxer's
 			// structural pad, and moov.truncated is surfaced separately as a warning when the clamp
 			// tiles cleanly. This matches the meta guard's wording.
@@ -110,7 +118,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		return nil, err
 	}
 	d.hasIloc = hasIlocBox(top, moov)
-	parseProperties(src, moov, d, limit)
+	if err := parseProperties(src, moov, d, limit); err != nil {
+		return nil, err
+	}
 
 	// Tag path: moov.udta.meta.ilst. Each level is optional; record what exists so
 	// the writer can either rewrite the ilst or create the missing wrappers.
@@ -121,9 +131,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		// Capture the udta payload verbatim so a chapter rewrite can splice the new ilst/chpl
 		// byte ranges into it while preserving every other user-data atom.
 		if udtaLen := udta.size - udta.headerLen; udtaLen >= 0 {
-			if raw, err := bits.ReadSlice(src, udta.payloadOff(), udtaLen, limit); err == nil {
-				d.udtaRaw = raw
+			raw, err := bits.ReadSlice(src, udta.payloadOff(), udtaLen, limit)
+			if bits.Fatal(err) != nil {
+				return nil, err
 			}
+			d.udtaRaw = raw
 		}
 		for _, c := range udta.children {
 			d.udtaKids = append(d.udtaKids, refOf(c))
@@ -135,17 +147,25 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		// Classic QuickTime keeps its tags as direct udta children ("\xa9nam", "\xa9swr",
 		// ...) with no meta wrapper. The two stores carry distinct source labels, so a
 		// disagreement surfaces as a conflicting family.
-		decodeUdtaTexts(src, udta, d, limit)
+		if err := decodeUdtaTexts(src, udta, d, limit); err != nil {
+			return nil, err
+		}
 		if meta, ok := udta.find("meta"); ok {
 			ilst, hasIlst := meta.find("ilst")
 			// The handler decides how the ilst items are keyed: "mdta" makes them 1-based
 			// indices into a sibling "keys" box, anything else the four-character iTunes names.
 			if hdlr, ok := meta.find("hdlr"); ok {
-				d.metaHandler = handlerType(src, hdlr, limit)
+				if d.metaHandler, err = handlerType(src, hdlr, limit); err != nil {
+					return nil, err
+				}
 			}
 			if keys, ok := meta.find("keys"); ok {
 				d.keys = refPtr(keys)
-				if b, err := readPayloadWhole(src, keys, maxMetaChunk, limit); err == nil {
+				b, err := readPayloadWhole(src, keys, maxMetaChunk, limit)
+				if bits.Fatal(err) != nil {
+					return nil, err
+				}
+				if err == nil {
 					d.keyNames = parseKeys(b)
 				}
 			}
@@ -153,7 +173,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			// buildCreated appends the new ilst at meta.end(), but a re-parse resolves the
 			// first child at childStart/last-child-end (earlier), so the ilst is misaligned.
 			if !hasIlst {
-				if gap := trailingGap(src, meta, limit); gap > 0 {
+				gap, err := trailingGap(src, meta, limit)
+				if err != nil {
+					return nil, err
+				}
+				if gap > 0 {
 					return nil, fmt.Errorf("%w: moov.udta.meta has %d unusable trailing byte(s)",
 						waxerr.ErrInvalidData, gap)
 				}
@@ -171,10 +195,15 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 	// Chapters: a Nero chpl list and/or a QuickTime chapter text track project
 	// into one deduplicated list; a disagreement between them is warned.
-	chapterConflict := resolveChapters(src, moov, chplNode, haveChpl, d, limit)
+	chapterConflict, err := resolveChapters(src, moov, chplNode, haveChpl, d, limit)
+	if err != nil {
+		return nil, err
+	}
 	// Capture the structural refs a chapter write needs to rebuild the QuickTime
 	// chapter text track (read-only; tolerant of anything it cannot find).
-	collectChapterRefs(src, moov, d, limit)
+	if err := collectChapterRefs(src, moov, d, limit); err != nil {
+		return nil, err
+	}
 
 	media := &core.Media{Format: core.FormatMP4, Native: d}
 	tags, pics, families, numericGenre := project(d)
@@ -219,8 +248,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		audioBytes += r[1] - r[0]
 	}
 	media.Properties.Tracks[0].Bitrate = core.AverageBitrate(audioBytes, d.track.Duration.Seconds())
-	media.Identity = core.Identity{Size: size}
-	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media)
+	if err := core.SetIdentity(src, media); err != nil {
+		return nil, err
+	}
 	return media, nil
 }
 
@@ -281,7 +311,7 @@ func collectOffsetTables(ctx context.Context, src core.ReaderAtSized, moov node,
 			}
 			t, err := parseOffsetTable(src, a, limit)
 			if err != nil {
-				if a.id() == "saio" {
+				if a.id() == "saio" && bits.Fatal(err) == nil {
 					d.auxUnknown = true
 					continue
 				}
@@ -422,19 +452,23 @@ func decodeIlst(ctx context.Context, src core.ReaderAtSized, ilst node, d *doc, 
 // decodeUdtaTexts decodes the classic QuickTime text atoms sitting directly under udta into
 // d.udtaTexts. Only the mapped four-character names are decoded; every other udta child
 // (chpl, meta, and anything foreign) is left to the verbatim d.udtaRaw splice.
-func decodeUdtaTexts(src core.ReaderAtSized, udta node, d *doc, limit int64) {
+func decodeUdtaTexts(src core.ReaderAtSized, udta node, d *doc, limit int64) error {
 	for _, c := range udta.children {
 		if _, ok := mapping.MP4UdtaTextKey(c.id()); !ok {
 			continue
 		}
 		payload, err := readPayloadWhole(src, c, maxMetaChunk, limit)
 		if err != nil {
+			if bits.Fatal(err) != nil {
+				return err
+			}
 			continue
 		}
 		if u, ok := decodeUdtaText(refOf(c), payload); ok {
 			d.udtaTexts = append(d.udtaTexts, u)
 		}
 	}
+	return nil
 }
 
 // reusablePadding reports whether an atom id is padding WaxLabel can overwrite in place.
@@ -471,62 +505,62 @@ func adjacentFree(meta, ilst node) *atomRef {
 
 // parseProperties fills the audio track from the first 'soun' trak: the duration
 // from mdhd and the codec/geometry from the first stsd sample entry.
-func parseProperties(src core.ReaderAtSized, moov node, d *doc, limit int64) {
-	var trak node
-	found := false
-	for _, t := range moov.findAll("trak", nil) {
-		mdia, ok := t.find("mdia")
-		if !ok {
-			continue
-		}
-		if hdlr, ok := mdia.find("hdlr"); ok && handlerType(src, hdlr, limit) == "soun" {
-			trak, found = t, true
-			break
-		}
-	}
-	if !found {
-		return
+func parseProperties(src core.ReaderAtSized, moov node, d *doc, limit int64) error {
+	trak, found, err := trakOfHandler(src, moov.findAll("trak", nil), "soun", limit)
+	if err != nil || !found {
+		return err
 	}
 	mdia, _ := trak.find("mdia")
 	var timescale uint32
 	if mdhd, ok := mdia.find("mdhd"); ok {
-		if ts, dur, ok := mdhdFields(src, mdhd, limit); ok && ts > 0 {
+		ts, dur, ok, err := mdhdFields(src, mdhd, limit)
+		if err != nil {
+			return err
+		}
+		if ok && ts > 0 {
 			timescale = ts
 			d.track.Duration = scaleToDuration(dur, ts)
 		}
 	}
 	// Report the edit-list-trimmed playable duration.
-	if mvTs, _ := movieTimingOf(src, moov, limit); mvTs > 0 {
-		if edited := trackEditedDuration(src, trak, mvTs, limit); edited > 0 && edited < d.track.Duration {
+	mvTs, _, err := movieTimingOf(src, moov, limit)
+	if err != nil {
+		return err
+	}
+	if mvTs > 0 {
+		edited, err := trackEditedDuration(src, trak, mvTs, limit)
+		if err != nil {
+			return err
+		}
+		if edited > 0 && edited < d.track.Duration {
 			d.track.Duration = edited
 		}
 	}
 	if minf, ok := mdia.find("minf"); ok {
 		if stbl, ok := minf.find("stbl"); ok {
 			if stsd, ok := stbl.find("stsd"); ok {
-				parseStsd(src, stsd, d, timescale, limit)
+				return parseStsd(src, stsd, d, timescale, limit)
 			}
 		}
 	}
+	return nil
 }
 
 // handlerType returns a hdlr atom's 4-character handler type (e.g. "soun").
-func handlerType(src core.ReaderAtSized, hdlr node, limit int64) string {
+func handlerType(src core.ReaderAtSized, hdlr node, limit int64) (string, error) {
 	b, err := readPayloadPrefix(src, hdlr, 12, limit)
 	if err != nil || len(b) < 12 {
-		return ""
+		return "", bits.Fatal(err)
 	}
-	return string(b[8:12])
+	return string(b[8:12]), nil
 }
 
-// parseStsd fills the codec name and audio geometry from the first sample entry.
-func parseStsd(src core.ReaderAtSized, stsd node, d *doc, timescale uint32, limit int64) {
-	// Clamp to the alloc limit rather than letting ReadSlice refuse the read: a caller with
-	// a limit below the prefix would otherwise get no codec and no geometry at all, and
-	// d.cfg's zeroes would change the essence-digest salt for the same bytes.
-	b, err := readPayloadPrefix(src, stsd, min(int64(1024), limit), limit)
+// parseStsd fills the codec name and audio geometry from the first sample entry, read from
+// the first 1024 bytes of the stsd payload.
+func parseStsd(src core.ReaderAtSized, stsd node, d *doc, timescale uint32, limit int64) error {
+	b, err := readPayloadPrefix(src, stsd, 1024, limit)
 	if err != nil || len(b) < 44 {
-		return
+		return bits.Fatal(err)
 	}
 	copy(d.cfg.codec[:], b[12:16])
 	fourcc := string(d.cfg.codec[:])
@@ -552,7 +586,7 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, timescale uint32, limi
 	case version >= 2:
 		off, ok := parseSoundEntryV2(b, end, d)
 		if !ok {
-			return
+			return nil
 		}
 		extOff = off
 	default:
@@ -587,6 +621,7 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, timescale uint32, limi
 			d.track.SampleRate = int(timescale)
 		}
 	}
+	return nil
 }
 
 // parseSoundEntryV2 decodes a QuickTime version 2 sound sample entry's geometry onto
@@ -912,9 +947,8 @@ func readPayloadPrefix(src core.ReaderAtSized, n node, prefixLen, limit int64) (
 // exceeds capBytes rather than truncating it.
 func readPayloadWhole(src core.ReaderAtSized, n node, capBytes, limit int64) ([]byte, error) {
 	payloadSize := n.size - n.headerLen
-	// capBytes <= 0 means "no cap", matching bits.ReadSlice's limit <= 0 convention: the
-	// ilst read passes capBytes = limit (the configurable MaxAllocBytes), so a caller that
-	// disables the alloc limit (limit == 0) also disables this cap.
+	// capBytes <= 0 means no cap; bits.ReadSlice still refuses a read over limit, and any limit
+	// that is not positive.
 	if capBytes > 0 && payloadSize > capBytes {
 		return nil, fmt.Errorf("%w: MP4 atom %q payload %d exceeds %d", waxerr.ErrSizeTooLarge, n.id(), payloadSize, capBytes)
 	}

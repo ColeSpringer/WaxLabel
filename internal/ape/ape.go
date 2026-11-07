@@ -1,7 +1,7 @@
 // Package ape implements APEv1/APEv2 tags for internal codecs.
 //
-// In MP3, APE is a trailing foreign/legacy container: family view + verbatim
-// preserve; ID3 stays authoritative.
+// In MP3, raw AAC and FLAC, APE is a trailing foreign/legacy container: family
+// view + verbatim preserve; the format's own tags stay authoritative.
 //
 // In WavPack, Monkey's Audio, and Musepack it is the native store: [Project],
 // [Rebuild], [Render]. Free-form UTF-8; only third-party conventions (e.g. Cover
@@ -11,6 +11,7 @@
 package ape
 
 import (
+	"bytes"
 	"encoding/binary"
 	"slices"
 	"strings"
@@ -96,93 +97,218 @@ func (t *Tag) Clone() *Tag {
 	return &c
 }
 
-// ParseAt finds an APE footer ending at endOff. ok is false if none.
+// ParseAt finds an APE footer ending at endOff. ok is false if none; a footer or item run over
+// limit is refused with [waxerr.ErrSizeTooLarge], and a read that fails inside the file is an error.
 // maxElements caps Items; callers keep raw bytes separately.
 func ParseAt(src core.ReaderAtSized, endOff, limit int64, maxElements int) (*Tag, bool, error) {
-	if endOff < footerLen {
-		return nil, false, nil
+	foot, ok, err := footerAt(src, endOff, limit)
+	if err != nil || !ok {
+		return nil, false, err
 	}
-	foot, err := bits.ReadSlice(src, endOff-footerLen, footerLen, limit)
-	if err != nil || string(foot[:8]) != preamble {
-		return nil, false, nil //nolint:nilerr // absence is not an error
+	headed, err := headerPresent(src, foot, endOff, limit)
+	if err != nil {
+		return nil, false, err
 	}
-	if binary.LittleEndian.Uint32(foot[20:24])&flagIsHeader != 0 {
-		return nil, false, nil // this record marks itself a header, so it is not the footer
+	raw, ok, err := readItems(src, foot, endOff, limit)
+	if err != nil || !ok {
+		return nil, false, err
 	}
-	version := int(binary.LittleEndian.Uint32(foot[8:12]))
-	tagSize := int64(binary.LittleEndian.Uint32(foot[12:16])) // items + footer
-	itemCount := binary.LittleEndian.Uint32(foot[16:20])
-	flags := binary.LittleEndian.Uint32(foot[20:24])
-
-	if tagSize < footerLen || tagSize > endOff {
-		return nil, false, nil
-	}
-	itemsStart := endOff - tagSize
-	itemsLen := tagSize - footerLen
-
-	items := []Item{}
-	truncated := false
-	if itemsLen > 0 {
-		raw, err := bits.ReadSlice(src, itemsStart, itemsLen, limit)
-		if err != nil {
-			return nil, false, nil //nolint:nilerr
-		}
-		items, truncated = parseItems(raw, itemCount, maxElements)
-	}
-
-	// Has-header moves the audio/tag boundary; confirm APETAGEX is present before
-	// trusting the bit (a lying flag would overwrite audio and pass --verify).
-	offset := itemsStart
-	size := tagSize
-	hasHeader := false
-	if flags&flagHasHeader != 0 && itemsStart >= footerLen {
-		if head, err := bits.ReadSlice(src, itemsStart-footerLen, footerLen, limit); err == nil &&
-			string(head[:8]) == preamble {
-			offset -= footerLen
-			size += footerLen
-			hasHeader = true
-		}
-	}
-	return &Tag{
-		Version: version, Items: items, Offset: offset, Size: size,
-		HasHeader: hasHeader, Truncated: truncated,
-	}, true, nil
+	return tagFrom(foot, endOff, raw, headed, maxElements), true, nil
 }
 
-// parseItems decodes up to count items; stops on malformed input; truncated if
-// maxElements cuts the list. Cap is not fatal here (MP3 keeps raw bytes). Codecs
-// that rebuild from Items refuse [Tag.Truncated].
-func parseItems(raw []byte, count uint32, maxElements int) (items []Item, truncated bool) {
+// DeclaredStart reads the footer ending at endOff, and the header record it announces, and returns
+// where the tag starts; ok is false when no footer ends there. No item is read.
+func DeclaredStart(src core.ReaderAtSized, endOff, limit int64) (int64, bool, error) {
+	foot, ok, err := footerAt(src, endOff, limit)
+	if err != nil || !ok {
+		return 0, false, err
+	}
+	headed, err := headerPresent(src, foot, endOff, limit)
+	if err != nil {
+		return 0, false, err
+	}
+	start := endOff - foot.size
+	if headed {
+		start -= footerLen
+	}
+	return start, true, nil
+}
+
+// ParseHeadAt parses the tag that opens with a header record at off and ends by maxEnd. ok is
+// false unless the footer where that header ends the tag answers it, announcing a header and
+// declaring the same size; both records are read before any item. Reads are refused over limit
+// as in [ParseAt].
+func ParseHeadAt(src core.ReaderAtSized, off, maxEnd, limit int64, maxElements int) (*Tag, bool, error) {
+	if maxEnd-off < 2*footerLen {
+		return nil, false, nil
+	}
+	head, ok, err := readRecord(src, off, limit)
+	if err != nil || !ok || !head.isHeader() || head.size < footerLen || off+footerLen+head.size > maxEnd {
+		return nil, false, err
+	}
+	end := off + footerLen + head.size
+	foot, ok, err := footerAt(src, end, limit)
+	if err != nil || !ok || !foot.headed() || foot.size != head.size {
+		return nil, false, err
+	}
+	raw, ok, err := readItems(src, foot, end, limit)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	return tagFrom(foot, end, raw, true, maxElements), true, nil
+}
+
+// headerPresent reports whether the header record the footer foot, ending at endOff, announces is
+// there. Has-header moves the audio/tag boundary, so APETAGEX must open the 32 bytes before the
+// items before the bit is trusted (a lying flag would overwrite audio and pass --verify).
+func headerPresent(src core.ReaderAtSized, foot record, endOff, limit int64) (bool, error) {
+	itemsStart := endOff - foot.size
+	if !foot.headed() || itemsStart < footerLen {
+		return false, nil
+	}
+	_, ok, err := readRecord(src, itemsStart-footerLen, limit)
+	return ok, err
+}
+
+// readItems reads the item bytes of the tag whose footer foot ends at endOff, as [bits.ReadWithin]
+// reads: ok is false when they run past the end of the file, and a failed read or one over limit is
+// an error.
+func readItems(src core.ReaderAtSized, foot record, endOff, limit int64) ([]byte, bool, error) {
+	if foot.size == footerLen {
+		return nil, true, nil
+	}
+	raw, err := bits.ReadWithin(src, endOff-foot.size, foot.size-footerLen, limit)
+	return raw, raw != nil, err
+}
+
+// record is one 32-byte header or footer record.
+type record struct {
+	version int
+	size    int64 // items plus footer
+	count   uint32
+	flags   uint32
+}
+
+// decodeRecord decodes the record b opens with; ok is false without the preamble.
+func decodeRecord(b []byte) (record, bool) {
+	if len(b) < footerLen || string(b[:8]) != preamble {
+		return record{}, false
+	}
+	return record{
+		version: int(binary.LittleEndian.Uint32(b[8:12])),
+		size:    int64(binary.LittleEndian.Uint32(b[12:16])),
+		count:   binary.LittleEndian.Uint32(b[16:20]),
+		flags:   binary.LittleEndian.Uint32(b[20:24]),
+	}, true
+}
+
+// encode renders the record; its last 8 bytes are the reserved field, which must be zero.
+func (r record) encode() []byte {
+	b := make([]byte, footerLen)
+	copy(b[0:8], preamble)
+	binary.LittleEndian.PutUint32(b[8:12], uint32(r.version))
+	binary.LittleEndian.PutUint32(b[12:16], uint32(r.size))
+	binary.LittleEndian.PutUint32(b[16:20], r.count)
+	binary.LittleEndian.PutUint32(b[20:24], r.flags)
+	return b
+}
+
+// readRecord reads the record at off, as [bits.ReadWithin] reads: ok is false when it runs past the
+// end of the file or has no preamble, and a failed read or one over limit is an error.
+func readRecord(src core.ReaderAtSized, off, limit int64) (record, bool, error) {
+	b, err := bits.ReadWithin(src, off, footerLen, limit)
+	if err != nil {
+		return record{}, false, err
+	}
+	r, ok := decodeRecord(b)
+	return r, ok, nil
+}
+
+// isHeader reports a record that marks itself the header; headed, a footer that announces one.
+func (r record) isHeader() bool { return r.flags&flagIsHeader != 0 }
+func (r record) headed() bool   { return r.flags&flagHasHeader != 0 }
+
+// start is where a footer ending at endOff places its tag's start, header record included when
+// the flags announce one.
+func (r record) start(endOff int64) int64 {
+	if r.headed() {
+		return endOff - r.size - footerLen
+	}
+	return endOff - r.size
+}
+
+// footerAt reads the footer ending at endOff: a record that does not mark itself the header, with
+// a size that fits before endOff.
+func footerAt(src core.ReaderAtSized, endOff, limit int64) (record, bool, error) {
+	if endOff < footerLen {
+		return record{}, false, nil
+	}
+	foot, ok, err := readRecord(src, endOff-footerLen, limit)
+	if err != nil || !ok || foot.isHeader() || foot.size < footerLen || foot.size > endOff {
+		return record{}, false, err
+	}
+	return foot, true, nil
+}
+
+// tagFrom builds the tag whose footer foot ends at endOff from its item bytes; headed says a
+// header record opens it.
+func tagFrom(foot record, endOff int64, raw []byte, headed bool, maxElements int) *Tag {
+	t := &Tag{Version: foot.version, Items: []Item{}, Offset: endOff - foot.size, Size: foot.size, HasHeader: headed}
+	if len(raw) > 0 {
+		t.Items, t.Truncated = parseItems(raw, foot.count, maxElements)
+	}
+	if headed {
+		t.Offset -= footerLen
+		t.Size += footerLen
+	}
+	return t
+}
+
+// walkItems walks the count items raw declares, handing each to visit when it is not nil, and
+// reports whether every declared item was well formed and together they took every byte of raw.
+func walkItems(raw []byte, count uint32, visit func(key, value []byte, flags uint32)) bool {
 	pos := 0
 	for range count {
-		if pos+8 > len(raw) {
-			break
+		if len(raw)-pos < 8 {
+			return false
 		}
-		size := int(binary.LittleEndian.Uint32(raw[pos : pos+4]))
+		size := binary.LittleEndian.Uint32(raw[pos : pos+4])
 		flags := binary.LittleEndian.Uint32(raw[pos+4 : pos+8])
 		pos += 8
-		key, n := cutKey(raw[pos:])
+		n := bytes.IndexByte(raw[pos:], 0)
 		if n < 0 {
-			break
+			return false
 		}
-		pos += n
-		// Use len(raw)-pos (not pos+size): on 32-bit, large size can overflow.
-		if size < 0 || size > len(raw)-pos {
-			break
+		key := raw[pos : pos+n]
+		pos += n + 1
+		// Compared as uint64: a 32-bit int cannot hold every declared size.
+		if uint64(size) > uint64(len(raw)-pos) {
+			return false
 		}
-		value := raw[pos : pos+size]
-		pos += size
-		// Cap after malformed checks so short input stays lenient; raw bytes kept elsewhere.
-		if bits.CheckElementCap(len(items), maxElements, "APE items") != nil {
-			return items, true // cap reached: the caller decides whether that is fatal
+		if visit != nil {
+			visit(key, raw[pos:pos+int(size)], flags)
 		}
-		it := Item{Key: key, Flags: flags, Data: value}
+		pos += int(size)
+	}
+	return pos == len(raw)
+}
+
+// parseItems decodes the items raw declares up to the first malformed one. An item past
+// maxElements is walked but not decoded, and truncated reports it. The cap is not fatal here
+// (MP3 keeps raw bytes); codecs that rebuild from Items refuse [Tag.Truncated].
+func parseItems(raw []byte, count uint32, maxElements int) (items []Item, truncated bool) {
+	walkItems(raw, count, func(key, value []byte, flags uint32) {
+		if maxElements > 0 && len(items) >= maxElements {
+			truncated = true
+			return
+		}
+		it := Item{Key: string(key), Flags: flags, Data: value}
 		if !it.NonText() {
 			it.Value = decodeText(value)
 		}
 		items = append(items, it)
-	}
-	return items, false
+	})
+	return items, truncated
 }
 
 // ParseItemRun decodes a bare item run (Musepack SV8 chapter tag after preamble-less
@@ -202,16 +328,6 @@ func decodeText(b []byte) string {
 		r[i] = rune(c) // Latin-1: each byte is its own code point
 	}
 	return string(r)
-}
-
-// cutKey: NUL-terminated ASCII key and bytes consumed, or n<0.
-func cutKey(b []byte) (string, int) {
-	for i, c := range b {
-		if c == 0 {
-			return string(b[:i]), i + 1
-		}
-	}
-	return "", -1
 }
 
 // Pairs returns text-item canonical pairs in item order (family/source view).

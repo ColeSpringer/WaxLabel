@@ -1,7 +1,8 @@
 // Package aac implements reading and writing raw-AAC (ADTS) metadata for the
 // public waxlabel package. The codec itself is internal. A raw-AAC file is an
 // optional front ID3v2 tag (via internal/id3, same store as MP3) followed by ADTS
-// frames. The ID3v2 tag is the sole writable store; audio is copied verbatim.
+// frames, then any trailing APEv2, Lyrics3 and ID3v1 tags, which are legacy. The
+// ID3v2 tag is the sole writable store; audio is copied verbatim.
 //
 // The first ADTS header gives stream config (object type, sample rate, channels).
 // ADTS has no frame-count header, so duration and average bitrate come from a
@@ -35,11 +36,26 @@ func (Codec) Extensions() []string { return []string{".aac", ".adts"} }
 func (Codec) SkipsLeadingID3() bool { return true }
 
 // Sniff matches a valid ADTS frame header at offset 0. Leading ID3 is not sniffed
-// here (MP3 claims that header); the root parser peeks past ID3 via
-// detectPastLeadingID3, where this recognizer wins for ID3-prefixed .aac.
+// here (MP3 claims that header); [core.DetectLeading] sniffs past it, where this
+// recognizer wins for ID3-prefixed .aac, and resyncs past a gap with [Codec.Resync].
 func (Codec) Sniff(header []byte) bool {
 	_, ok := decodeADTS(header)
 	return ok
+}
+
+// Resync finds the first ADTS frame in window followed, at its frame length and inside window, by a
+// second header agreeing on object type, rate index and channel config ([core.Resyncer]).
+func (Codec) Resync(window []byte) (int, bool) {
+	for i := 0; i+adtsHeaderSize <= len(window); i++ {
+		h, ok := decodeADTS(window[i:])
+		if !ok || i+h.frameLength+adtsHeaderSize > len(window) {
+			continue
+		}
+		if n, ok := decodeADTS(window[i+h.frameLength:]); ok && sameConfig(h, n) {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // Parse reads metadata from src into a Media.
@@ -48,7 +64,7 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 }
 
 // Capabilities reports AAC support. Tags and art live in the front ID3v2 tag
-// (writable, version preserved). No secondary tag container.
+// (writable, version preserved). Trailing tags are legacy only.
 func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -90,5 +106,5 @@ func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 		cfg[1] = byte(d.header.sfIndex)
 		cfg[2] = byte(d.header.chanConfig)
 	}
-	return "aac-adts-v1", cfg[:]
+	return "aac-adts-v2", cfg[:]
 }

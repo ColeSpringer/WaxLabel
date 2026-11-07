@@ -110,7 +110,7 @@ Edits use `--set KEY=VALUE`, `--add KEY=VALUE`, `--clear KEY`, plus picture
 `--output-gain` (Ogg Opus header gain). Write shaping: `--preset`, `--legacy`,
 `--padding`. `--id3-multi null|repeat|slash` controls ID3v2.3 multi-value storage.
 See `waxlabel <command> --help`. `--legacy strip` (and `--preset minimal`) removes
-ID3v1/APEv2/stray-ID3 unconditionally; when one holds the only copy of a value, the
+ID3v1/Lyrics3/APEv2/stray-ID3 unconditionally; when one holds the only copy of a value, the
 plan says so and `--strict` refuses the write.
 
 Read commands accept `-` for stdin. `dump`, `verify`, `lint`, `plan`, and `set`
@@ -154,18 +154,18 @@ A corrupt file (exit 4) outranks a mistyped path (exit 6).
 
 | Format | Metadata | Notes |
 | --- | --- | --- |
-| FLAC | read/write | Vorbis comments, FLAC pictures, `CHAPTERxxx` chapters, `SYNCEDLYRICS` (LRC); padding fully controllable. |
+| FLAC | read/write | Vorbis comments, FLAC pictures, `CHAPTERxxx` chapters, `SYNCEDLYRICS` (LRC); padding fully controllable. Leading ID3v2, trailing ID3v1, APEv2 and Lyrics3 as legacy. |
 | Ogg Vorbis / Opus | read/write | Vorbis comments, `METADATA_BLOCK_PICTURE`, `CHAPTERxxx`, `SYNCEDLYRICS` (LRC). Opus also has `OpusHead` output gain (`--output-gain`); rebases `R128_TRACK_GAIN`/`R128_ALBUM_GAIN` per RFC 7845. |
 | Ogg FLAC (`.oga`) | read/write | Vorbis comments and chapters as above; cover art is a native FLAC `PICTURE` block, not a comment. |
-| MP3 | read/write | ID3v2 (`CHAP`/`CTOC`, `SYLT`); new tags are ID3v2.3. ID3v1/APEv2 surfaced as legacy. |
+| MP3 | read/write | ID3v2 (`CHAP`/`CTOC`, `SYLT`); new tags are ID3v2.3. Trailing ID3v1, APEv2 and Lyrics3 as legacy. |
 | WAV / RF64 / BW64 | read/write | RIFF LIST/INFO plus embedded `id3 `; chunks preserved. RF64/BW64 form kept on save-back; `ds64` recomputed. |
 | MP4 / M4A / M4B / MOV | read/write | iTunes `ilst`, `mdta` keys (ffmpeg `+use_metadata_tags`), classic `moov.udta` text, cover art, Nero and QuickTime chapters. Fragmented MP4 (`moof`) is read-only; `moov` with `mvex` but no fragment writes normally. |
 | Matroska / WebM | read/write | Scoped SimpleTags, segment title, attachments, default-edition chapters. WebM cannot write cover attachments. |
-| AAC (ADTS) | read/write | Front ID3v2 (new tags ID3v2.4) plus ADTS frames. HE-AAC reports played rate, channels, and profile from frames when the header cannot. |
+| AAC (ADTS) | read/write | Front ID3v2 (new tags ID3v2.4) plus ADTS frames. HE-AAC reports played rate, channels, and profile from frames when the header cannot. Trailing ID3v1, APEv2 and Lyrics3 as legacy. |
 | AIFF / AIFF-C | read/write | Native text chunks plus embedded `ID3 `; chunks preserved. |
-| WavPack | read/write | APEv2 and `Cover Art` convention; trailing ID3v1 as legacy. |
-| Monkey's Audio | read/write | APEv2 as above; SV3.98+ and older inline header both read. |
-| Musepack | read/write | APEv2 for SV7 and SV8. SV8 chapter packets read and preserved, not written. Leading ID3v2 as legacy. |
+| WavPack | read/write | APEv2 and `Cover Art` convention; leading ID3v2, trailing ID3v1 and Lyrics3 as legacy. |
+| Monkey's Audio | read/write | APEv2 and legacy tags as above; SV3.98+ and older inline header both read. |
+| Musepack | read/write | APEv2 for SV7 and SV8. SV8 chapter packets read and preserved, not written. Leading ID3v2, trailing ID3v1 and Lyrics3 as legacy. |
 | WMA / ASF | read-only | Content Description, `WM/*`, `WM/Picture`, Marker Object chapters. No ASF writes. |
 
 When `set` authors a structural edit a format cannot store (cover art on WebM,

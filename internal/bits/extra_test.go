@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"math"
 	"syscall"
 	"testing"
 
@@ -133,6 +134,8 @@ func TestWriteReadErrors(t *testing.T) {
 // eofAtEnd returns io.EOF with a full read that ends the input, as io.ReaderAt allows.
 type eofAtEnd struct{ n int64 }
 
+func (r eofAtEnd) Size() int64 { return r.n }
+
 func (r eofAtEnd) ReadAt(p []byte, off int64) (int, error) {
 	k, err := endsAt(r).ReadAt(p, off)
 	if err == nil && off+int64(k) == r.n {
@@ -168,5 +171,157 @@ func TestFullReadWithEOF(t *testing.T) {
 	c := NewCursorAt(eofAtEnd{8}, 4, 4, 1<<20)
 	if c.U32BE(); c.Err() != nil {
 		t.Errorf("Cursor read of the last 4 bytes: %v, want nil", c.Err())
+	}
+}
+
+// sizedFault is a source of size bytes, zero-filled, whose reads at or past from fail with err, or,
+// when short is set, stop there and report io.EOF, as a source that lost its tail does.
+type sizedFault struct {
+	size, from int64
+	err        error
+	short      bool
+}
+
+func (s sizedFault) Size() int64 { return s.size }
+
+func (s sizedFault) ReadAt(p []byte, off int64) (int, error) {
+	if off+int64(len(p)) <= s.from {
+		clear(p)
+		return len(p), nil
+	}
+	if s.short {
+		n := max(int(s.from-off), 0)
+		clear(p[:n])
+		return n, io.EOF
+	}
+	return 0, s.err
+}
+
+// deviceError is a read failing as a disk does.
+var deviceError = &fs.PathError{Op: "read", Path: "media", Err: syscall.EIO}
+
+// readFaults are the two ways a read inside a file fails: a device error, which keeps its cause, and
+// a short read, the file ending before the bytes asked for, which is invalid data.
+var readFaults = []struct {
+	name    string
+	src     sizedFault
+	cause   error
+	invalid bool
+}{
+	{"a device error", sizedFault{size: 100, from: 50, err: deviceError}, syscall.EIO, false},
+	{"a short read", sizedFault{size: 100, from: 50, short: true}, io.ErrUnexpectedEOF, true},
+}
+
+// Every read a parser makes fails by one rule: a device error keeps its own cause, so it classifies
+// as I/O, and is a fault a parse returns however it tolerates others; a short read is invalid data;
+// a read over the limit is refused, and is fatal too.
+func TestReadFailureClasses(t *testing.T) {
+	for _, c := range readFaults {
+		_, err := ReadSlice(c.src, 40, 20, 1<<20)
+		if !errors.Is(err, c.cause) || errors.Is(err, waxerr.ErrInvalidData) != c.invalid {
+			t.Errorf("ReadSlice, %s: %v; want %v, invalid data %v", c.name, err, c.cause, c.invalid)
+		}
+		if IsFault(err) == c.invalid || (Fatal(err) != nil) == c.invalid {
+			t.Errorf("ReadSlice, %s: fault %v, fatal %v; want both %v", c.name, IsFault(err), Fatal(err), !c.invalid)
+		}
+		cur := NewCursorAt(c.src, 40, 60, 1<<20)
+		if cur.Bytes(20); !errors.Is(cur.Err(), c.cause) || errors.Is(cur.Err(), waxerr.ErrInvalidData) != c.invalid {
+			t.Errorf("Cursor.Bytes, %s: %v; want %v, invalid data %v", c.name, cur.Err(), c.cause, c.invalid)
+		}
+	}
+	if _, err := ReadSlice(sizedFault{size: 100, from: 50, err: deviceError}, 40, 20, 10); !errors.Is(err, waxerr.ErrSizeTooLarge) || Fatal(err) == nil || IsFault(err) {
+		t.Errorf("ReadSlice over the limit: %v; want ErrSizeTooLarge, fatal and no fault", err)
+	}
+}
+
+// A walk's read of bytes it expects inside the file: a range inside it reads, one that runs past its
+// end finds nothing, and a read over the limit is refused. A failure inside the file fails as every
+// read does: a device error keeps its cause, a short read is invalid data.
+func TestReadWithin(t *testing.T) {
+	r := bytes.NewReader([]byte("0123456789"))
+	if b, err := ReadWithin(r, 2, 3, 1<<20); err != nil || string(b) != "234" {
+		t.Errorf("inside: %q, %v; want 234", b, err)
+	}
+	if b, err := ReadWithin(r, 8, 5, 1<<20); err != nil || b != nil {
+		t.Errorf("past the end: %q, %v; want nothing and no error", b, err)
+	}
+	if _, err := ReadWithin(r, 0, 5, 4); !errors.Is(err, waxerr.ErrSizeTooLarge) {
+		t.Errorf("over the limit: %v; want ErrSizeTooLarge", err)
+	}
+	if b, err := ReadWithin(eofAtEnd{8}, 4, 4, 1<<20); err != nil || len(b) != 4 {
+		t.Errorf("the last 4 bytes with io.EOF: %d bytes, %v; want 4 bytes", len(b), err)
+	}
+	for _, c := range readFaults {
+		b, err := ReadWithin(c.src, 40, 20, 1<<20)
+		if !errors.Is(err, c.cause) || errors.Is(err, waxerr.ErrInvalidData) != c.invalid || b != nil {
+			t.Errorf("%s inside the file: %d bytes, %v; want %v, invalid data %v", c.name, len(b), err, c.cause, c.invalid)
+		}
+		p := make([]byte, 20)
+		if ok, err := FillWithin(c.src, p, 40); ok || !errors.Is(err, c.cause) || errors.Is(err, waxerr.ErrInvalidData) != c.invalid {
+			t.Errorf("filling with %s inside the file: %v, %v; want %v, invalid data %v", c.name, ok, err, c.cause, c.invalid)
+		}
+	}
+	if _, err := ReadWithin(sizedFault{size: 100, from: 50, err: deviceError}, 40, 20, 1<<20); !errors.As(err, new(*fs.PathError)) {
+		t.Errorf("a device error: %v; want the path error reachable", err)
+	}
+	p := make([]byte, 4)
+	if ok, err := FillWithin(r, p, 3); !ok || err != nil || string(p) != "3456" {
+		t.Errorf("filling inside: %v, %v, %q; want 3456", ok, err, p)
+	}
+	if ok, err := FillWithin(r, p, 8); ok || err != nil {
+		t.Errorf("filling past the end: %v, %v; want false and no error", ok, err)
+	}
+}
+
+// refusesOffsets is a source of size zero bytes that refuses a read at a negative offset, or one
+// whose end passes math.MaxInt64, as os.File does; it counts the reads it is asked to make.
+type refusesOffsets struct {
+	size  int64
+	reads int
+}
+
+func (s *refusesOffsets) Size() int64 { return s.size }
+
+func (s *refusesOffsets) ReadAt(p []byte, off int64) (int, error) {
+	s.reads++
+	switch {
+	case off < 0:
+		return 0, &fs.PathError{Op: "readat", Path: "media", Err: errors.New("negative offset")}
+	case off > math.MaxInt64-int64(len(p)):
+		return 0, &fs.PathError{Op: "read", Path: "media", Err: syscall.EINVAL}
+	case off >= s.size:
+		return 0, io.EOF
+	}
+	n := copy(p, make([]byte, s.size-off))
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// A read at an offset no file holds is never made, so a file's refusal of it is not taken for a
+// device error: a negative offset, or an end past math.MaxInt64, is a short read. FillWithin reads
+// nothing past the end of its source either, and such bytes stay absent.
+func TestReadOffsetsOutsideAFile(t *testing.T) {
+	short := func(err error) bool {
+		return errors.Is(err, waxerr.ErrInvalidData) && errors.Is(err, io.ErrUnexpectedEOF) && !IsFault(err)
+	}
+	for _, off := range []int64{-16, math.MinInt64, math.MaxInt64 - 1, math.MaxInt64} {
+		src := &refusesOffsets{size: 100}
+		if _, err := ReadSlice(src, off, 2, 1<<20); !short(err) || src.reads != 0 {
+			t.Errorf("ReadSlice at %d: %v after %d reads; want a short read, not made", off, err, src.reads)
+		}
+	}
+	src := &refusesOffsets{size: 100}
+	if cur := NewCursorAt(src, -16, 32, 1<<20); cur.Bytes(2) != nil || !short(cur.Err()) || src.reads != 0 {
+		t.Errorf("Cursor.Bytes at -16: %v after %d reads; want a short read, not made", cur.Err(), src.reads)
+	}
+	if ok, err := FillWithin(src, make([]byte, 2), -16); ok || !short(err) || src.reads != 0 {
+		t.Errorf("FillWithin at -16: %v, %v after %d reads; want a short read, not made", ok, err, src.reads)
+	}
+	for _, off := range []int64{99, math.MaxInt64 - 1, math.MaxInt64} {
+		if ok, err := FillWithin(src, make([]byte, 2), off); ok || err != nil || src.reads != 0 {
+			t.Errorf("FillWithin at %d: %v, %v after %d reads; want absent, not read", off, ok, err, src.reads)
+		}
 	}
 }

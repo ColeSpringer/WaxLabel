@@ -67,7 +67,7 @@ func TestRenderInfoOverlongCRCVINT(t *testing.T) {
 	}
 
 	src := core.BytesSource(out)
-	root, ok := readElement(src, 0, src.Size(), limit)
+	root, ok, _ := readElement(src, 0, src.Size(), limit)
 	if !ok || root.id != idInfo {
 		t.Fatalf("rendered Info did not re-parse: ok=%v id=%#x", ok, root.id)
 	}
@@ -86,7 +86,7 @@ func TestRenderInfoOverlongCRCVINT(t *testing.T) {
 			b, _ := bits.ReadSlice(src, c.dataStart, c.dataLen(), limit)
 			gotTitle = string(b)
 		case idTimestampScl:
-			gotScale = readUint(src, c, limit)
+			gotScale, _ = readUint(src, c, limit)
 		}
 		return nil
 	})
@@ -112,11 +112,11 @@ func TestEncodeRoundTrip(t *testing.T) {
 
 	src := core.BytesSource(tags)
 	limit := int64(1 << 20)
-	root, ok := readElement(src, 0, src.Size(), limit)
+	root, ok, _ := readElement(src, 0, src.Size(), limit)
 	if !ok || root.id != idTags {
 		t.Fatalf("readElement root: ok=%v id=%#x", ok, root.id)
 	}
-	first, _ := readElement(src, root.dataStart, root.dataEnd, limit)
+	first, _, _ := readElement(src, root.dataStart, root.dataEnd, limit)
 	if first.id != idCRC32 {
 		t.Fatalf("first child id=%#x, want CRC-32", first.id)
 	}
@@ -163,7 +163,7 @@ func TestVoidOfTotal(t *testing.T) {
 		if b[0] != byte(idVoid) {
 			t.Errorf("voidOfTotal(%d) id = %#x", total, b[0])
 		}
-		el, ok := readElement(core.BytesSource(b), 0, int64(len(b)), 1<<20)
+		el, ok, _ := readElement(core.BytesSource(b), 0, int64(len(b)), 1<<20)
 		if !ok || el.id != idVoid || el.dataEnd != int64(len(b)) {
 			t.Errorf("voidOfTotal(%d) does not re-parse to a single Void: %+v ok=%v", total, el, ok)
 		}
@@ -191,8 +191,8 @@ func TestAttachedFileUID(t *testing.T) {
 }
 
 // TestCheckIndexCaptured: an edit is refused when a SeekHead/Cues element exists but
-// its structure was not captured (a read/over-limit failure), since copying it verbatim
-// while other elements move would corrupt its offsets.
+// its structure was not captured (a failed read), since copying it verbatim while other
+// elements move would corrupt its offsets.
 func TestCheckIndexCaptured(t *testing.T) {
 	if err := checkIndexCaptured(&writeBase{children: []l1elem{{id: idSeekHead}}}); err == nil {
 		t.Error("uncaptured SeekHead should be refused")
@@ -209,6 +209,18 @@ func TestCheckIndexCaptured(t *testing.T) {
 	}
 }
 
+// TestCheckSegmentCRCCaptured: an edit is refused when a Segment-level CRC-32 exists but its
+// bytes were not captured (a failed read), since copying it over an edited body leaves it stale.
+func TestCheckSegmentCRCCaptured(t *testing.T) {
+	if err := checkSegmentCRCCaptured(&writeBase{children: []l1elem{{id: idCRC32}}}); err == nil {
+		t.Error("an uncaptured Segment CRC should be refused")
+	}
+	captured := &writeBase{children: []l1elem{{id: idCRC32}}, segVoidFromCRC: []byte{idVoid, 0x84, 0, 0, 0, 0}}
+	if err := checkSegmentCRCCaptured(captured); err != nil {
+		t.Errorf("a captured Segment CRC should pass: %v", err)
+	}
+}
+
 // preserveDecisions builds the edit decisions checkPreservable consults for a doc whose
 // given canonical keys changed value, so the raw-capture gates can be driven without
 // running a whole write.
@@ -221,7 +233,7 @@ func preserveDecisions(d *doc, keys ...tag.Key) *editDecisions {
 }
 
 // TestCheckPreservable: an edit is refused when an element the writer must copy
-// verbatim was not captured (raw==nil from an over-limit size).
+// verbatim was not captured (raw==nil from a failed read).
 func TestCheckPreservable(t *testing.T) {
 	// A non-album group whose bytes weren't captured. It carries no edited key, so
 	// it takes the verbatim path and needs its whole-element raw.
@@ -284,7 +296,7 @@ func TestCheckPreservable(t *testing.T) {
 	}
 
 	// A managed TITLE with no Info element must be preserved verbatim. If its raw bytes
-	// were too large to capture, refuse the edit instead of dropping the SimpleTag.
+	// could not be captured, refuse the edit instead of dropping the SimpleTag.
 	noInfoTitle := &doc{wb: &writeBase{}, groups: []tagGroup{
 		{scope: core.ScopeAlbum, raw: []byte{1}, tags: []simpleTag{
 			{name: "TITLE", raw: nil}, // managed title, bytes uncapturable
@@ -309,14 +321,14 @@ func uidOf(t *testing.T, attached []byte) uint64 {
 	t.Helper()
 	src := core.BytesSource(attached)
 	limit := int64(1 << 20)
-	root, ok := readElement(src, 0, src.Size(), limit)
+	root, ok, _ := readElement(src, 0, src.Size(), limit)
 	if !ok || root.id != idAttached {
 		t.Fatalf("not an AttachedFile: ok=%v id=%#x", ok, root.id)
 	}
 	var uid uint64
 	_ = eachChild(src, root.dataStart, root.dataEnd, bits.NewDepth(8), limit, func(c element) error {
 		if c.id == idFileUID {
-			uid = readUint(src, c, limit)
+			uid, _ = readUint(src, c, limit)
 		}
 		return nil
 	})
@@ -361,11 +373,11 @@ func TestBuildAlbumGroupEmitsTargets(t *testing.T) {
 	// The serialized Tag's first child is the mandatory Targets element.
 	src := core.BytesSource(rendered)
 	limit := int64(len(rendered))
-	tagEl, ok := readElement(src, 0, limit, limit)
+	tagEl, ok, _ := readElement(src, 0, limit, limit)
 	if !ok || tagEl.id != idTag {
 		t.Fatalf("rendered bytes are not a Tag element (ok=%v id=%#x)", ok, tagEl.id)
 	}
-	child, ok := readElement(src, tagEl.dataStart, tagEl.dataEnd, limit)
+	child, ok, _ := readElement(src, tagEl.dataStart, tagEl.dataEnd, limit)
 	if !ok || child.id != idTargets {
 		t.Errorf("first Tag child id = %#x, want Targets %#x", child.id, idTargets)
 	}

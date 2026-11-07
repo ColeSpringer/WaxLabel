@@ -4,7 +4,7 @@ import "github.com/colespringer/waxlabel/internal/core"
 
 // DefaultMaxSourceBytes is the default ceiling [OpenSource] applies when
 // buffering a non-seekable stream (2 GiB). Exceeding it fails with
-// [waxerr.ErrSizeTooLarge]; [WithMaxSourceBytes](0) lifts the cap. CLI uses the
+// [waxerr.ErrInputTooLarge]; [WithMaxSourceBytes](0) lifts the cap. CLI uses the
 // same default for stdin via --max-size.
 const DefaultMaxSourceBytes = core.DefaultMaxSourceBytes
 
@@ -19,7 +19,10 @@ type (
 )
 
 // WithLimits sets allocation and recursion limits for untrusted input. A zero
-// field uses the default for that field (not unlimited).
+// field uses the default for that field (not unlimited). Every format refuses a
+// structure it cannot read whole within MaxAllocBytes with [waxerr.ErrSizeTooLarge],
+// except a Musepack SV8 chapter packet, which is skipped with a warning; a very
+// small limit refuses even fixed-size records.
 func WithLimits(l Limits) ParseOption {
 	return func(o *core.ParseOptions) {
 		d := core.DefaultParseOptions().Limits

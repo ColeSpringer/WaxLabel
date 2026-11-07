@@ -58,42 +58,64 @@ func parsePacket(b []byte, room int64) (packet, bool) {
 
 func isKeyByte(c byte) bool { return c >= 'A' && c <= 'Z' }
 
-// readPacket at off in a stream ending at end.
-func readPacket(src core.ReaderAtSized, off, end, limit int64) (packet, bool) {
+// readPacket reads the packet header at off in a stream ending at end, as [bits.ReadWithin] reads:
+// one past the end of the file is no packet, and a failed read or one over limit is an error.
+func readPacket(src core.ReaderAtSized, off, end, limit int64) (packet, bool, error) {
 	n := min(int64(2+maxSizeBytes), end-off)
 	if n < 3 {
-		return packet{}, false
+		return packet{}, false, nil
 	}
-	b, err := bits.ReadSlice(src, off, n, limit)
-	if err != nil {
-		return packet{}, false
+	b, err := bits.ReadWithin(src, off, n, limit)
+	if err != nil || b == nil {
+		return packet{}, false, err
 	}
-	return parsePacket(b, end-off)
+	p, ok := parsePacket(b, end-off)
+	return p, ok, nil
 }
 
-// chapterRun: offset of the CT run the reference decoder reads, or -1.
-// Hop header packets; SO pointing at ST settles after that table. Else keep the
-// last consecutive CT run that ends at SE. Malformed header or no SE => none.
-// Element cap bounds a whole-file walk when there is no SO.
-func chapterRun(ctx context.Context, src core.ReaderAtSized, start, end, limit int64, maxElements int) (int64, []core.Warning, error) {
+// walk is what [walkPackets] finds.
+type walk struct {
+	end      int64 // past the SE packet, -1 when unknown
+	chapters int64 // where the CT run the reference decoder reads starts, -1 for none
+	capAt    int64 // where the walk stopped at the packet cap with the chapters unplaced, -1 for none
+}
+
+// walkPackets walks the packet headers of the SV8 stream at start once, for where it ends and where
+// the chapters the reference decoder reads start. An SO packet among the stream headers that points at
+// a seek table places them right after it and skips the audio; without one, they are the last run of
+// consecutive CT packets that ends at the SE packet. The stream ends past its SE packet. A malformed
+// packet, boundary (where the tags begin), or more than maxPackets headers before SE leave the end
+// unknown, and the chapters unplaced unless the seek table placed them; a read that fails is an error.
+func walkPackets(ctx context.Context, src core.ReaderAtSized, start, boundary, limit int64, maxPackets int) (walk, error) {
+	w := walk{end: -1, chapters: -1, capAt: -1}
 	pos := start + int64(len(sv8Magic))
-	run := int64(-1)
-	audio := false
-	for n := 0; pos < end; n++ {
+	run := int64(-1) // the CT run in progress
+	// audio: past the stream headers, where no SO counts; placed: a seek table placed the chapters.
+	audio, placed := false, false
+	for n := 0; pos < boundary; n++ {
 		if err := ctx.Err(); err != nil {
-			return -1, nil, err
+			return walk{}, err
 		}
-		if bits.CheckElementCap(n, maxElements, "SV8 packets") != nil {
-			return -1, core.Warn(nil, core.WarnElementCap,
-				"the stream has more packets than the element limit allows; no chapters are read"), nil
+		if bits.CheckElementCap(n, maxPackets, "SV8 packets") != nil {
+			if !placed {
+				w.capAt = pos
+			}
+			return w, nil
 		}
-		p, ok := readPacket(src, pos, end, limit)
+		p, ok, err := readPacket(src, pos, boundary, limit)
+		if err != nil {
+			return walk{}, err
+		}
 		if !ok {
-			return -1, nil, nil
+			return w, nil
 		}
 		switch p.key {
 		case keyEnd:
-			return run, nil, nil
+			w.end = pos + p.size
+			if !placed {
+				w.chapters = run
+			}
+			return w, nil
 		case keyChapter:
 			if run < 0 {
 				run = pos
@@ -101,8 +123,13 @@ func chapterRun(ctx context.Context, src core.ReaderAtSized, start, end, limit i
 		case keySeekOff:
 			run = -1
 			if !audio {
-				if at, ok := afterSeekTable(src, pos, p, end, limit); ok {
-					return at, nil, nil
+				at, ok, err := afterSeekTable(src, pos, p, boundary, limit)
+				if err != nil {
+					return walk{}, err
+				}
+				if ok {
+					pos, audio, placed, w.chapters = at, true, true, at
+					continue
 				}
 			}
 		default:
@@ -111,26 +138,27 @@ func chapterRun(ctx context.Context, src core.ReaderAtSized, start, end, limit i
 		}
 		pos += p.size
 	}
-	return -1, nil, nil
+	return w, nil
 }
 
 // afterSeekTable: SO payload is a varlen offset (from packet start) to the seek
-// table; chapters begin right after an ST there. Only the pointer bytes are read.
-func afterSeekTable(src core.ReaderAtSized, pos int64, p packet, end, limit int64) (int64, bool) {
-	payload, err := bits.ReadSlice(src, pos+int64(p.hdrLen), min(p.size-int64(p.hdrLen), maxSizeBytes), limit)
-	if err != nil {
-		return 0, false
+// table; chapters begin right after an ST there. Only the pointer bytes are read,
+// as [bits.ReadWithin] reads them.
+func afterSeekTable(src core.ReaderAtSized, pos int64, p packet, end, limit int64) (int64, bool, error) {
+	payload, err := bits.ReadWithin(src, pos+int64(p.hdrLen), min(p.size-int64(p.hdrLen), maxSizeBytes), limit)
+	if err != nil || payload == nil {
+		return 0, false, err
 	}
 	ptr, _, ok := readSize(payload)
 	if !ok || ptr >= uint64(end-pos) {
-		return 0, false
+		return 0, false, nil
 	}
 	at := pos + int64(ptr)
-	st, ok := readPacket(src, at, end, limit)
-	if !ok || st.key != keySeekTable {
-		return 0, false
+	st, ok, err := readPacket(src, at, end, limit)
+	if err != nil || !ok || st.key != keySeekTable {
+		return 0, false, err
 	}
-	return at + st.size, true
+	return at + st.size, true, nil
 }
 
 // chapterFault classifies what decodeChapter could not read.
@@ -138,7 +166,7 @@ type chapterFault uint8
 
 const (
 	faultNone        chapterFault = iota
-	faultTruncated                // payload unreadable or short of start/gain/peak
+	faultTruncated                // payload past the end of the file or short of start/gain/peak
 	faultUnplaceable              // start sample past any duration
 	faultOversized                // larger than allocation limit
 	faultShortTag                 // tag shorter than header; chapter listed untitled
@@ -161,14 +189,19 @@ var faultReports = [...]struct {
 
 // readChapters projects CT packets at at into chapters (start order) and returns
 // where the read ended. Every packet counts against the element cap. Each fault
-// is reported once for the run; framing after a faulty packet stays intact.
-func readChapters(src core.ReaderAtSized, at, end int64, rate int, limit int64, maxElements int) ([]core.Chapter, int64, []core.Warning) {
+// is reported once for the run; framing after a faulty packet stays intact. The
+// packets are read as [bits.ReadWithin] reads: a payload past the end of the file
+// is a truncated chapter, and a read that fails is an error.
+func readChapters(src core.ReaderAtSized, at, end int64, rate int, limit int64, maxElements int) ([]core.Chapter, int64, []core.Warning, error) {
 	var chs []core.Chapter
 	var warnings []core.Warning
 	var first, count [len(faultReports)]int
 	pos := at
 	for n := 0; pos < end; n++ {
-		p, ok := readPacket(src, pos, end, limit)
+		p, ok, err := readPacket(src, pos, end, limit)
+		if err != nil {
+			return nil, 0, nil, err
+		}
 		if !ok || p.key != keyChapter {
 			break
 		}
@@ -181,11 +214,13 @@ func readChapters(src core.ReaderAtSized, at, end int64, rate int, limit int64, 
 		pos += p.size
 		var ch core.Chapter
 		var fault chapterFault
-		payload, err := bits.ReadSlice(src, payloadAt, p.size-int64(p.hdrLen), limit)
+		payload, err := bits.ReadWithin(src, payloadAt, p.size-int64(p.hdrLen), limit)
 		switch {
 		case errors.Is(err, waxerr.ErrSizeTooLarge):
 			fault = faultOversized
 		case err != nil:
+			return nil, 0, nil, err
+		case payload == nil:
 			fault = faultTruncated
 		default:
 			ch, fault = decodeChapter(payload, rate, maxElements)
@@ -212,7 +247,7 @@ func readChapters(src core.ReaderAtSized, at, end int64, rate int, limit int64, 
 		warnings = core.Warn(warnings, r.code, msg)
 	}
 	core.SortChaptersByStart(chs)
-	return chs, pos, warnings
+	return chs, pos, warnings, nil
 }
 
 // decodeChapter: start sample, gain/peak (unmodeled; stay in copied bytes), then

@@ -2,8 +2,8 @@ package aac
 
 import (
 	"context"
-	"io"
 
+	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mpeg4audio"
 )
@@ -12,59 +12,63 @@ import (
 // extension in-frame. This file walks raw data blocks so ADTS geometry matches
 // a player (and the same audio in MP4).
 
-// sbrProbeFrames: SBR is in every HE-AAC frame, so a majority of the first 16
-// decides; corrupt/unsupported frames abstain. Keeps recursive dumps cheap.
+// sbrProbeFrames: SBR is in every HE-AAC frame, so a majority of the frames parsed
+// among the first 16 decides; unsupported frames abstain but still count toward
+// the 16, so a stream of them costs no more. Keeps recursive dumps cheap.
 const sbrProbeFrames = 16
 
 // probeWindow holds several real frames and at least one at the 8191-byte ADTS
 // length ceiling, so a frame cannot straddle a refill forever.
 const probeWindow = 16 << 10
 
-// detectSBR reports whether early frames carry SBR, and whether a mono core's
-// SBR payload carries parametric stereo. Read failures return; unclaimed frames
-// abstain; too few parsed frames report neither.
+// detectSBR reports whether the first sbrProbeFrames frames carry SBR, and whether
+// a mono core's SBR payload carries parametric stereo. Unclaimed frames abstain;
+// too few parsed frames report neither. Windows are read as [bits.FillWithin]
+// reads: one past the end of the file ends the probe, and one that fails is an
+// error. A window over limit is refused.
 func detectSBR(ctx context.Context, src core.ReaderAtSized, start, end int64, h adtsHeader, limit int64) (sbr, ps bool, err error) {
 	// SBR plays at 2x core rate; if 2x has no coded index, skip the probe.
 	sbrRateIdx, ok := doubledRateIndex(h.sfIndex)
 	if !ok {
 		return false, false, nil
 	}
-	// Working buffer only: real HE-AAC frames are small. Shrink to MaxAllocBytes
-	// rather than fail parse; too-small window abstains.
-	bufSize := min(int64(probeWindow), end-start, limit)
+	bufSize := min(int64(probeWindow), end-start)
+	if err := bits.CheckAlloc(bufSize, limit); err != nil {
+		return false, false, err
+	}
 	if bufSize <= int64(adtsHeaderSize) {
 		return false, false, nil
 	}
 	buf := make([]byte, bufSize)
 	var state mpeg4audio.SBRState
-	parsed, sbrFrames, sceFrames, psFrames := 0, 0, 0, 0
-	for off := start; off+int64(adtsHeaderSize) <= end && parsed < sbrProbeFrames; {
+	examined, parsed, sbrFrames, sceFrames, psFrames := 0, 0, 0, 0, 0
+	for off := start; off+int64(adtsHeaderSize) <= end && examined < sbrProbeFrames; {
 		if e := ctx.Err(); e != nil {
 			return false, false, e
 		}
 		n := min(end-off, int64(len(buf)))
-		got, rerr := src.ReadAt(buf[:n], off)
-		// Short read or EOF: keep what was read instead of failing an already-parsed file.
-		if rerr != nil && rerr != io.EOF {
-			return false, false, nil
+		ok, err := bits.FillWithin(src, buf[:n], off)
+		if err != nil {
+			return false, false, err
 		}
-		window := buf[:got]
+		if !ok {
+			break
+		}
+		window := buf[:n]
 		p := 0
-		for p+adtsHeaderSize <= len(window) && parsed < sbrProbeFrames {
+		for p+adtsHeaderSize <= len(window) && examined < sbrProbeFrames {
 			fh, ok := decodeADTS(window[p:])
 			if !ok || p+fh.frameLength > len(window) {
 				break // corrupt or straddling: refill from off+p
 			}
 			probeFrame(window[p:p+fh.frameLength], fh, sbrRateIdx, &state, &parsed, &sbrFrames, &sceFrames, &psFrames)
+			examined++
 			p += fh.frameLength
 		}
 		if p == 0 {
 			break // nothing fit: do not spin
 		}
 		off += int64(p)
-		if rerr != nil {
-			break // benign EOF after whole frames
-		}
 	}
 	sbr = parsed > 0 && 2*sbrFrames > parsed
 	ps = sbr && sceFrames > 0 && 2*psFrames > sceFrames

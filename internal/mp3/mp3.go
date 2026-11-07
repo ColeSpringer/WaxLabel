@@ -35,12 +35,19 @@ func (Codec) Sniff(header []byte) bool {
 	return false
 }
 
+// Resync finds the first frame in window confirmed by a second agreeing frame at its computed
+// length inside window ([core.Resyncer]). Unlike the parser's scan, a lone header confirms nothing.
+func (Codec) Resync(window []byte) (int, bool) {
+	i, _, ok := firstFrame(window, nextFrameConfirms)
+	return i, ok
+}
+
 // Parse reads metadata from src into a Media.
 func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	return parse(ctx, src, opts)
 }
 
-// Capabilities: ID3v2 tags/art (version preserved). Trailing ID3v1/APEv2 surfaced
+// Capabilities: ID3v2 tags/art (version preserved). Trailing legacy tags surfaced
 // only. Media bound so ORIGINALDATE fidelity matches the file's write version.
 func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
@@ -80,5 +87,5 @@ func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 		binary.BigEndian.PutUint32(cfg[4:8], uint32(d.track.SampleRate))
 		binary.BigEndian.PutUint32(cfg[8:12], uint32(d.track.Channels))
 	}
-	return "mp3-frames-v1", cfg[:]
+	return "mp3-frames-v2", cfg[:]
 }

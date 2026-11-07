@@ -19,12 +19,25 @@ func init() { core.Register(New()) }
 func (Codec) Format() core.Format  { return core.FormatWavPack }
 func (Codec) Extensions() []string { return []string{".wv"} }
 
-// SkipsLeadingID3 is false: the file starts with wvpk. Legacy ID3 here is trailing ID3v1.
-func (Codec) SkipsLeadingID3() bool { return false }
+// SkipsLeadingID3 is true: some taggers write a front ID3v2, preserved as legacy.
+// core.DetectLeading peeks past it for "wvpk".
+func (Codec) SkipsLeadingID3() bool { return true }
 
-// Sniff matches "wvpk" at offset 0.
+// Sniff matches "wvpk" at offset 0. Leading-ID3v2 files are recognized via DetectLeading instead.
 func (Codec) Sniff(header []byte) bool {
 	return len(header) >= 4 && string(header[:4]) == blockMagic
+}
+
+// Resync finds the first "wvpk" in window that opens a valid block header ([core.Resyncer]).
+func (c Codec) Resync(window []byte) (int, bool) {
+	for i := range window {
+		if b := window[i:]; c.Sniff(b) {
+			if _, err := parseBlockHeader(b, 0); err == nil {
+				return i, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // Parse reads metadata from src into a Media.
@@ -37,7 +50,7 @@ func (Codec) Capabilities(_ *core.Media, _ core.WriteOptions) core.Capabilities 
 	return ape.Capabilities(core.FormatWavPack, false)
 }
 
-// EssenceExtent returns wavpack-v1 and decoder-critical fields from the first
+// EssenceExtent returns wavpack-v2 and decoder-critical fields from the first
 // block. Hashes decoded fields, not the raw flag word: that word also carries
 // per-block state (initial/final markers, decorrelation) that would make identical
 // streams hash differently by block layout.
@@ -57,5 +70,5 @@ func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 			b[15] = 1
 		}
 	}
-	return "wavpack-v1", b[:]
+	return "wavpack-v2", b[:]
 }

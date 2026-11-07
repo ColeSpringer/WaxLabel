@@ -2,11 +2,14 @@ package core
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
 	"time"
+
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // ReaderAtSized is io.ReaderAt plus Size. No shared seek offset.
@@ -38,17 +41,22 @@ func (r bytesReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	return n, nil
 }
 
-// Fingerprint hashes metadata regions around audio essence for change detection:
-// [0, AudioStart) plus [AudioEnd, size). No essence: whole file. Multi-segment: gaps skipped.
-// It streams, so region size is unbounded. ok is false when there is nothing to hash or a read
-// fails; [ReadFingerprint] also reports the failure.
-func Fingerprint(src ReaderAtSized, m *Media) ([32]byte, bool) {
-	sum, ok, err := ReadFingerprint(src, m)
-	return sum, ok && err == nil
+// SetIdentity records m's identity as a parse of src ends: the size of src and the fingerprint of
+// its metadata regions ([ReadFingerprint]). A read of them that fails is returned with no
+// fingerprint, so the parse fails closed: a device error keeps its cause, and a source that serves
+// fewer bytes than its size is invalid data.
+func SetIdentity(src ReaderAtSized, m *Media) error {
+	m.Identity = Identity{Size: src.Size()}
+	var err error
+	m.Identity.Fingerprint, m.Identity.HasFinger, err = ReadFingerprint(src, m)
+	return err
 }
 
-// ReadFingerprint is [Fingerprint] with the read error. ok is false with a nil error when there
-// is nothing to hash or the source ends inside a region.
+// ReadFingerprint hashes metadata regions around audio essence for change detection:
+// [0, AudioStart) plus [AudioEnd, size), within size. No essence: whole file. Multi-segment: gaps
+// skipped. It streams, so region size is unbounded. ok is false with a nil error when there is
+// nothing to hash. A source that serves fewer bytes than its size inside a region is
+// waxerr.ErrInvalidData with io.ErrUnexpectedEOF; a read that fails otherwise is the error.
 func ReadFingerprint(src ReaderAtSized, m *Media) (sum [32]byte, ok bool, err error) {
 	size := src.Size()
 	if size <= 0 {
@@ -59,7 +67,7 @@ func ReadFingerprint(src ReaderAtSized, m *Media) (sum [32]byte, ok bool, err er
 		regions = append(regions, [2]int64{0, size})
 	} else {
 		if m.AudioStart > 0 {
-			regions = append(regions, [2]int64{0, m.AudioStart})
+			regions = append(regions, [2]int64{0, min(m.AudioStart, size)})
 		}
 		if m.AudioEnd > m.AudioStart && m.AudioEnd < size {
 			regions = append(regions, [2]int64{m.AudioEnd, size})
@@ -77,11 +85,11 @@ func ReadFingerprint(src ReaderAtSized, m *Media) (sum [32]byte, ok bool, err er
 	h := sha256.New()
 	for _, r := range regions {
 		n, err := io.CopyBuffer(h, io.NewSectionReader(src, r[0], r[1]-r[0]), buf)
-		if err != nil {
+		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 			return sum, false, err
 		}
 		if n != r[1]-r[0] {
-			return sum, false, nil
+			return sum, false, fmt.Errorf("%w: read %d at %d: %w", waxerr.ErrInvalidData, r[1]-r[0], r[0], io.ErrUnexpectedEOF)
 		}
 	}
 	return [32]byte(h.Sum(nil)), true, nil

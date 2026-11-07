@@ -2,10 +2,12 @@ package waxlabel_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/testfile"
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // 96 kHz ALAC's rate does not fit the sample entry's 16.16 field, so the magic cookie carries it.
@@ -67,31 +69,34 @@ func TestMP4V2SoundEntryGeometry(t *testing.T) {
 	}
 }
 
-// stsd prefix read is clamped to the caller's allocation limit rather than refused by it, so the
-// same bytes report the same geometry and hash to the same digest whatever limit the caller set.
-func TestMP4StsdPrefixIndependentOfAllocLimit(t *testing.T) {
-	// A second, padded entry pushes the stsd payload past the prefix a small limit allows.
+// The stsd prefix is read whole or refused, never cut to the caller's allocation limit: a cut read
+// would report other geometry, and salt another digest, for the same bytes.
+func TestMP4StsdPrefixReadWholeOrRefused(t *testing.T) {
+	// A second, padded entry pushes the stsd payload past the prefix a small limit holds.
 	stsd := testfile.MP4Stsd(
 		testfile.MP4StsdEntry("alac", 2, 16, 0, testfile.MP4AlacCookie(96000, 2, 24)),
 		testfile.MP4StsdEntry("mp4a", 2, 16, 44100, testfile.MP4Atom("pad", make([]byte, 500))),
 	)
 	data := testfile.MP4AssembleStsd(stsd, nil, nil, nil, 44100)
 
-	want := essenceOf(t, data)
-	for _, limit := range []int64{1 << 20, 400, 64} {
-		doc, err := wl.Parse(context.Background(), wl.BytesSource(data), wl.WithLimits(wl.Limits{MaxAllocBytes: limit}))
-		if err != nil {
-			t.Fatalf("limit %d: parse: %v", limit, err)
+	for _, limit := range []int64{400, 64} {
+		_, err := wl.Parse(context.Background(), wl.BytesSource(data), wl.WithLimits(wl.Limits{MaxAllocBytes: limit}))
+		if !errors.Is(err, waxerr.ErrSizeTooLarge) {
+			t.Errorf("limit %d: err = %v, want declared size too large", limit, err)
 		}
-		if got := doc.Properties().First().Codec; got != "ALAC" {
-			t.Errorf("limit %d: Codec = %q, want ALAC", limit, got)
-		}
-		got, err := doc.HashAudioEssence(context.Background(), wl.WithHashSource(wl.BytesSource(data)))
-		if err != nil {
-			t.Fatalf("limit %d: hash: %v", limit, err)
-		}
-		if !got.Equal(want) {
-			t.Errorf("limit %d: digest = %s, want %s (the salt must not depend on the limit)", limit, got, want)
-		}
+	}
+	doc, err := wl.Parse(context.Background(), wl.BytesSource(data), wl.WithLimits(wl.Limits{MaxAllocBytes: 1 << 20}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := doc.Properties().First().Codec; got != "ALAC" {
+		t.Errorf("Codec = %q, want ALAC", got)
+	}
+	got, err := doc.HashAudioEssence(context.Background(), wl.WithHashSource(wl.BytesSource(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := essenceOf(t, data); !got.Equal(want) {
+		t.Errorf("digest = %s, want the default limit's %s", got, want)
 	}
 }

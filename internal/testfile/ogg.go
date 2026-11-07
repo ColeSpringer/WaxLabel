@@ -5,8 +5,8 @@ import (
 	"slices"
 )
 
-// oggPage lays one packet out as a single Ogg page.
-func oggPage(flags byte, granule uint64, serial, seq uint32, pkt []byte) []byte {
+// OggPage lays one packet out as a single Ogg page.
+func OggPage(flags byte, granule uint64, serial, seq uint32, pkt []byte) []byte {
 	var lacing []byte
 	n := len(pkt)
 	for ; n >= 255; n -= 255 {
@@ -25,15 +25,15 @@ func oggPage(flags byte, granule uint64, serial, seq uint32, pkt []byte) []byte 
 func OggFLAC(blocks ...[]byte) []byte {
 	const serial = 0x57ac7557
 	id := slices.Concat([]byte("\x7FFLAC\x01\x00"), BE16(len(blocks)), []byte("fLaC"), FLACBlock(0, streamInfo()))
-	out := oggPage(0x02, 0, serial, 0, id)
+	out := OggPage(0x02, 0, serial, 0, id)
 	for i, b := range blocks {
 		if i == len(blocks)-1 {
 			b = slices.Clone(b)
 			b[0] |= 0x80
 		}
-		out = append(out, oggPage(0, 0, serial, uint32(i+1), b)...)
+		out = append(out, OggPage(0, 0, serial, uint32(i+1), b)...)
 	}
-	return append(out, oggPage(0, 4096, serial, uint32(len(blocks)+1), []byte("AUDIO-FRAME-BYTES"))...)
+	return append(out, OggPage(0, 4096, serial, uint32(len(blocks)+1), []byte("AUDIO-FRAME-BYTES"))...)
 }
 
 // oggCRC is CRC-32 with polynomial 0x04c11db7, no reflection, zero init and no final XOR.

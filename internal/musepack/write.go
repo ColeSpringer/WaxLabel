@@ -6,12 +6,12 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/ape"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/tail"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // Plan copies the stream verbatim and rebuilds surrounding containers via
-// [ape.PlanTrailingWrite]. Legacy strip drops both ID3 containers, never APEv2.
-// Musepack is the only APE-backed codec with a Leading region.
+// [tail.PlanTrailingWrite]. Legacy strip drops the ID3 containers and Lyrics3 blocks, never APEv2.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -25,17 +25,17 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if !core.EqualChapters(base.Chapters, edited.Chapters) {
 		return nil, fmt.Errorf("%w: the Musepack writer copies the chapter packets verbatim and cannot apply a chapter change", waxerr.ErrUnsupportedTag)
 	}
-	w := ape.TrailingWrite{
-		Format: core.FormatMusepack, Trailer: d.trailer, Size: d.size, Leading: d.leadingID3,
+	w := tail.TrailingWrite{
+		Format: core.FormatMusepack, Trailer: d.trailer, Leading: d.leadingID3, StreamAt: d.streamAt,
 	}
-	return ape.PlanTrailingWrite(w, base, edited, opts, func(tp ape.TrailerPlan, newLeadingLen int64) *core.Media {
-		return buildResult(edited, d, tp, newLeadingLen)
+	return tail.PlanTrailingWrite(w, base, edited, opts, func(tp tail.TrailerPlan, audioStart, audioEnd int64) *core.Media {
+		return buildResult(edited, d, tp, audioStart, audioEnd)
 	})
 }
 
-// buildResult builds the plan's result. The stream, chapters included, is copied verbatim
-// and moves with the leading tag.
-func buildResult(edited *core.Media, base *doc, tp ape.TrailerPlan, newLeadingLen int64) *core.Media {
+// buildResult builds the plan's result. The output's essence is [audioStart, audioEnd): the stream,
+// chapters included, copied verbatim, and any junk it keeps.
+func buildResult(edited *core.Media, base *doc, tp tail.TrailerPlan, audioStart, audioEnd int64) *core.Media {
 	proj := ape.Project(&ape.Tag{Items: tp.Items})
 	return &core.Media{
 		Format:     core.FormatMusepack,
@@ -43,7 +43,7 @@ func buildResult(edited *core.Media, base *doc, tp ape.TrailerPlan, newLeadingLe
 		Tags:       proj.Tags,
 		Pictures:   proj.Pictures,
 		Chapters:   core.CloneChapters(base.chapters),
-		AudioStart: newLeadingLen,
-		AudioEnd:   base.trailer.Start + newLeadingLen - base.streamAt,
+		AudioStart: audioStart,
+		AudioEnd:   audioEnd,
 	}
 }

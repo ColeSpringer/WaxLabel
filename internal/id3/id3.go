@@ -165,17 +165,14 @@ func TagSize(header []byte) (int64, bool) {
 // ReadFront reads a leading ID3v2 tag from the start of src, returning the parsed tag,
 // its on-disk length, and any read warning; a nil tag and length 0 mean src has no
 // readable leading ID3. MP3 and raw AAC, whose authoritative container is a front ID3v2
-// tag, share it; FLAC only preserves a stray leading ID3 verbatim and reads the raw bytes
-// itself. size is the source size (the tag must fit within it); limit bounds the
-// allocation.
+// tag, share it; a codec that only preserves a stray leading ID3 verbatim reads it with
+// [ReadFrontStray]. size is the source size (the tag must fit within it); limit bounds the
+// allocation, header included: a header or tag over it is refused with
+// [waxerr.ErrSizeTooLarge].
 func ReadFront(src core.ReaderAtSized, size, limit int64, maxElements int) (*Tag, int64, []core.Warning, error) {
-	hdr, err := bits.ReadSlice(src, 0, 10, limit)
-	if err != nil {
-		return nil, 0, nil, nil // too short to hold an ID3 header: no front tag
-	}
-	total, ok := TagSize(hdr)
-	if !ok {
-		return nil, 0, nil, nil // no ID3v2 header here
+	total, ok, err := frontSize(src, size, limit)
+	if err != nil || !ok {
+		return nil, 0, nil, err
 	}
 	if total > size {
 		// A real header whose declared size runs past the end of the file is an unreadable
@@ -192,6 +189,116 @@ func ReadFront(src core.ReaderAtSized, size, limit int64, maxElements int) (*Tag
 		return nil, 0, nil, err
 	}
 	return tg, total, nil, nil
+}
+
+// ReadFrontStray reads the stray leading ID3v2 tag of a codec that only preserves one (FLAC,
+// WavPack, Monkey's Audio, Musepack): the raw tag, nil when src has none, and streamAt, where c's
+// stream starts behind it as [core.StreamStart] finds it. Bytes between the two (chained tags or a
+// gap) go with the tag. The warnings name the stream. size and limit bound the reads as for
+// [ReadFront].
+func ReadFrontStray(src core.ReaderAtSized, size, limit int64, c core.Codec, stream string) (raw []byte, streamAt int64, ws []core.Warning, err error) {
+	raw, err = ReadFrontRaw(src, size, limit)
+	if err != nil || raw == nil {
+		return nil, 0, nil, err
+	}
+	streamAt = int64(len(raw))
+	ws = core.Warn(nil, core.WarnStrayLeadingID3, fmt.Sprintf("ID3v2 tag of %d bytes precedes the %s stream; preserved", streamAt, stream))
+	at, ok, err := core.StreamStart(src, TagSize, c, limit)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if ok && at > streamAt {
+		ws = core.Warn(ws, core.WarnLeadingBytes, fmt.Sprintf(
+			"%d byte(s) sit between the leading ID3v2 tag and the %s stream; preserved with the tag", at-streamAt, stream))
+		streamAt = at
+	}
+	return raw, streamAt, ws, nil
+}
+
+// StreamBehindFront finds where c's stream starts behind its front ID3v2 tag of id3Len bytes, as
+// [core.StreamStart] does: past chained tags and any gap. With no stream confirmed there, scan,
+// unless nil, finds it on the codec's own terms at or past from, the tag's end. Bytes between the tag
+// and the stream warn leading-bytes, naming unit (the codec's first audio unit). Without a front tag
+// the stream starts at 0, where detection found it. ok is false when no stream is found behind the
+// tag; the start is then the tag's end.
+func StreamBehindFront(src core.ReaderAtSized, id3Len, limit int64, c core.Codec, unit string, scan func(from int64) (int64, bool, error)) (at int64, ok bool, ws []core.Warning, err error) {
+	if id3Len == 0 {
+		return 0, true, nil, nil
+	}
+	at, ok, err = core.StreamStart(src, TagSize, c, limit)
+	if err != nil {
+		return 0, false, nil, err
+	}
+	if !ok && scan != nil {
+		if at, ok, err = scan(id3Len); err != nil {
+			return 0, false, nil, err
+		}
+	}
+	if !ok || at <= id3Len {
+		return id3Len, ok, nil, nil
+	}
+	ws = core.Warn(nil, core.WarnLeadingBytes, fmt.Sprintf(
+		"%d byte(s) sit between the ID3v2 tag and the first %s; preserved", at-id3Len, unit))
+	return at, true, ws, nil
+}
+
+// SkipTags passes the tags that open at off, as a file joined there opens with its ID3v2 tags,
+// perhaps behind an ID3v1 tag the file before it ends with: at most [core.MaxLeadingTags] of them,
+// each by its header alone. It returns where they end and how many it passed. A tag that runs past
+// end stops the skip. The headers are read as [bits.ReadWithin] reads: one past the end of the file
+// is no tag, and a failed read or one over limit is an error.
+func SkipTags(src bits.Sized, off, end, limit int64) (int64, int, error) {
+	for tags := range core.MaxLeadingTags {
+		head, err := bits.ReadWithin(src, off, max(min(end-off, 128), 0), limit)
+		if err != nil || head == nil {
+			return off, tags, err
+		}
+		n, ok := int64(128), LooksLikeID3v1(head)
+		if !ok {
+			n, ok = TagSize(head)
+		}
+		if !ok || off+n > end {
+			return off, tags, nil
+		}
+		off += n
+	}
+	return off, core.MaxLeadingTags, nil
+}
+
+// WarnJoinedTags reports, once, the n tags [SkipTags] passed between joined streams of the named
+// kind, which stay in the audio unread; none adds nothing.
+func WarnJoinedTags(ws []core.Warning, n int, stream string) []core.Warning {
+	if n == 0 {
+		return ws
+	}
+	return core.Warn(ws, core.WarnTrailingBytes, fmt.Sprintf(
+		"%d ID3 tag(s) between joined %s streams stay in the audio essence; preserved verbatim, not read", n, stream))
+}
+
+// ReadFrontRaw reads the raw bytes of a leading ID3v2 tag; nil when src has none. size and limit
+// bound the read as for [ReadFront]: the tag must fit within size, and a header or tag over limit
+// is refused with [waxerr.ErrSizeTooLarge].
+func ReadFrontRaw(src core.ReaderAtSized, size, limit int64) ([]byte, error) {
+	total, ok, err := frontSize(src, size, limit)
+	if err != nil || !ok || total > size {
+		return nil, err
+	}
+	return bits.ReadSlice(src, 0, total, limit)
+}
+
+// frontSize reads the ID3v2 header at the start of src: the tag's total length, or false when src
+// is shorter than a header or holds none there. A header over limit is refused, and a read of it
+// that fails with a device error is that error.
+func frontSize(src core.ReaderAtSized, size, limit int64) (int64, bool, error) {
+	hdr, err := bits.ReadSlice(src, 0, min(size, 10), limit)
+	if fatal := bits.Fatal(err); fatal != nil {
+		return 0, false, fatal
+	}
+	if err != nil {
+		return 0, false, nil // a short read: no front tag
+	}
+	total, ok := TagSize(hdr)
+	return total, ok, nil
 }
 
 // syncSafe decodes a 28-bit sync-safe integer from four bytes (each contributes

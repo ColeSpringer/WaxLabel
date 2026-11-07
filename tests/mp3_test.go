@@ -103,7 +103,7 @@ func TestMP3EssenceStableAcrossTagEdit(t *testing.T) {
 		if got.Fields().Title != "Edited" {
 			t.Errorf("%s: title = %q after edit", f, got.Fields().Title)
 		}
-		if before.ExtentVersion != "mp3-frames-v1" {
+		if before.ExtentVersion != "mp3-frames-v2" {
 			t.Errorf("%s: extent version = %q", f, before.ExtentVersion)
 		}
 	}

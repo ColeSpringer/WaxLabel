@@ -4,75 +4,84 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/colespringer/waxlabel/internal/ape"
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/id3"
+	"github.com/colespringer/waxlabel/internal/tail"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // headerWindow bounds the leading read; a header declared past it is read on its own.
 const headerWindow = 4096
 
-// parse reads geometry from the header, tags from APEv2, and legacy ID3v1 into
-// the family view.
+// parse reads geometry from the header, tags from the APE tag that is the store, and legacy
+// containers (leading ID3v2, trailing ID3v1) into the family view. A 3.98+ descriptor says where the
+// audio ends.
 func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	size := src.Size()
 	limit := opts.Limits.MaxAllocBytes
-	d := &doc{size: size}
+	d := &doc{}
+	var warnings []core.Warning
 
-	head, err := bits.ReadSlice(src, 0, min(size, headerWindow), limit)
+	// Optional leading ID3v2; preserved, never authoritative.
+	var err error
+	d.leadingID3, d.streamAt, warnings, err = id3.ReadFrontStray(src, size, limit, Codec{}, "Monkey's Audio")
+	if err != nil {
+		return nil, err
+	}
+
+	head, err := bits.ReadSlice(src, d.streamAt, min(size-d.streamAt, headerWindow), limit)
+	if fatal := bits.Fatal(err); fatal != nil {
+		return nil, fatal
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: Monkey's Audio file shorter than its header", waxerr.ErrInvalidData)
 	}
-	// Checked first, so a file refused here costs no read of its tags.
+	// Checked first, so a file refused here costs no read of its trailing tags.
 	version, err := parseVersion(head)
 	if err != nil {
 		return nil, err
 	}
-	// The tags are peeled above the layout's documented header length, and a declared header must
-	// end before them: a rewrite replaces the tags, which would otherwise change the header.
-	trailer, warnings := ape.PeelTrailer(src, size, documentedHeaderLen(version), limit, opts.Limits.MaxElements)
-	h, err := readHeader(src, head, version, trailer.Start, size, limit)
+	// The tags start past the layout's documented header length, and a declared header must end
+	// before them: a rewrite replaces the tags, which would otherwise change the header.
+	end := descriptorEnd(head, version, d.streamAt)
+	layout, err := tail.Scan(src, size, d.streamAt+documentedHeaderLen(version), limit, opts.Limits.MaxElements,
+		func(core.ReaderAtSized, int64) (int64, error) { return end, nil })
+	if err != nil {
+		return nil, err
+	}
+	d.trailer = tail.Trailer{Layout: layout}
+	warnings = append(warnings, d.trailer.Warnings("after the Monkey's Audio stream")...)
+	h, err := readHeader(src, head, version, d.streamAt, d.trailer.Start, size, limit)
 	if err != nil {
 		return nil, err
 	}
 	d.header = h
-	d.trailer = trailer
 
-	media := &core.Media{
-		Format:     core.FormatMonkeysAudio,
-		Native:     d,
-		AudioStart: 0,
-		AudioEnd:   d.trailer.Start,
-	}
-	proj := ape.Project(d.trailer.Tag)
-	media.Tags = proj.Tags
-	media.Families = proj.Families
-	media.Pictures = proj.Pictures
-	warnings = append(warnings, proj.Warnings...)
-	warnings = append(warnings, ape.EncoderNoise(d.trailer.Items())...)
-	warnings = append(warnings, ape.InvalidUTF8Warnings(d.trailer.Tag)...)
-	warnings = append(warnings, ape.InvalidKeyWarnings(d.trailer.Tag)...)
-	media.Families = append(media.Families, ape.LegacyFamilies(media.Tags, d.trailer.ID3v1)...)
+	media := &core.Media{Format: core.FormatMonkeysAudio, Native: d}
+	projected, audioLen := d.trailer.Project(media, d.leadingID3, d.streamAt, opts.Limits.MaxElements)
+	warnings = append(warnings, projected...)
 
-	d.track = buildTrack(h, d.trailer.Start)
+	d.track = buildTrack(h, audioLen)
 	media.Properties = core.Properties{Container: "Monkey's Audio", Tracks: []core.AudioTrack{d.track}}
-	if d.track.TotalSamples == 0 && d.trailer.Start > 0 {
+	if d.track.TotalSamples == 0 && d.trailer.Start > d.streamAt {
 		warnings = core.Warn(warnings, core.WarnNoAudioFrames,
 			"the Monkey's Audio header declares no frames; the file may not be audio")
 	}
 
 	media.Warnings = warnings
-	media.Identity = core.Identity{Size: size}
-	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media)
+	if err := core.SetIdentity(src, media); err != nil {
+		return nil, err
+	}
 	return media, nil
 }
 
-// buildTrack takes geometry from the header (all fields are stated there).
-func buildTrack(h header, audioEnd int64) core.AudioTrack {
+// buildTrack takes geometry from the header (all fields are stated there) and the bitrate from the
+// audioLen essence bytes.
+func buildTrack(h header, audioLen int64) core.AudioTrack {
 	t := core.AudioTrack{
 		Codec:         "Monkey's Audio",
 		SampleRate:    int(h.sampleRate),
@@ -81,6 +90,6 @@ func buildTrack(h header, audioEnd int64) core.AudioTrack {
 		TotalSamples:  h.totalSamples(),
 	}
 	t.Duration = core.SamplesToDuration(t.TotalSamples, t.SampleRate)
-	t.Bitrate = core.AverageBitrate(audioEnd, t.Duration.Seconds())
+	t.Bitrate = core.AverageBitrate(audioLen, t.Duration.Seconds())
 	return t
 }

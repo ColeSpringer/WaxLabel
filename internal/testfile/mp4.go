@@ -168,6 +168,18 @@ func MP4AudioTrakChap(chapTrackID int, audioStco uint32, stblExtra ...[]byte) []
 // MP4TextTrak is a chapter text trak: one sample per title at the given media timescale, its chunk
 // offset at textStco.
 func MP4TextTrak(trackID, timescale int, startsMS []int, titles []string, textStco uint32, stblExtra ...[]byte) []byte {
+	stco := MP4Atom("stco", slices.Concat([]byte{0, 0, 0, 0}, BE32(1), BE32(int(textStco))))
+	return textTrak(trackID, timescale, startsMS, titles, stco, stblExtra...)
+}
+
+// MP4TextTrakCo64 is MP4TextTrak with its chunk offset in a 64-bit co64 table.
+func MP4TextTrakCo64(trackID, timescale int, startsMS []int, titles []string, textCo64 uint64) []byte {
+	co64 := MP4Atom("co64", slices.Concat([]byte{0, 0, 0, 0}, BE32(1), binary.BigEndian.AppendUint64(nil, textCo64)))
+	return textTrak(trackID, timescale, startsMS, titles, co64)
+}
+
+// textTrak is a chapter text trak whose stbl ends with chunkOffsets and then stblExtra.
+func textTrak(trackID, timescale int, startsMS []int, titles []string, chunkOffsets []byte, stblExtra ...[]byte) []byte {
 	var stts, sizes []byte
 	for i, t := range titles {
 		delta := 1000
@@ -182,7 +194,7 @@ func MP4TextTrak(trackID, timescale int, startsMS []int, titles []string, textSt
 		MP4Atom("stts", slices.Concat([]byte{0, 0, 0, 0}, BE32(n), stts)),
 		MP4Atom("stsc", slices.Concat([]byte{0, 0, 0, 0}, BE32(1), BE32(1), BE32(n), BE32(1))),
 		MP4Atom("stsz", slices.Concat([]byte{0, 0, 0, 0}, BE32(0), BE32(n), sizes)),
-		MP4Atom("stco", slices.Concat([]byte{0, 0, 0, 0}, BE32(1), BE32(int(textStco)))),
+		chunkOffsets,
 		slices.Concat(stblExtra...)))
 	mdhd := MP4Atom("mdhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), BE32(timescale), BE32(0)))
 	hdlr := MP4Atom("hdlr", slices.Concat(make([]byte, 8), []byte("text"), make([]byte, 12)))

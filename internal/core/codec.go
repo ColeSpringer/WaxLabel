@@ -15,7 +15,7 @@ type Codec interface {
 	// Extensions are the lowercase file extensions (with dot) this codec claims, for ExtensionsFor:
 	// the CLI's directory walk, format names and -o extension warning. Detection only sniffs.
 	Extensions() []string
-	// Sniff reports whether the leading bytes look like this format.
+	// Sniff reports whether header, up to [SniffWindow] leading bytes, looks like this format.
 	Sniff(header []byte) bool
 	// SkipsLeadingID3: parser accepts leading ID3v2 ([DetectLeading]).
 	SkipsLeadingID3() bool
@@ -96,6 +96,15 @@ func PaddingOp(oldRegion, newContent, padAfter int64) string {
 	return fmt.Sprintf("padding %d -> %d", max(int64(0), oldRegion-newContent), padAfter)
 }
 
+// LeadingStripOp formats the legacy-strip line for a leading ID3v2 of tagLen bytes and the bytes
+// after it up to streamAt, which go with it.
+func LeadingStripOp(tagLen, streamAt int64) string {
+	if gap := streamAt - tagLen; gap > 0 {
+		return fmt.Sprintf("leading ID3v2 strip (%d bytes + %d leading bytes)", tagLen, gap)
+	}
+	return fmt.Sprintf("leading ID3v2 strip (%d bytes)", tagLen)
+}
+
 // EncodingRewriteOp formats encoding-only rewrite line (e.g. numeric genre).
 func EncodingRewriteOp(what string) string {
 	return what + " encoding rewrite"
@@ -148,6 +157,23 @@ func ItemCountDiff(a, b *Media) (items string, na, nb int, differ bool) {
 	return "", 0, 0, false
 }
 
+// Detection windows and bounds.
+const (
+	// SniffWindow is how many leading bytes detection hands [Codec.Sniff].
+	SniffWindow = 1 << 10
+	// MaxLeadingTags bounds the chained leading tags detection skips.
+	MaxLeadingTags = 8
+	// ResyncWindow bounds the search for a stream that does not start right behind the leading tags.
+	ResyncWindow = 64 << 10
+)
+
+// Resyncer is implemented by a codec that skips leading ID3v2 and can find its stream behind a gap:
+// Resync returns the offset in window of the first stream unit its own structure confirms inside
+// window (two chained frames, or a marker and the first check its parser makes).
+type Resyncer interface {
+	Resync(window []byte) (off int, ok bool)
+}
+
 // Codec registry (init registration; not user-extensible).
 var registry []Codec
 
@@ -177,32 +203,129 @@ func Detect(header []byte) (Codec, bool) {
 	return nil, false
 }
 
-// DetectLeading sniffs past skippable leading region (ID3). Inner format wins if SkipsLeadingID3.
-func DetectLeading(src ReaderAtSized, leadingLen func(header []byte) (int64, bool)) (Codec, bool) {
-	// 64 bytes covers Ogg BOS id header and shorter signatures.
-	header := make([]byte, 64)
-	n, _ := src.ReadAt(header, 0)
-	header = header[:n]
-
-	codec, ok := Detect(header)
+// DetectLeading picks the codec for src from its first [SniffWindow] bytes. Behind leading tags (up
+// to [MaxLeadingTags] chained ones, each sized by leadingLen from its header) the inner format wins
+// when its codec skips leading ID3: sniffed where the tags end or, when nothing sniffs there, the
+// nearest stream a [Resyncer] confirms within [ResyncWindow] of that end. Another inner format is
+// unsupported, and no inner stream keeps the outer codec. A window read that fails inside src is an
+// error, classified as [bits.FillWithin] classifies it; ok is false with no error when no format
+// matches.
+func DetectLeading(src ReaderAtSized, leadingLen func(header []byte) (int64, bool)) (Codec, bool, error) {
+	header, err := readWindow(src, 0, SniffWindow)
+	if err != nil {
+		return nil, false, err
+	}
+	outer, ok := Detect(header)
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
-	total, isLeading := leadingLen(header)
-	if !isLeading || total >= src.Size() {
-		return codec, true
+	end, inner, err := leadingChain(src, leadingLen, header)
+	switch {
+	case err != nil:
+		return nil, false, err
+	case end == 0 || end >= src.Size():
+		return outer, true, nil
 	}
-	peek := make([]byte, 64)
-	pn, _ := src.ReadAt(peek, total)
-	if pn <= 0 {
-		return codec, true
-	}
-	if inner, ok := Detect(peek[:pn]); ok && inner.Format() != codec.Format() {
-		// Inner format only when SkipsLeadingID3; else unsupported input.
-		if inner.SkipsLeadingID3() {
-			return inner, true
+	if c, ok := Detect(inner); ok {
+		switch {
+		case c.Format() == outer.Format():
+			return outer, true, nil
+		case c.SkipsLeadingID3():
+			return c, true, nil
 		}
-		return nil, false
+		return nil, false, nil
 	}
-	return codec, true
+	c, _, ok, err := resync(src, end, registry)
+	switch {
+	case err != nil:
+		return nil, false, err
+	case ok:
+		return c, true, nil
+	}
+	return outer, true, nil
+}
+
+// StreamStart returns where c's stream starts in src behind its leading tags, found as
+// [DetectLeading] finds it: where the chained tags end when c sniffs there, else at c's first sync
+// confirmed within [ResyncWindow] of that end. ok is false when src starts with no tag or c finds no
+// stream. A window over limit is refused, and one that fails to read is an error as for
+// [DetectLeading].
+func StreamStart(src ReaderAtSized, leadingLen func(header []byte) (int64, bool), c Codec, limit int64) (int64, bool, error) {
+	if err := bits.CheckAlloc(min(SniffWindow, src.Size()), limit); err != nil {
+		return 0, false, err
+	}
+	header, err := readWindow(src, 0, SniffWindow)
+	if err != nil {
+		return 0, false, err
+	}
+	end, inner, err := leadingChain(src, leadingLen, header)
+	switch {
+	case err != nil:
+		return 0, false, err
+	case end == 0:
+		return 0, false, nil
+	case c.Sniff(inner):
+		return end, true, nil
+	}
+	if err := bits.CheckAlloc(min(ResyncWindow, src.Size()-end), limit); err != nil {
+		return 0, false, err
+	}
+	_, at, ok, err := resync(src, end, []Codec{c})
+	return at, ok, err
+}
+
+// leadingChain skips up to MaxLeadingTags chained leading tags at the start of src, each sized by
+// leadingLen from its header, given window, the sniff window at the start; one whose declared size
+// runs past the end of src ends the chain. It returns where the chain ends, 0 when src starts with no
+// tag, and the sniff window there, or the failure of a window read.
+func leadingChain(src ReaderAtSized, leadingLen func(header []byte) (int64, bool), window []byte) (int64, []byte, error) {
+	var end int64
+	for range MaxLeadingTags {
+		total, ok := leadingLen(window)
+		if !ok || total <= 0 || total > src.Size()-end {
+			break
+		}
+		end += total
+		var err error
+		if window, err = readWindow(src, end, SniffWindow); err != nil {
+			return 0, nil, err
+		}
+	}
+	return end, window, nil
+}
+
+// resync returns the codec among cs, of those skipping leading ID3 that implement [Resyncer], whose
+// first confirmed sync within ResyncWindow of at comes first, and that sync's offset in src, or the
+// failure of the window's read.
+func resync(src ReaderAtSized, at int64, cs []Codec) (Codec, int64, bool, error) {
+	window, err := readWindow(src, at, ResyncWindow)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	var best Codec
+	var bestOff int
+	for _, c := range cs {
+		r, ok := c.(Resyncer)
+		if !ok || !c.SkipsLeadingID3() {
+			continue
+		}
+		if off, ok := r.Resync(window); ok && (best == nil || off < bestOff) {
+			best, bestOff = c, off
+		}
+	}
+	return best, at + int64(bestOff), best != nil, nil
+}
+
+// readWindow reads up to n bytes of src at off, fewer at its end. A read that fails is an error: a
+// short read is invalid data, and a device error keeps its own cause.
+func readWindow(src ReaderAtSized, off, n int64) ([]byte, error) {
+	n = min(n, src.Size()-off)
+	if n <= 0 {
+		return nil, nil
+	}
+	b := make([]byte, n)
+	if ok, err := bits.FillWithin(src, b, off); !ok {
+		return nil, err
+	}
+	return b, nil
 }

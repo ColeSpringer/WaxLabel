@@ -86,7 +86,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.BoolVar(&e.clearSyncedLyrics, "clear-synced-lyrics", false, "remove all synced lyrics")
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear ENCODER, the software stamp an encoder or transcoder leaves behind, wherever the format stores it (a WAV ISFT item and a FLAC/Ogg vendor string included)")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|minimal")
-	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip. strip removes ID3v1/APEv2/stray-ID3 containers unconditionally, warning when one holds the only copy of a value (--strict then refuses)")
+	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip. strip removes ID3v1/Lyrics3/APEv2/stray-ID3 containers unconditionally, warning when one holds the only copy of a value (--strict then refuses)")
 	f.StringVar(&e.id3Multi, "id3-multi", "", "how an ID3v2.3 tag (MP3) stores a multi-valued field: null (NUL-separated, the default, a de-facto extension some readers do not split), repeat (one frame per value), or slash (values joined with a slash). ID3v2.4 tags (WAV/AIFF/AAC) separate values natively and ignore it")
 	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata, with the same size suffixes as --max-size (e.g. 8KiB; FLAC default 8192; MP3/AAC/MP4 reuse the existing region; 0 writes none, like --no-padding)")
 	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (no effect on Ogg/WAV/AIFF/Matroska, which have no padding region)")

@@ -3,6 +3,10 @@ package waxlabel_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"os"
+	"path/filepath"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -45,6 +49,61 @@ func TestMP4QTChapterRead(t *testing.T) {
 	}
 	if !hasQT {
 		t.Error("native view should note the QuickTime chapter track")
+	}
+}
+
+// A chapter text sample's title is read alone, its 2-byte length then that many bytes: a final
+// sample the file's end cuts off, before or inside its title, reads untitled as it does under the
+// default limit, and style boxes after a short title are never read, so that title reads under a
+// limit smaller than the sample.
+func TestMP4QTChapterSampleReadWindow(t *testing.T) {
+	starts, titles := []int{0, 5000, 12000}, []string{"Intro", "Verse", "Outro"}
+	// lastSize is where the final sample's stsz entry sits.
+	lastSize := func(data []byte) int {
+		at := bytes.Index(data, []byte("stsz")) - 4
+		return at + int(binary.BigEndian.Uint32(data[at:])) - 4
+	}
+	grow := func(b []byte, at int, n int) {
+		binary.BigEndian.PutUint32(b[at:], binary.BigEndian.Uint32(b[at:])+uint32(n))
+	}
+
+	// The file ends where the final sample would start, and its stsz entry declares 1 MiB.
+	cut := testfile.MP4QTFile(starts, titles)
+	binary.BigEndian.PutUint32(cut[lastSize(cut):], 1<<20)
+	cut = cut[:len(cut)-2-len("Outro")]
+
+	// The file ends inside the final sample's title.
+	cutTitle := testfile.MP4QTFile(starts, titles)
+	cutTitle = cutTitle[:len(cutTitle)-len("tro")]
+
+	// The final sample carries 128 KiB of style boxes after its title.
+	styled := testfile.MP4QTFile(starts, titles)
+	style := slices.Concat(testfile.BE32(128<<10), []byte("styl"), make([]byte, 128<<10-8))
+	grow(styled, lastSize(styled), len(style))
+	grow(styled, bytes.LastIndex(styled, []byte("mdat"))-4, len(style))
+	styled = append(styled, style...)
+
+	for _, c := range []struct {
+		name  string
+		data  []byte
+		limit int64
+		last  string
+	}{
+		{"cut-off sample", cut, 64 << 10, ""},
+		{"title cut by EOF", cutTitle, 64 << 10, ""},
+		{"styled sample", styled, 96 << 10, "Outro"},
+	} {
+		for _, limit := range []int64{c.limit, 0} {
+			doc, err := wl.Parse(context.Background(), wl.BytesSource(c.data), wl.WithLimits(wl.Limits{MaxAllocBytes: limit}))
+			if err != nil {
+				t.Errorf("%s at limit %d: %v", c.name, limit, err)
+				continue
+			}
+			chs := doc.Chapters()
+			if len(chs) != 3 || chs[0].Title != "Intro" || chs[2].Title != c.last {
+				t.Errorf("%s at limit %d: chapters %+v, want Intro, Verse and %q", c.name, limit, chs, c.last)
+			}
+		}
 	}
 }
 
@@ -602,5 +661,41 @@ func TestMP4QTChapterReEditAfterTagEdit(t *testing.T) {
 	}
 	if re.Fields().Title != "Tagged" {
 		t.Error("the tag edit was lost after a follow-up chapter edit")
+	}
+}
+
+// mp4QTChaptersCo64 is a file with a two-chapter QuickTime text track whose co64 entry is textAt
+// of where its samples start.
+func mp4QTChaptersCo64(textAt func(samples int) uint64) []byte {
+	titles, filler := []string{"One", "Two"}, bytes.Repeat([]byte{0xA7}, 120)
+	build := func(audio uint32, text uint64) []byte {
+		kids := slices.Concat(testfile.MP4AudioTrakChap(2, audio), testfile.MP4TextTrakCo64(2, 1000, []int{0, 1000}, titles, text))
+		return slices.Concat(testfile.MP4Ftyp(), testfile.MP4Atom("moov", kids),
+			testfile.MP4Atom("mdat", slices.Concat(filler, testfile.MP4SamplesBlob(titles))))
+	}
+	payload := bytes.Index(build(0, 0), []byte("mdat")) + 4
+	return build(uint32(payload), textAt(payload+len(filler)))
+}
+
+// A chapter sample whose co64 offset lies outside the file, as a negative int64 or past what an
+// int64 can address, reads from a file as from bytes in memory: both chapters, the samples
+// unread. The read is never made, so a file's refusal of the offset is not taken for a device
+// error.
+func TestMP4ChapterSampleOutsideTheFile(t *testing.T) {
+	for _, text := range []uint64{1 << 63, 0xFFFFFFFFFFFFFFF0, 0x7FFFFFFFFFFFFFFF} {
+		data := mp4QTChaptersCo64(func(int) uint64 { return text })
+		path := filepath.Join(t.TempDir(), "chapters.m4b")
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		fromFile, err := wl.ParseFile(context.Background(), path)
+		if err != nil {
+			t.Errorf("co64 %#x from a file: %v; want the chapters read", text, err)
+			continue
+		}
+		fromBytes := mustParseBytes(t, data)
+		if got := fromFile.Chapters(); len(got) != 2 || !reflect.DeepEqual(got, fromBytes.Chapters()) {
+			t.Errorf("co64 %#x: chapters %+v from a file, %+v from bytes; want the same two", text, got, fromBytes.Chapters())
+		}
 	}
 }

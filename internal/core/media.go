@@ -15,7 +15,7 @@ const (
 	FamilyID3v2
 	FamilyID3v1
 	FamilyAPEv2
-	FamilyLyrics3
+	_ // retired: nothing projects Lyrics3; the slot keeps the later values stable
 	FamilyMP4
 	FamilyRIFF
 	FamilyMatroska
@@ -33,8 +33,6 @@ func (f Family) String() string {
 		return "id3v1"
 	case FamilyAPEv2:
 		return "apev2"
-	case FamilyLyrics3:
-		return "lyrics3"
 	case FamilyMP4:
 		return "mp4"
 	case FamilyRIFF:
@@ -92,6 +90,16 @@ type NativeEntry struct {
 	// Unit names non-byte Size; empty means bytes.
 	Unit string
 	Note string
+}
+
+// LeadingBytesEntry describes the n bytes a rewrite keeps between a leading tag and the stream.
+func LeadingBytesEntry(n int64) NativeEntry {
+	return NativeEntry{Kind: "leading bytes", Size: int(n), Note: "preserved"}
+}
+
+// LeadingID3Entry describes an n-byte stray ID3v2 tag before a stream whose tags live elsewhere.
+func LeadingID3Entry(n int) NativeEntry {
+	return NativeEntry{Kind: "ID3v2", Size: n, Note: "leading, legacy, preserved"}
 }
 
 // NativeDoc is a codec's editable native document (clone + describe only).

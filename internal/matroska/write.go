@@ -215,7 +215,7 @@ func isWebM(docType string) bool { return strings.EqualFold(docType, "webm") }
 // checkIndexCaptured refuses the edit when a SeekHead/Cues element cannot be
 // rewritten: more than one is present (a linked index; only the last is captured, so
 // the others would copy with stale offsets), or the single instance was not captured
-// at parse (read failure or over-limit declared size).
+// at parse (a failed read).
 func checkIndexCaptured(wb *writeBase) error {
 	seeks, cues := 0, 0
 	for _, c := range wb.children {
@@ -238,8 +238,8 @@ func checkIndexCaptured(wb *writeBase) error {
 }
 
 // checkSegmentCRCCaptured refuses an edit when a Segment-level CRC-32 is present but
-// its bytes could not be captured for neutralization (an over-limit declared size left
-// segVoidFromCRC nil).
+// its bytes could not be captured for neutralization (a failed read left segVoidFromCRC
+// nil).
 func checkSegmentCRCCaptured(wb *writeBase) error {
 	if wb.segVoidFromCRC != nil {
 		return nil // captured and neutralizable to a Void
@@ -254,10 +254,10 @@ func checkSegmentCRCCaptured(wb *writeBase) error {
 }
 
 // checkPreservable refuses the edit when an element the writer must copy verbatim was
-// not captured (its bytes exceeded the alloc limit, so captureRaw returned nil).
+// not captured (a failed read left captureRaw's bytes nil).
 func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
-	tooBig := func(what string) error {
-		return fmt.Errorf("%w: a Matroska %s is too large to rewrite within the alloc limit", waxerr.ErrUnsupportedTag, what)
+	uncaptured := func(what string) error {
+		return fmt.Errorf("%w: a Matroska %s could not be read for rewrite", waxerr.ErrUnsupportedTag, what)
 	}
 	if ch.simple {
 		for i, g := range d.groups {
@@ -271,7 +271,7 @@ func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 					if st.raw == nil {
 						// Includes a managed TITLE kept because no Info exists to migrate it
 						// to; buildAlbumGroup would otherwise skip the uncaptured tag.
-						return tooBig("tag")
+						return uncaptured("tag")
 					}
 				}
 				continue
@@ -282,7 +282,7 @@ func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 				}
 				if len(g.tags) == 0 {
 					// No whole-element bytes and no SimpleTags to rebuild from.
-					return tooBig("tag group")
+					return uncaptured("tag group")
 				}
 			}
 			// Re-rendered to drop its edited keys: every surviving SimpleTag needs its bytes,
@@ -293,19 +293,19 @@ func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 					continue // its value now lives at album scope
 				}
 				if st.raw == nil {
-					return tooBig("tag")
+					return uncaptured("tag")
 				}
 				kept++
 			}
 			if kept > 0 && g.targetsRaw == nil && narrowsScope(g) {
-				return tooBig("tag targets")
+				return uncaptured("tag targets")
 			}
 		}
 	}
 	if ch.pictures {
 		for _, a := range d.attachments {
 			if !a.image && a.raw == nil {
-				return tooBig("attachment")
+				return uncaptured("attachment")
 			}
 		}
 	}
@@ -314,7 +314,7 @@ func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 		// is copied from its captured bytes.
 		for i, e := range d.chapters.editions {
 			if i != d.chapters.defIdx && e.raw == nil {
-				return tooBig("chapter edition")
+				return uncaptured("chapter edition")
 			}
 		}
 	}
@@ -944,8 +944,8 @@ func albumGroupIndex(groups []tagGroup) int {
 // inserting, or removing the Title child) and recomputes the CRC-32.
 func renderInfo(ib *infoBlock, title string, present bool) (raw []byte, newTitle string) {
 	r := ib.raw
-	root, ok := readElement(core.BytesSource(r), 0, int64(len(r)), int64(len(r)))
-	if !ok {
+	root, ok, err := readElement(core.BytesSource(r), 0, int64(len(r)), int64(len(r)))
+	if !ok || err != nil {
 		return nil, ""
 	}
 	headerLen := int(root.dataStart) // ID + size VINT

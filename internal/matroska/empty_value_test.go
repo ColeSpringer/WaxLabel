@@ -24,7 +24,7 @@ func TestManagedTagWithoutTagStringStaysNative(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			src := core.BytesSource(encElement(idSimpleTag, c.payload))
-			root, ok := readElement(src, 0, src.Size(), limit)
+			root, ok, _ := readElement(src, 0, src.Size(), limit)
 			if !ok {
 				t.Fatal("readElement failed")
 			}
@@ -52,7 +52,7 @@ func TestEmptySimpleTagRoundTrip(t *testing.T) {
 	const limit = int64(1 << 20)
 	b := simpleTagBytes("ARTIST", "") // writer output for a present-empty value
 	src := core.BytesSource(b)
-	root, ok := readElement(src, 0, src.Size(), limit)
+	root, ok, _ := readElement(src, 0, src.Size(), limit)
 	if !ok || root.id != idSimpleTag {
 		t.Fatalf("readElement: ok=%v id=%#x, want a SimpleTag", ok, root.id)
 	}
@@ -82,7 +82,7 @@ func TestBuildAlbumGroupKeepsEmptyValue(t *testing.T) {
 		t.Fatal("buildAlbumGroup dropped a present-empty ARTIST (set KEY= must not equal --clear KEY)")
 	}
 	src := core.BytesSource(gb)
-	root, ok := readElement(src, 0, src.Size(), limit)
+	root, ok, _ := readElement(src, 0, src.Size(), limit)
 	if !ok || root.id != idTag {
 		t.Fatalf("not a Tag element: ok=%v id=%#x", ok, root.id)
 	}
@@ -154,7 +154,7 @@ func mustRender(t *testing.T, ib *infoBlock, title string, present bool) []byte 
 func parseInfoElement(t *testing.T, raw []byte, limit int64) *doc {
 	t.Helper()
 	src := core.BytesSource(raw)
-	root, ok := readElement(src, 0, src.Size(), limit)
+	root, ok, _ := readElement(src, 0, src.Size(), limit)
 	if !ok || root.id != idInfo {
 		t.Fatalf("not an Info element: ok=%v id=%#x", ok, root.id)
 	}

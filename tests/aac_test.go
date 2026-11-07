@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,8 +108,8 @@ func TestAACEssenceStableAcrossTagEdit(t *testing.T) {
 		if got.Fields().Title != "Edited" {
 			t.Errorf("%s: title = %q after edit", f, got.Fields().Title)
 		}
-		if before.ExtentVersion != "aac-adts-v1" {
-			t.Errorf("%s: extent version = %q, want aac-adts-v1", f, before.ExtentVersion)
+		if before.ExtentVersion != "aac-adts-v2" {
+			t.Errorf("%s: extent version = %q, want aac-adts-v2", f, before.ExtentVersion)
 		}
 	}
 }
@@ -207,12 +210,28 @@ func TestAACImplicitSBRDetected(t *testing.T) {
 	}
 }
 
+// Behind an ID3v2 tag and a gap the SBR probe starts at the first frame, so an HE-AAC stream reads
+// the played geometry it reads without them.
+func TestAACImplicitSBRDetectedBehindGap(t *testing.T) {
+	lead := testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "x"))
+	for _, path := range []string{heaacAAC, "../testdata/heaac_v2.aac"} {
+		plain := readFixture(t, path)
+		want := mustParseBytes(t, plain).Properties()
+		if p := want.First().CodecProfile; !strings.HasPrefix(p, "HE-AAC") {
+			t.Fatalf("%s reads profile %q, want an HE-AAC fixture", path, p)
+		}
+		if got := mustParseBytes(t, slices.Concat(lead, []byte{1, 2, 3}, plain)).Properties(); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s behind a tag and a gap: %+v, want the plain stream's %+v", path, got, want)
+		}
+	}
+}
+
 // SBR detection does not change the essence digest: the salt comes from the header alone, so the
-// HE-AAC fixtures keep the digests recorded before frame parsing existed.
+// HE-AAC fixtures keep the sums recorded before frame parsing existed.
 func TestAACDigestUnchangedBySBRDetection(t *testing.T) {
 	for path, want := range map[string]string{
-		heaacAAC:                   "sha256/aac-adts-v1:0a36515dc52e76b86865cd32390377203874295adc8f99744146f4c67688a719",
-		"../testdata/heaac_v2.aac": "sha256/aac-adts-v1:3b5da3c46f7200e2f01f3137f2086ac3c816c92927739a0b1aa6bff848050ce3",
+		heaacAAC:                   "sha256/aac-adts-v2:0a36515dc52e76b86865cd32390377203874295adc8f99744146f4c67688a719",
+		"../testdata/heaac_v2.aac": "sha256/aac-adts-v2:3b5da3c46f7200e2f01f3137f2086ac3c816c92927739a0b1aa6bff848050ce3",
 	} {
 		got, err := mustParseFile(t, path).HashAudioEssence(context.Background())
 		if err != nil {

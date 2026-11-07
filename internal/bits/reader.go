@@ -5,22 +5,27 @@
 package bits
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Limits bounds resource use when parsing untrusted input.
+// Limits bounds resource use when parsing untrusted input. Passed to WithLimits, a zero field takes
+// that field's default.
 type Limits struct {
 	// MaxAllocBytes caps one length-prefixed allocation; above it: waxerr.ErrSizeTooLarge.
 	MaxAllocBytes int64
 	// MaxDepth caps nested-container recursion (EBML, MP4 atoms).
 	MaxDepth int
 	// MaxElements caps metadata descriptors per pass (RIFF chunks, FLAC/MP4 blocks,
-	// ID3 frames). MaxAllocBytes bounds each read, not descriptor count; minimum-size
-	// elements could otherwise OOM. Not used for audio loops (Ogg pages, clusters).
-	// 0 means unlimited.
+	// ID3 frames, Musepack chapter packets). MaxAllocBytes bounds each read, not descriptor
+	// count; minimum-size elements could otherwise OOM. It also caps the header walks across
+	// a WavPack or Musepack SV8 stream: past it the walk to the stream's end leaves that end
+	// unknown, and the walk to the Musepack chapters reads none. Other audio loops (Ogg
+	// pages, clusters) are not capped.
 	MaxElements int
 }
 
@@ -135,7 +140,8 @@ func (c *Cursor) Skip(n int64) {
 }
 
 // Bytes reads exactly n bytes. It fails with waxerr.ErrSizeTooLarge if n
-// exceeds the alloc limit, or waxerr.ErrInvalidData on a short region.
+// exceeds the alloc limit, or waxerr.ErrInvalidData on a short region; a read
+// that fails fails as [ReadSlice] says.
 func (c *Cursor) Bytes(n int64) []byte {
 	if c.err != nil {
 		return nil
@@ -147,8 +153,8 @@ func (c *Cursor) Bytes(n int64) []byte {
 	if n == 0 {
 		return nil
 	}
-	if c.limit > 0 && n > c.limit {
-		c.fail(fmt.Errorf("%w: %d bytes exceeds limit %d", waxerr.ErrSizeTooLarge, n, c.limit))
+	if err := CheckAlloc(n, c.limit); err != nil {
+		c.fail(err)
 		return nil
 	}
 	if n > c.Remaining() {
@@ -157,7 +163,7 @@ func (c *Cursor) Bytes(n int64) []byte {
 	}
 	buf := make([]byte, n)
 	if err := ReadFullAt(c.r, buf, c.pos); err != nil {
-		c.fail(fmt.Errorf("%w: read at %d: %v", waxerr.ErrInvalidData, c.pos, err))
+		c.fail(readFailure(n, c.pos, err))
 		return nil
 	}
 	c.pos += n
@@ -224,8 +230,12 @@ func (c *Cursor) U64BE() uint64 {
 
 // ReadFullAt fills p from r at off. A full read succeeds whatever error comes with it, since
 // io.ReaderAt may return io.EOF with the last bytes; a short read with no error is
-// io.ErrUnexpectedEOF.
+// io.ErrUnexpectedEOF. A read at an offset no file holds, below 0 or ending past math.MaxInt64, is
+// not made and is io.ErrUnexpectedEOF too, so a file's refusal of it never reads as a device error.
 func ReadFullAt(r io.ReaderAt, p []byte, off int64) error {
+	if off < 0 || off > math.MaxInt64-int64(len(p)) {
+		return io.ErrUnexpectedEOF
+	}
 	n, err := r.ReadAt(p, off)
 	if n == len(p) {
 		return nil
@@ -236,23 +246,114 @@ func ReadFullAt(r io.ReaderAt, p []byte, off int64) error {
 	return err
 }
 
-// ReadSlice reads n bytes at off. limit must be positive; caller supplies MaxAllocBytes.
+// CheckAlloc refuses an n-byte allocation over limit with waxerr.ErrSizeTooLarge, for a buffer the
+// caller fills itself. limit <= 0 disables it, unlike [ReadSlice], which refuses such a limit.
+func CheckAlloc(n, limit int64) error {
+	if limit > 0 && n > limit {
+		return fmt.Errorf("%w: %d bytes exceeds limit %d", waxerr.ErrSizeTooLarge, n, limit)
+	}
+	return nil
+}
+
+// ReadSlice reads n bytes at off. limit must be positive; caller supplies MaxAllocBytes. A read over
+// limit is refused with waxerr.ErrSizeTooLarge. A short read, the source ending before the n bytes,
+// is waxerr.ErrInvalidData, and so is a read at an offset no file holds, below 0 or ending past
+// math.MaxInt64, which is not made ([ReadFullAt]); any other failed read, a device error, is a fault
+// ([IsFault]) that keeps its own cause, so it classifies as the I/O failure it is.
 func ReadSlice(r io.ReaderAt, off, n, limit int64) ([]byte, error) {
-	if n < 0 {
-		return nil, fmt.Errorf("%w: negative length %d", waxerr.ErrInvalidData, n)
-	}
-	if limit <= 0 {
-		return nil, fmt.Errorf("%w: ReadSlice needs a positive allocation limit (got %d)", waxerr.ErrInvalidData, limit)
-	}
-	if n > limit {
-		return nil, fmt.Errorf("%w: %d bytes exceeds limit %d", waxerr.ErrSizeTooLarge, n, limit)
+	if err := checkSlice(n, limit); err != nil {
+		return nil, err
 	}
 	buf := make([]byte, n)
 	if n == 0 {
 		return buf, nil // zero-length read may still EOF at end
 	}
 	if err := ReadFullAt(r, buf, off); err != nil {
-		return nil, fmt.Errorf("%w: read %d at %d: %v", waxerr.ErrInvalidData, n, off, err)
+		return nil, readFailure(n, off, err)
 	}
 	return buf, nil
+}
+
+// readFailure is the error of a read of n bytes at off that failed with err, the one rule for every
+// read a parser makes: a short read is waxerr.ErrInvalidData, with io.ErrUnexpectedEOF, and any other
+// failure is a fault ([IsFault]) that wraps its own cause alone.
+func readFailure(n, off int64, err error) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("%w: read %d at %d: %w", waxerr.ErrInvalidData, n, off, io.ErrUnexpectedEOF)
+	}
+	return &fault{n: n, off: off, err: err}
+}
+
+// fault is a read that failed for a reason other than the end of the source: a device error.
+type fault struct {
+	n, off int64
+	err    error
+}
+
+func (f *fault) Error() string { return fmt.Sprintf("read %d at %d: %v", f.n, f.off, f.err) }
+
+func (f *fault) Unwrap() error { return f.err }
+
+// IsFault reports whether err holds a read of this package that failed for a reason other than the
+// end of the source, a device error.
+func IsFault(err error) bool {
+	_, ok := errors.AsType[*fault](err)
+	return ok
+}
+
+// Fatal returns err when a parse must fail with it wherever it tolerates a missing or malformed
+// structure: a read refused over the allocation limit, or a fault ([IsFault]). Any other error, a
+// short read among them, is nil.
+func Fatal(err error) error {
+	if errors.Is(err, waxerr.ErrSizeTooLarge) || IsFault(err) {
+		return err
+	}
+	return nil
+}
+
+// Sized is a source that knows its length.
+type Sized interface {
+	io.ReaderAt
+	Size() int64
+}
+
+// ReadWithin reads the n bytes at off of r, which a walk over r expects inside it, as [FillWithin]
+// does: nil, with no error, only when they run past the end of r. A read over limit is refused as
+// [ReadSlice] refuses one.
+func ReadWithin(r Sized, off, n, limit int64) ([]byte, error) {
+	if err := checkSlice(n, limit); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, n)
+	if ok, err := FillWithin(r, buf, off); !ok {
+		return nil, err
+	}
+	return buf, nil
+}
+
+// FillWithin fills p from r at off with bytes a walk over r expects inside it. Bytes that run past
+// the end of r are absent and not read: ok is false with no error. A read that fails inside r fails
+// as [ReadSlice] says: a short read, one at a negative offset among them, is invalid data, and a
+// device error is a fault.
+func FillWithin(r Sized, p []byte, off int64) (ok bool, err error) {
+	n := int64(len(p))
+	if off > math.MaxInt64-n || off+n > r.Size() {
+		return false, nil
+	}
+	if err := ReadFullAt(r, p, off); err != nil {
+		return false, readFailure(n, off, err)
+	}
+	return true, nil
+}
+
+// checkSlice refuses a read of n bytes that [ReadSlice] cannot make: a negative length, no positive
+// limit, or more than limit.
+func checkSlice(n, limit int64) error {
+	if n < 0 {
+		return fmt.Errorf("%w: negative length %d", waxerr.ErrInvalidData, n)
+	}
+	if limit <= 0 {
+		return fmt.Errorf("%w: ReadSlice needs a positive allocation limit (got %d)", waxerr.ErrInvalidData, limit)
+	}
+	return CheckAlloc(n, limit)
 }

@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/ape"
+	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
@@ -198,6 +201,72 @@ func TestStrictCatchesDroppedDuplicateTagBlock(t *testing.T) {
 				t.Errorf("strict refusal did not say what the write destroys:\n%s", errb)
 			}
 		})
+	}
+}
+
+// A WavPack rewrite keeps the APE tag readers find, the one nearest the end of the file, and drops the
+// one ahead of it; --strict refuses when that duplicate held a value the kept tag does not.
+func TestStrictCatchesDroppedDuplicateAPETag(t *testing.T) {
+	t.Parallel()
+	audio, err := os.ReadFile(td("notags.wv")) // its tag holds the encoder stamp
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := ape.Render([]ape.Item{{Key: "Title", Value: "Kept"}}, 2000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := writeTempFile(t, "dup.wv", slices.Concat(audio, store))
+	_, errb, code := runCLI(t, "set", "--strict", "--set", "ALBUM=Anything", file)
+	if code != 2 {
+		t.Errorf("exit = %d, want 2: %s", code, errb)
+	}
+	if !strings.Contains(errb, "duplicate APE tag held content no other container does (ENCODER)") {
+		t.Errorf("strict refusal did not say what the write destroys:\n%s", errb)
+	}
+	if out, errb, code := runCLI(t, "set", "--set", "ALBUM=Anything", file); code != 0 || !strings.Contains(out, "duplicate-tag-block-dropped") {
+		t.Errorf("exit = %d, want 0 and the dropped duplicate reported:\n%s%s", code, out, errb)
+	}
+}
+
+// lint never marks a duplicate APE tag fixable, and a lint --fix rewrite (here clearing the
+// encoder stamp of sample.wv's tag) drops it, reporting the value only it held as lost.
+func TestLintFixReportsADroppedDuplicateAPETag(t *testing.T) {
+	t.Parallel()
+	clean, err := os.ReadFile(td("sample.wv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, ok, err := ape.ParseAt(core.BytesSource(clean), int64(len(clean)), 1<<20, 0)
+	if err != nil || !ok {
+		t.Fatalf("sample.wv ends in no APE tag (err %v)", err)
+	}
+	dup, err := ape.Render([]ape.Item{{Key: "Composer", Value: "Only Here"}}, 2000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := writeTempFile(t, "dup.wv", slices.Concat(clean[:store.Offset], dup, clean[store.Offset:]))
+	out, _, _ := runCLI(t, "--json", "lint", file)
+	found := false
+	for _, jl := range decodeJSONList[jsonLint](t, out) {
+		for _, f := range jl.Findings {
+			if f.Code == "duplicate-tag-block" {
+				found = true
+				if f.Fixable {
+					t.Errorf("duplicate-tag-block is marked fixable: %+v", f)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("lint does not report the duplicate:\n%s", out)
+	}
+	out, _, _ = runCLI(t, "lint", "--fix", file)
+	if !strings.Contains(out, "lost in the rewrite") || !strings.Contains(out, "duplicate-tag-block-dropped") || !strings.Contains(out, "COMPOSER") {
+		t.Errorf("lint --fix did not report the dropped duplicate:\n%s", out)
+	}
+	if strings.Contains(out, "not auto-fixed: [error] duplicate-tag-block") {
+		t.Errorf("the duplicate survived the rewrite:\n%s", out)
 	}
 }
 

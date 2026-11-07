@@ -3,6 +3,8 @@ package waxlabel_test
 import (
 	"bytes"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -14,13 +16,23 @@ import (
 // junk is the appended region the trailing-bytes tests look for.
 var junk = []byte("TRAILINGJUNK")
 
-// bytes belonging to no chunk or page are preserved and reported, since lint advertises the issues
-// a tagger would want to see.
+// bytes belonging to no chunk, page or tag are preserved and reported, since lint advertises the
+// issues a tagger would want to see.
 func TestTrailingBytesReported(t *testing.T) {
-	for _, tc := range []struct{ name, fixture string }{
-		{"wav", "sample.wav"},
-		{"aiff", "sample.aiff"},
-		{"ogg", "sample.ogg"},
+	for _, tc := range []struct {
+		name, fixture string
+		// tagLast: the format's tag ends the file, so a rewrite moves the bytes ahead of it.
+		tagLast bool
+	}{
+		{"wav", "sample.wav", false},
+		{"aiff", "sample.aiff", false},
+		{"ogg", "sample.ogg", false},
+		{"wv", "sample.wv", true},
+		{"ape", "sample.ape", true},
+		{"mpc", "chapters.mpc", true},
+		{"mp3", "sample.mp3", false},
+		{"aac", "sample.aac", false},
+		{"flac", "sample.flac", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clean, err := os.ReadFile("../testdata/" + tc.fixture)
@@ -44,11 +56,39 @@ func TestTrailingBytesReported(t *testing.T) {
 				t.Fatal(err)
 			}
 			out := applyToBytes(t, data, plan)
-			if !bytes.HasSuffix(out, junk) {
+			if tc.tagLast {
+				if start := apeTagStart(out); start < len(junk) || !bytes.Equal(out[start-len(junk):start], junk) {
+					t.Error("the trailing region does not sit right ahead of the rewritten tag")
+				}
+			} else if !bytes.HasSuffix(out, junk) {
 				t.Error("the trailing region did not survive an edit byte for byte")
 			}
 			if !lintHasCode(mustParseBytes(t, out), "trailing-bytes") {
 				t.Error("the rewritten file no longer reports its trailing region")
+			}
+		})
+	}
+}
+
+// The essence of a WavPack, Monkey's Audio, Musepack, MP3, ADTS or FLAC stream ends where the stream
+// does, so junk appended to the file leaves the digest the clean file's, under the v2 extents.
+func TestJunkAfterTheStreamKeepsTheDigest(t *testing.T) {
+	for _, c := range []struct{ fixture, extent string }{
+		{notagsWV, "wavpack-v2"},
+		{notagsAPE, "monkeys-audio-v2"},
+		{chaptersMPC, "musepack-v2"},
+		{notagsMP3, "mp3-frames-v2"},
+		{notagsAAC, "aac-adts-v2"},
+		{notagsFLAC, "flac-frames-v2"},
+	} {
+		t.Run(filepath.Base(c.fixture), func(t *testing.T) {
+			clean := readFixture(t, c.fixture)
+			want := essenceOf(t, clean)
+			if want.ExtentVersion != c.extent {
+				t.Errorf("extent = %q, want %q", want.ExtentVersion, c.extent)
+			}
+			if got := essenceOf(t, slices.Concat(clean, trailerJunk(500))); !got.Equal(want) {
+				t.Errorf("digest with junk appended = %s, want the clean file's %s", got, want)
 			}
 		})
 	}

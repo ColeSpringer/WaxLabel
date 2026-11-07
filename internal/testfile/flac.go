@@ -1,6 +1,9 @@
 package testfile
 
-import "slices"
+import (
+	"bytes"
+	"slices"
+)
 
 // FLAC is "fLaC", a STREAMINFO (44100 Hz, 2 channels, 16-bit), the given blocks with the last one
 // flagged (STREAMINFO when there are none), and a frame sync.
@@ -42,4 +45,34 @@ func streamInfo() []byte {
 	si[0], si[2] = 0x10, 0x10 // 4096-sample blocks
 	si[10], si[11], si[12], si[13] = 0x0A, 0xC4, 0x40|1<<1, 15<<4
 	return si
+}
+
+// FLACFrameCRC continues a FLAC frame checksum (CRC-16, polynomial 0x8005, MSB first) over p.
+func FLACFrameCRC(crc uint16, p []byte) uint16 {
+	for _, b := range p {
+		crc ^= uint16(b) << 8
+		for range 8 {
+			if crc&0x8000 != 0 {
+				crc = crc<<1 ^ 0x8005
+			} else {
+				crc <<= 1
+			}
+		}
+	}
+	return crc
+}
+
+// FLACSteeringJunk is 8 bytes of junk to follow frame, a whole FLAC frame, whose last two bytes bring
+// the frame's checksum, run on through the junk and the first n bytes of next, to zero, as a chance
+// match in the bytes after a frame can: a frame walk then places the frame's end n bytes into next.
+func FLACSteeringJunk(frame, next []byte, n int) []byte {
+	junk := bytes.Repeat([]byte{0x4A}, 8)
+	at := FLACFrameCRC(FLACFrameCRC(0, frame), junk[:6])
+	for v := range 1 << 16 {
+		junk[6], junk[7] = byte(v>>8), byte(v)
+		if FLACFrameCRC(FLACFrameCRC(at, junk[6:]), next[:n]) == 0 {
+			return junk
+		}
+	}
+	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -211,20 +212,15 @@ func TestMusepackSV8MalformedChapterPackets(t *testing.T) {
 		}
 	})
 	t.Run("payload the source cannot read", func(t *testing.T) {
+		// The packets lie inside the file, so a payload read that fails is an I/O fault the parse
+		// returns, not a chapter reported malformed; the packet headers around it read.
 		audio := testfile.MPCAudio(64)
 		head := testfile.MPCStream(44100, 0, 2, mpcSeekOffset(len(audio)), audio, mpcSeekTable())
 		data := append(append(head, testfile.MPCTitled(0, "x")...), testfile.MPCEnd()...)
-		doc, err := wl.Parse(context.Background(), failAfterSource{data: data, failAt: int64(len(head) + 3)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, w := range doc.Warnings() {
-			if w.Code == wl.WarnMalformedTagEntry && strings.Contains(w.Message, "allocation limit") {
-				t.Errorf("warning %q names the allocation limit for a read failure", w.Message)
-			}
-		}
-		if len(doc.Chapters()) != 0 || !hasWarning(doc, wl.WarnMalformedTagEntry) {
-			t.Errorf("chapters = %+v, warnings = %v; want none and a malformed-entry report", doc.Chapters(), doc.Warnings())
+		payload := int64(len(head) + 3)
+		_, err := wl.Parse(context.Background(), &testfile.Faulty{Src: wl.BytesSource(data), Fails: func(off, _ int64) bool { return off == payload }})
+		if !errors.Is(err, syscall.EIO) || errors.Is(err, waxerr.ErrInvalidData) {
+			t.Errorf("err = %v, want the read's own failure", err)
 		}
 	})
 	t.Run("truncated start sample", func(t *testing.T) {
@@ -317,6 +313,23 @@ func TestMusepackSV8ChapterRunCapBoundsWork(t *testing.T) {
 	}
 	if short, long := reads(3), reads(300); long != short {
 		t.Errorf("a run of 300 packets cost %d reads, a run of 3 cost %d; past the cap the length should not matter", long, short)
+	}
+}
+
+// The walk to the SE packet resumes after the seek table an SO packet points at, so the audio packets
+// it skips cost no reads.
+func TestMusepackSEWalkSkipsTheAudio(t *testing.T) {
+	reads := func(n int) int {
+		aps := bytes.Repeat(testfile.MPCAudio(0), n)
+		src := &countingSource{ReaderAtSized: wl.BytesSource(testfile.MPCStream(44100*60, 0, 2,
+			mpcSeekOffset(len(aps)), aps, mpcSeekTable(), testfile.MPCEnd()))}
+		if _, err := wl.Parse(context.Background(), src); err != nil {
+			t.Fatal(err)
+		}
+		return src.reads
+	}
+	if short, long := reads(1000), reads(10000); long != short {
+		t.Errorf("10000 audio packets behind the seek offset cost %d reads, 1000 cost %d; the walk should skip them", long, short)
 	}
 }
 

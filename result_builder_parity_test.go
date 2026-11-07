@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -360,10 +361,71 @@ func parityInputs(t *testing.T) []parityInput {
 	}
 	audio := bytes.Repeat([]byte{0xA7}, 1000*4)
 	v2Title := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "V2 Title"))
+	// Bytes between a leading tag and the stream that no sniffer claims.
+	gap := []byte{1, 2, 3}
 	apeCover, err := ape.Render([]ape.Item{{Key: "Cover Art (front)", Data: []byte("\x89PNG binary"), Flags: 2}}, 2000, false) // item type 1: binary
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Tails after an APE-tagged stream: a duplicate tag holding a value the tag does not, junk, a
+	// Lyrics3 block and stacked ID3v1 tags.
+	dupTag, err := ape.Render([]ape.Item{{Key: "Composer", Value: "Only In The Duplicate"}}, 2000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv7Tag, err := ape.Render([]ape.Item{{Key: "Title", Value: "SV7 Title"}}, 2000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tailJunk := bytes.Repeat([]byte{0xA5}, 300)
+	v1a, v1b := testfile.ID3v1("Legacy One", "", "Legacy Album", "", "", 255), testfile.ID3v1("Legacy Two", "", "", "", "", 255)
+	wv, mac := fixture["sample.wv"], fixture["sample.ape"]
+	wvTag, macTag := apeTagOffset(t, wv), apeTagOffset(t, mac)
+	// An SV7 stream has no audio end, so the junk after its tag stays in the essence.
+	sv7 := slices.Concat([]byte("MP+\x07"), testfile.LE32(100), make([]byte, 16), make([]byte, 512))
+	// MPEG frames with no VBR header, and so much junk after them that no frame chain sits in the
+	// window before the tags: the audio end is unknown, and the junk after the tag stays in the essence.
+	unended := slices.Concat(bytes.Repeat(append([]byte{0xFF, 0xFB, 0x90, 0x00}, make([]byte, 413)...), 40),
+		bytes.Repeat([]byte{0xA5}, 70000))
+	footerOnly, err := ape.Render([]ape.Item{{Key: "Album", Value: "Trailing Album"}}, 2000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	strip := parityEdit{kind: "strip", edit: func(*Document, *Editor) {}, opts: []WriteOption{WithLegacyPolicy(LegacyStrip)}}
+	ffmpegTag := testfile.ID3v2(4, testfile.TextFrame(4, "TSSE", "Lavf61.7.100"))
+	// An APE tag longer than the MP3 resync window.
+	windowTag, err := ape.Render([]ape.Item{{Key: "Comment", Value: strings.Repeat("x", 100<<10)}}, 2000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 200 frames of a stream whose Xing header counts 300 frames and their bytes, cut on a frame.
+	truncated := bytes.Repeat(append([]byte{0xFF, 0xFB, 0x90, 0x00}, make([]byte, 413)...), 200)
+	copy(truncated[36:], "Xing")
+	truncated[43] = 3 // frame count and byte count present
+	binary.BigEndian.PutUint32(truncated[44:], 300)
+	binary.BigEndian.PutUint32(truncated[48:], 300*417)
+	// A tag longer than what a frame cut short before it lacks, so the frame's declared end lies inside it.
+	cutTag, err := ape.Render([]ape.Item{{Key: "Comment", Value: strings.Repeat("c", 600)}}, 2000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Where the last frame of notags.flac opens, its header coding frame 9's short block.
+	flacLast := bytes.LastIndex(fixture["notags.flac"], []byte{0xFF, 0xF8, 0x79, 0x88, 0x09})
+	if flacLast < 0 {
+		t.Fatal("no last frame in notags.flac")
+	}
+	// A tag behind junk whose last two bytes bring that frame's checksum to zero inside the tag, where
+	// the frame walk would end the audio: the tag ends it before, the junk ahead of the tag put back.
+	behind, err := ape.Render([]ape.Item{{Key: "Title", Value: "Behind Junk"}}, 2000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steered := testfile.FLACSteeringJunk(fixture["notags.flac"][flacLast:], behind, 42)
+	if steered == nil {
+		t.Fatal("no junk steers the checksum")
+	}
+	stripThenArtist := strip
+	stripThenArtist.name, stripThenArtist.then = "strip, then artist", []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"))}
 	return append(inputs,
 		parityInput{name: "stray-tags-two-vc.flac", data: slices.Concat(
 			testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Stray Title")),
@@ -386,12 +448,72 @@ func parityInputs(t *testing.T) []parityInput {
 		parityInput{name: "junk-tail.flac", data: slices.Concat(fixture["sample.flac"], bytes.Repeat([]byte{0x4A}, 512),
 			testfile.ID3v1("", "", "", "", "", 0)),
 			edits: []parityEdit{tags("new title", setTag(tag.Title, "New"), tags("album", setTag(tag.Album, "Again")))}},
+		// Tails after FLAC frames, every tag legacy: stacked tags around junk; a tag the frames go on past,
+		// which ends the audio, the frames after it kept in the essence; zeros past the first window.
+		parityInput{name: "legacy-tail.flac", data: slices.Concat(fixture["sample.flac"], dupTag, tailJunk,
+			testfile.Lyrics3v2([2]string{"LYR", "words"}), v1a, v1b),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		parityInput{name: "between-frames.flac", data: slices.Concat(fixture["notags.flac"][:flacLast], dupTag, fixture["notags.flac"][flacLast:], v1a),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		parityInput{name: "zero-run.flac", data: slices.Concat(fixture["sample.flac"], make([]byte, 100<<10), v1a),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		parityInput{name: "steered-tail.flac", data: slices.Concat(fixture["notags.flac"], steered, behind, tailJunk),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip), stripThenArtist}},
 		parityInput{name: "duplicate-inam.wav", data: testfile.WAV(testfile.WAVFmtPCM(),
 			testfile.WAVInfo([2]string{"INAM", "Title A"}, [2]string{"INAM", "Title B"}), testfile.WAVData(400)),
 			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"))}},
 		parityInput{name: "two-info.wav", data: testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"INAM", "First"}),
 			testfile.WAVInfo([2]string{"INAM", "Second"}), testfile.WAVData(400))},
 		parityInput{name: "chaptered.mpc", data: testfile.MPCChaptered()},
+		parityInput{name: "legacy-tail.wv", data: slices.Concat(wv[:wvTag], dupTag, tailJunk, wv[wvTag:],
+			testfile.Lyrics3v2([2]string{"LYR", "words"}), v1a, v1b)},
+		parityInput{name: "legacy-tail-sv7.mpc", data: slices.Concat(sv7, sv7Tag, tailJunk, testfile.Lyrics3v1("la la"), v1a)},
+		parityInput{name: "id3v1-ahead-of-tag.ape", data: slices.Concat(mac[:macTag], v1a, mac[macTag:])},
+		// A second WavPack stream after the first, which a rewrite moves up behind the first's blocks.
+		parityInput{name: "joined.wv", data: slices.Concat(wv, fixture["notags.wv"])},
+		parityInput{name: "leading-id3.wv", data: slices.Concat(v2Title, fixture["sample.wv"])},
+		parityInput{name: "leading-id3.ape", data: slices.Concat(v2Title, fixture["sample.ape"])},
+		parityInput{name: "leading-id3-gap.wv", data: slices.Concat(v2Title, gap, fixture["sample.wv"])},
+		parityInput{name: "leading-id3-gap.flac", data: slices.Concat(v2Title, gap, fixture["sample.flac"])},
+		parityInput{name: "gap.aac", data: slices.Concat(v2Title, gap, fixture["notags.aac"])},
+		parityInput{name: "legacy-tail.aac", data: slices.Concat(v2Title, gap, fixture["notags.aac"], tailJunk, footerOnly,
+			testfile.Lyrics3v1("la la"), v1a),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		parityInput{name: "legacy-tail.mp3", data: slices.Concat(v2Title, gap, fixture["notags.mp3"], dupTag, tailJunk,
+			testfile.Lyrics3v2([2]string{"LYR", "words"}), v1a, v1b),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		parityInput{name: "junk-after-tag.mp3", data: slices.Concat(v2Title, unended, footerOnly, tailJunk, v1a),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		// Two files joined with cat, each with the tag ffmpeg writes ahead of it: the second stream and
+		// the tag between stay audio.
+		parityInput{name: "joined-tagged.mp3", data: slices.Concat(ffmpegTag, fixture["notags.mp3"], ffmpegTag, fixture["notags.mp3"], v1a),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		parityInput{name: "joined-tagged.aac", data: slices.Concat(ffmpegTag, fixture["notags.aac"], ffmpegTag, fixture["notags.aac"], v1a),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		// Streams whose last frame the tags cut short: the cut frame stays audio.
+		parityInput{name: "cut-frame.mp3", data: slices.Concat(v2Title, unended[:40*417-200], footerOnly, v1a),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		parityInput{name: "cut-frame.aac", data: slices.Concat(v2Title, fixture["notags.aac"][:len(fixture["notags.aac"])-100], footerOnly, v1a),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		// A truncated stream: the tag after its last whole frame is read, and the junk after the tag is
+		// no audio.
+		parityInput{name: "truncated-tag.mp3", data: slices.Concat(v2Title, truncated, dupTag, tailJunk[:10]),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		// Streams cut inside a frame, then a tag the frame's declared end lies in: the tag ends the audio.
+		parityInput{name: "cut-frame-tag.mp3", data: slices.Concat(v2Title, truncated[:199*417+300], cutTag, tailJunk[:10]),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		parityInput{name: "cut-frame-tag.aac", data: slices.Concat(v2Title, fixture["notags.aac"][:len(fixture["notags.aac"])-100], cutTag, tailJunk[:10]),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		parityInput{name: "second-tag.aac", data: slices.Concat(v2Title, testfile.ID3v2(3, testfile.TextFrame(3, "TALB", "Second Tag")),
+			fixture["notags.aac"])},
+		// A tag between two concatenated streams: the second stays in the essence around the tag, which a
+		// strip joins to the first; a tag filling the resync window with junk after it.
+		parityInput{name: "joined.mp3", data: slices.Concat(v2Title, fixture["notags.mp3"], dupTag, fixture["notags.mp3"], v1a),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		parityInput{name: "joined.aac", data: slices.Concat(v2Title, fixture["notags.aac"], dupTag, fixture["notags.aac"], v1a),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
+		parityInput{name: "window-tag.mp3", data: slices.Concat(v2Title, unended[:40*417], windowTag, tailJunk[:10]),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
 		parityInput{name: "truncated-pcm.aiff", data: testfile.AIFF("AIFF", testfile.COMM(2, 1000, 16, 44100),
 			testfile.TruncatedSSND(8+1000*4, 8+100*4))},
 		parityInput{name: "truncated-ima4.aifc", data: testfile.AIFF("AIFC", testfile.COMMC(2, 1000, 16, 44100, "ima4"),
@@ -447,6 +569,16 @@ func parityInputs(t *testing.T) []parityInput {
 					e.AddPicture(Picture{Type: PicFrontCover, MIME: "application/octet-stream", Data: []byte("plain file, not an image")})
 				}}}},
 	)
+}
+
+// apeTagOffset is where the APE tag that ends data starts.
+func apeTagOffset(t *testing.T, data []byte) int {
+	t.Helper()
+	tg, ok, err := ape.ParseAt(core.BytesSource(data), int64(len(data)), 1<<20, 0)
+	if err != nil || !ok {
+		t.Fatalf("no APE tag ends the data (err %v)", err)
+	}
+	return int(tg.Offset)
 }
 
 // dropChapterCodec plans with the codec it wraps, then loses the result's last chapter, naming the

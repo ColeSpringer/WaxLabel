@@ -124,8 +124,9 @@ func (d *Document) LegacyOnlyKeys() []tag.Key {
 	return core.LegacyOnlyKeys(d.media.Families, d.media.Tags)
 }
 
-// HasOpaqueLegacyContent reports non-tag legacy content (APEv2 binary, leading
-// ID3v2 pictures/chapters/lyrics, or unreadable container). Safe fix keeps it.
+// HasOpaqueLegacyContent reports non-tag legacy content (APEv2 binary, a Lyrics3
+// block, leading ID3v2 pictures/chapters/lyrics or bytes kept with that tag, or
+// unreadable container). Safe fix keeps it.
 func (d *Document) HasOpaqueLegacyContent() bool {
 	if d.zero() {
 		return false

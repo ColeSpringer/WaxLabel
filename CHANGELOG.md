@@ -43,6 +43,81 @@ All notable changes to this project are documented here.
 - A Monkey's Audio header is read where its descriptor declares it, and one that would run
   into the trailing tags or past the end of the file is refused as `invalid-data` instead of
   read from a guessed offset, which gave wrong audio properties or let a tag edit change them.
+- A tag or other structure larger than `MaxAllocBytes` is refused with `ErrSizeTooLarge`
+  (declared size too large) in every format, even a fixed-size header under a very small
+  limit, instead of parsing as absent (an edit then buried it), being read in part, or
+  failing as `ErrInvalidData`; only a Musepack SV8 chapter packet over the limit is still
+  skipped, reported (`malformed-tag-entry`). The search for APE tags behind junk refuses the
+  same way once the candidates it reads pass the limit together. An ASF header or a WAV/AIFF
+  metadata chunk over 64 MiB is read whole instead of cut at 64 MiB.
+- WavPack and Monkey's Audio files behind a leading ID3v2 tag are read, not refused as
+  unsupported: the tag is legacy (`stray-leading-id3`), kept by an edit and dropped by
+  `--legacy strip`. `dump --native` no longer counts a Musepack leading tag as audio.
+- ADTS behind an ID3v2 tag with a gap or a second tag is read as AAC instead of MP3, the gap
+  reported as `leading-bytes`. FLAC, Musepack, WavPack and Monkey's Audio streams behind a
+  tag and a gap, or behind up to eight chained tags, are read too, the gap kept with the
+  tag: an edit preserves both, `--legacy strip` drops both, and `lint --fix` keeps them. An
+  MP4 whose `ftyp` follows a leading free, skip or wide box within the first KiB is identified.
+- WavPack, Monkey's Audio, Musepack, MP3, ADTS and FLAC read every stacked ID3v1 tag after the
+  stream into the family view (MP3 read only the first, FLAC only the last): `lint --fix` keeps
+  them when they hold the only copy of a value, and one `--legacy strip` removes the whole run. An
+  ID3v1 tag sealed between the stream and the APE tag is found instead of read as audio.
+- An APE tag behind junk, a Lyrics3 block or another APE tag after a WavPack, Monkey's Audio,
+  Musepack, MP3, ADTS or FLAC stream is found where it opens at the end of the stream, ends in the
+  64 KiB before the tags at the end of the file, or abuts such a tag. Junk is kept and reported
+  (`trailing-bytes`); a Lyrics3 block is kept and reported (`trailing-lyrics3`), and `lint --fix`
+  keeps it.
+- A rewrite of the WavPack, Monkey's Audio or Musepack tag moves the junk after it ahead of it, so
+  the tag stays at the end of the file. Of two APE tags after such a stream the one nearest the end
+  is read and the other reported (`duplicate-tag-block`); a rewrite drops it, warning
+  `duplicate-tag-block-dropped` (`--strict` refuses) when it held a value the kept tag does not.
+- Tags after an ADTS or FLAC stream are read as legacy, as after MP3: an APEv2 tag is reported
+  (`legacy-ape`), every tag goes into the family view, a second APE tag included, an edit keeps
+  them and `--legacy strip` removes them. They were hashed as audio, or, after FLAC, which read
+  only an ID3v1 tag, reported as junk.
+- After MP3, ADTS or FLAC a tag found before the tags at the end of the file ends the audio even
+  where the frames or a VBR header's byte count claim its bytes. FLAC measures its end as a legacy
+  strip leaves the file, as MP3 and ADTS do, so frames that go on after a tag stay in the essence
+  and a strip keeps the digest.
+- An MP3 or ADTS stream whose frames or VBR byte count claim such a tag's bytes is reported
+  `truncated-audio`, by the bytes claimed past the audio, unless the stream goes on after the tag.
+- A FLAC file whose frames are followed by zeros past the 4 MiB its frame walk reads back keeps
+  the clean file's digest and bitrate: the walk first measures the zeros before the tags, in whole
+  64 KiB reads within `MaxAllocBytes`, and leaves them out of the essence; a run at least as long
+  as those reads stays audio, reported (`trailing-bytes`) with that bound in bytes. A read the walk
+  needs over `MaxAllocBytes` is refused (`ErrSizeTooLarge`) instead of narrowed. The
+  `flac-frames-v2` label stays, as a well-formed FLAC hashes as before, so a digest stored for a
+  file with such zeros, or with a tag found inside its frames, no longer matches.
+- A read that fails inside the file fails the parse, format detection included: a device error as
+  `io` (exit 6), keeping its cause, and a source that serves fewer bytes than its size as
+  `invalid-data` (exit 4). It read as `invalid-data`, an unrecognized format (exit 3) or an absent
+  tag, audio end or chapter, which could give the digest of another layout or leave the file
+  without the metadata fingerprint a save checks; only bytes past the end of the file read as
+  absent.
+- A tag footer that places its tag inside the first block, frame, file header or stream header
+  of a WavPack, Monkey's Audio, Musepack, MP3, ADTS or FLAC stream is reported
+  (`malformed-tag-entry`) instead of ignored, or after MP3 read as a tag over the audio.
+- An MP3 behind a second ID3v2 tag or a gap reads its audio from the first frame detection finds,
+  instead of reporting no audio when the frame lay past the first 64 KiB; the bytes before it
+  are reported (`leading-bytes`) and kept after the tag, as ADTS keeps them.
+- An MP3 whose VBR header's byte count ends where the same stream goes on, right there or behind
+  the ID3 tags a file joined there opens with, takes its duration from its bytes at the first
+  frame's bitrate instead of the header's frame count, which doubled the bitrate of a joined pair;
+  the second stream and the tags between stay audio.
+- An MP3 whose VBR byte count runs past the tags keeps the declared duration and is reported
+  `truncated-audio` when it claims at least the shortest frame of the stream more than the file
+  holds, where only an average below 8 kbps was. A byte count that ends where no frame ends
+  places no end, so one a byte off leaves neither junk nor a cut, and one that places it reports
+  nothing inside the bytes it counts. Where no VBR header places the end, bytes the MPEG frames
+  go on past in the 64 KiB before the tags are reported (`trailing-bytes`) with their count and
+  stay in the essence.
+- ADTS whose frames the SBR probe cannot parse (AAC Main, SSR) is probed over its first 16
+  frames, not read to the end a second time.
+- A WavPack stream takes its length from its blocks when its first block states none (as ffmpeg
+  leaves it writing to a pipe; such a file read as holding no audio and refused a tag edit) or
+  starts past sample 0, as a cut does, whose stated length is the cut's or the whole original's.
+  A cut also adds up all of its channels and reads a rate kept in a sub-block, and a length of
+  2^32 - 1 samples or more reads as the reference encoder stores it.
 
 ### Changed
 
@@ -54,6 +129,34 @@ All notable changes to this project are documented here.
   rename on a share that refuses it.
 - `-o` without `--overwrite` also refuses a target created while the write runs, except at
   the last moment on a filesystem without hard links (FAT, exFAT, some network shares).
+- MP3's write report renames its trailing-tag operations: 1.8.0's `ID3v1 strip`,
+  `ID3v1 preservation`, `APEv2 strip` and `APEv2 preservation` read `trailing ID3v1 strip` and
+  so on, the ID3v1 wording FLAC and the APE-tagged formats use, with `(N stacked tags)` for a
+  run and `trailing Lyrics3v2 strip` for a Lyrics3 block. ADTS and FLAC name their trailing tags
+  the same way. In `dump --native` and JSON `native[].kind`, MP3's `APEv2 (legacy)` and
+  `ID3v1 (trailing)` and FLAC's `ID3v1 (trailing)` and `ID3v2 (leading)` read `APEv2` (`APEv1`
+  for a version 1 tag), `ID3v1` and `ID3v2`, a leading tag noted `leading, legacy, preserved` as
+  in the APE-tagged formats.
+- **The `wavpack-v2`, `monkeys-audio-v2`, `musepack-v2`, `mp3-frames-v2` and `aac-adts-v2`
+  essence extents** leave trailing, stacked and duplicate tags, Lyrics3 blocks and junk out of
+  the essence, which v1 hashed as audio, and the MP3 and ADTS extents the bytes between the ID3v2
+  tag and the first frame too. `verify` labels the change; stored v1 digests stay labeled v1 and
+  never compare equal, so those digests need a rehash.
+- The v2 essence ends where the stream says it does: by the WavPack blocks' sample counts (with a
+  length every block states, those in the 64 KiB before the tags, so a break at or before the first
+  of them, or a stream of that length joined there, reads as part of the stream), a Monkey's Audio
+  3.98+ descriptor's byte counts, a Musepack SV8 `SE` packet, the ADTS frames, or an MP3 VBR
+  header's byte count that ends a frame, else the MPEG frames in the 64 KiB before the tags; a last
+  ADTS or MPEG frame the tags cut short stays audio.
+- MP3 and ADTS measure that end as a legacy strip leaves the file, so the essence does not depend
+  on the tags and a strip keeps the digest: an APE tag between two concatenated streams leaves the
+  second in the essence, as do the ID3v1 and ID3v2 tags `cat` leaves between two tagged files,
+  which stay there unread and are counted in a `trailing-bytes` warning (ADTS goes on past at most
+  `MaxElements` such joins).
+- Where no v2 end is known (Musepack SV7, Monkey's Audio before 3.98, an MP3 whose frames do not
+  end cleanly before the tags, or an SV8 or WavPack stream too long to walk within `MaxElements`
+  headers, a WavPack one only when the 64 KiB before the tags do not settle its end, whose digest
+  then depends on that limit), junk found after the tag still hashes.
 
 ### Added
 

@@ -330,6 +330,23 @@ func TestMatroskaHostileGeometry(t *testing.T) {
 	}
 }
 
+// More elements inside a track's Audio than MaxElements allows refuse the parse, as they do
+// anywhere else in the file, even when the Audio element is the last one the parse walks.
+func TestMatroskaAudioPastTheElementCapRefused(t *testing.T) {
+	kids := [][]byte{mkFloat(idSampFreq, 44100)}
+	for range 100 {
+		kids = append(kids, testfile.Uint(idChannels, 2))
+	}
+	data := mkAudioTrackFile("A_PCM/INT/LIT", nil, kids...)
+	_, err := wl.Parse(context.Background(), wl.BytesSource(data), wl.WithLimits(wl.Limits{MaxElements: 50}))
+	if !errors.Is(err, waxerr.ErrSizeTooLarge) {
+		t.Errorf("under a cap of 50: err = %v, want declared size too large", err)
+	}
+	if tr := mustParseBytes(t, data).Properties().First(); tr.SampleRate != 44100 || tr.Channels != 2 {
+		t.Errorf("at the default limits: track %+v, want 44100 Hz, 2 channels", tr)
+	}
+}
+
 func TestMatroskaNestedTagPreserved(t *testing.T) {
 	tags := testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(
 		testfile.El(testfile.IDTargets, nil),

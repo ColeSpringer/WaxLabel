@@ -203,7 +203,9 @@ func parseStsdPayload(t *testing.T, payload []byte) *doc {
 	binary.BigEndian.PutUint32(raw[0:4], uint32(len(raw)))
 	d := &doc{}
 	n := node{name: [4]byte{'s', 't', 's', 'd'}, offset: 0, headerLen: 8, size: int64(len(raw))}
-	parseStsd(core.BytesSource(raw), n, d, 0, 1<<20)
+	if err := parseStsd(core.BytesSource(raw), n, d, 0, 1<<20); err != nil {
+		t.Fatal(err)
+	}
 	return d
 }
 

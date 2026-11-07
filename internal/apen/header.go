@@ -78,7 +78,7 @@ func parseVersion(b []byte) (uint16, error) {
 }
 
 // documentedHeaderLen is the header length of the version's layout, before any declared extension:
-// the least a trailing tag must follow.
+// the least a trailing tag must follow the marker by.
 func documentedHeaderLen(version uint16) int64 {
 	if version >= descriptorVersion {
 		return descriptorLen + headerLen
@@ -86,10 +86,37 @@ func documentedHeaderLen(version uint16) int64 {
 	return legacyLen
 }
 
-// readHeader decodes the version's header from head, the file's leading bytes, reading src for a
-// declared header past them. A declared header must end by tagStart, where the trailing tags
-// begin; the peel floor keeps the tags past the fixed-size parts.
-func readHeader(src io.ReaderAt, head []byte, version uint16, tagStart, size, limit int64) (header, error) {
+// descriptorBytes is APE_DESCRIPTOR.nDescriptorBytes, which locates the APE_HEADER from the marker,
+// at least the documented descriptor length.
+func descriptorBytes(head []byte) int64 {
+	return max(int64(binary.LittleEndian.Uint32(head[8:12])), descriptorLen)
+}
+
+// descriptorEnd is where a 3.98+ stream that starts at streamAt ends: past the byte counts its
+// descriptor declares for itself, the header, the seek table, the WAV header data, the frames and
+// the WAV terminating data. A legacy stream declares none, so its end is unknown (-1), as is one
+// whose descriptor is cut short or whose counts end before the header it locates does.
+func descriptorEnd(head []byte, version uint16, streamAt int64) int64 {
+	const fields = 36 // through nTerminatingDataBytes
+	if version < descriptorVersion || len(head) < fields {
+		return -1
+	}
+	count := func(at int) int64 { return int64(binary.LittleEndian.Uint32(head[at : at+4])) }
+	if count(28) >= 1<<30 { // frame bytes of 2^62 or more: no file holds them
+		return -1
+	}
+	header := streamAt + descriptorBytes(head)
+	end := header + count(12) + count(16) + count(20) + (count(28)<<32 | count(24)) + count(32)
+	if end < header+headerLen {
+		return -1
+	}
+	return end
+}
+
+// readHeader decodes the version's header from head, the leading bytes of the stream at streamAt,
+// reading src for a declared header past them. A declared header must end by tagStart, where the
+// trailing tags begin; the peel floor keeps the tags past the fixed-size parts.
+func readHeader(src io.ReaderAt, head []byte, version uint16, streamAt, tagStart, size, limit int64) (header, error) {
 	h := header{version: version}
 	if version < descriptorVersion {
 		return parseLegacyHeader(head, h)
@@ -97,15 +124,15 @@ func readHeader(src io.ReaderAt, head []byte, version uint16, tagStart, size, li
 	if len(head) < descriptorLen {
 		return h, fmt.Errorf("%w: APE_DESCRIPTOR is %d bytes, need %d", waxerr.ErrInvalidData, len(head), descriptorLen)
 	}
-	// APE_DESCRIPTOR.nDescriptorBytes locates the APE_HEADER.
-	at := max(int64(binary.LittleEndian.Uint32(head[8:12])), descriptorLen)
+	rel := descriptorBytes(head)
+	at := streamAt + rel
 	switch end := at + headerLen; {
 	case end > size:
 		return h, fmt.Errorf("%w: the Monkey's Audio header declared at %d runs past the end of the file", waxerr.ErrInvalidData, at)
 	case end > tagStart:
 		return h, fmt.Errorf("%w: the Monkey's Audio header declared at %d runs into the trailing tag at %d", waxerr.ErrInvalidData, at, tagStart)
-	case end <= int64(len(head)):
-		return parseDescriptorHeader(head[at:end], h), nil
+	case rel+headerLen <= int64(len(head)):
+		return parseDescriptorHeader(head[rel:rel+headerLen], h), nil
 	}
 	hd, err := bits.ReadSlice(src, at, headerLen, limit)
 	if err != nil {

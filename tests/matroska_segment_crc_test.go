@@ -68,22 +68,19 @@ func TestMatroskaSegmentCRCDroppedToVoid(t *testing.T) {
 	}
 }
 
-// A Segment-level CRC-32 whose declared size exceeds the alloc limit cannot be captured for
-// neutralization, so an edit must refuse (the same contract the index elements use) rather than
-// copy the stale CRC over an edited body and produce an invalid file.
-func TestMatroskaSegmentCRCUncapturableRefused(t *testing.T) {
+// A Segment-level CRC-32 whose declared size exceeds the alloc limit cannot be read for
+// neutralization, so the parse refuses the file: no edit can copy the stale CRC over an edited
+// body.
+func TestMatroskaSegmentCRCOverLimitRefused(t *testing.T) {
 	// A non-conformant Segment CRC declaring far more content (2000 bytes) than the 1 KiB parse
-	// limit will read, so its capture fails and segVoidFromCRC stays nil.
+	// limit reads.
 	bigCRC := testfile.El(idCRC32, make([]byte, 2000))
 	seg := concat(bigCRC, testfile.El(testfile.IDInfo, mkStr(testfile.IDSegTitle, "Old")), testfile.AudioCluster(0),
 		testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ARTIST", "AA")))))
 	data := concat(testfile.EBMLHeader("matroska"), testfile.El(testfile.IDSegment, seg))
 
-	doc, err := wl.Parse(context.Background(), wl.BytesSource(data), wl.WithLimits(wl.Limits{MaxAllocBytes: 1024}))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if _, err := doc.Edit().Set(tag.Title, "New").Prepare(); !errors.Is(err, waxerr.ErrUnsupportedTag) {
-		t.Fatalf("edit of a file with an uncapturable Segment CRC: err = %v, want ErrUnsupportedTag (loud refusal, not a stale-CRC copy)", err)
+	_, err := wl.Parse(context.Background(), wl.BytesSource(data), wl.WithLimits(wl.Limits{MaxAllocBytes: 1024}))
+	if !errors.Is(err, waxerr.ErrSizeTooLarge) {
+		t.Fatalf("parse under a 1 KiB limit: err = %v, want declared size too large", err)
 	}
 }

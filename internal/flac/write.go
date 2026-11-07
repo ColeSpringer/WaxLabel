@@ -7,12 +7,14 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/tail"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // Plan builds the rewrite from source to edited media. Unchanged blocks and
-// audio (plus legacy ID3) stay verbatim. NoOp is true when nothing changed.
+// audio stay verbatim, then the tail, its legacy tags unless stripped. NoOp is
+// true when nothing changed.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -22,7 +24,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return nil, fmt.Errorf("flac: edited media has no FLAC native document")
 	}
 
-	legacyPresent := len(d.leadingID3) > 0 || len(d.trailingID3v1) > 0
+	legacyPresent := len(d.leadingID3) > 0 || d.layout.HasTags()
 
 	changed := diffKeys(base.Tags, edited.Tags)
 	vorbisChanged := len(changed) > 0
@@ -83,7 +85,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	var segs []bits.Segment
 	newLeadingLen := d.flacStart
 	if stripLegacy && len(d.leadingID3) > 0 {
-		report.Operations = append(report.Operations, fmt.Sprintf("leading ID3v2 strip (%d bytes)", len(d.leadingID3)))
+		report.Operations = append(report.Operations, core.LeadingStripOp(int64(len(d.leadingID3)), d.flacStart))
 		newLeadingLen = 0
 	} else if len(d.leadingID3) > 0 {
 		segs = append(segs, bits.Copy(0, d.flacStart))
@@ -91,23 +93,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 	segs = append(segs, bits.Lit(slices.Clone(flacMagic)), bits.Lit(metaBytes))
 
-	audioLen := d.audioEnd - d.audioStart
 	audioOutStart := newLeadingLen + 4 + int64(len(metaBytes))
-	segs = append(segs, bits.Copy(d.audioStart, audioLen))
-
-	// Trailing junk is not a legacy tag; --legacy does not strip it.
-	if d.trailingJunk > 0 {
-		segs = append(segs, bits.Copy(d.audioEnd, d.trailingJunk))
-	}
-
-	newTrailingLen := int64(len(d.trailingID3v1))
-	if stripLegacy && len(d.trailingID3v1) > 0 {
-		report.Operations = append(report.Operations, "trailing ID3v1 strip")
-		newTrailingLen = 0
-	} else if len(d.trailingID3v1) > 0 {
-		segs = append(segs, bits.Copy(d.audioEnd+d.trailingJunk, newTrailingLen))
-		report.Operations = append(report.Operations, "trailing ID3v1 preservation")
-	}
+	segs = append(segs, bits.Copy(d.audioStart, d.layout.Start-d.audioStart))
+	// The junk is no legacy tag: --legacy strip keeps it.
+	segs = append(segs, tail.Segments(d.layout, stripLegacy)...)
+	report.Operations = append(report.Operations, tail.Operations(d.layout, stripLegacy)...)
 
 	newSize := bits.OutputLen(segs)
 	report.BytesAfter = newSize
@@ -115,7 +105,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Clamp warnings before DowngradeNoOp; clamp keeps result != base so write proceeds.
 	report.Warnings = vorbis.RebuildWarnings(report.Warnings, rebuildInfo)
 
-	result := buildResult(edited, newComments, audioOutStart, audioLen)
+	result := buildResult(edited, d, newComments, audioOutStart, stripLegacy)
 	if dupDropped {
 
 		report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "Vorbis comment block", result.Tags, d.dupContent)
@@ -301,17 +291,17 @@ func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []by
 }
 
 // buildResult builds the plan's result: the canonical view a fresh parse of the output reads, and
-// its audio extent.
-func buildResult(edited *core.Media, newComments []comment, audioStart, audioLen int64) *core.Media {
+// its essence, which moves with the frames to audioStart and keeps the tail as strip copies it.
+func buildResult(edited *core.Media, base *doc, newComments []comment, audioStart int64, strip bool) *core.Media {
 	tags, _ := projectComments(newComments)
-	return &core.Media{
+	m := &core.Media{
 		Format:       core.FormatFLAC,
 		Properties:   edited.Properties.Clone(),
 		Tags:         tags,
 		Pictures:     core.ClonePictures(edited.Pictures),
 		Chapters:     projectChapters(newComments),
 		SyncedLyrics: projectSyncedLyrics(newComments),
-		AudioStart:   audioStart,
-		AudioEnd:     audioStart + audioLen,
 	}
+	base.layout.SetMovedEssence(m, base.audioStart, audioStart, strip)
+	return m
 }

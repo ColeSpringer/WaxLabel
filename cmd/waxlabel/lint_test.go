@@ -177,7 +177,7 @@ func TestLintFixJSONOperations(t *testing.T) {
 	file := copyFixture(t, sampleMP3)
 	out, _, _ := runCLI(t, "--json", "lint", "--fix", file)
 	jf := decodeJSONOne[jsonLintFix](t, out)
-	if !slices.Contains(jf.Operations, "ID3v1 strip") {
+	if !slices.Contains(jf.Operations, "trailing ID3v1 strip") {
 		t.Errorf("--fix JSON operations missing the ID3v1 strip: %v", jf.Operations)
 	}
 }

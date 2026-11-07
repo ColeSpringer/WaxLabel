@@ -156,8 +156,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 	media.Properties = d.properties(lastGranule)
 	media.Warnings = warnings
-	media.Identity = core.Identity{Size: size}
-	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media)
+	if err := core.SetIdentity(src, media); err != nil {
+		return nil, err
+	}
 	return media, nil
 }
 
@@ -194,6 +195,9 @@ func reassembleHeaders(src core.ReaderAtSized, pages []rawPage, serial uint32, l
 			continue
 		}
 		body, err := bits.ReadSlice(src, p.bodyOff(), p.bodyLen, limit)
+		if fatal := bits.Fatal(err); fatal != nil {
+			return hp, fatal
+		}
 		if err != nil {
 			return hp, fmt.Errorf("%w: truncated header page body at %d", waxerr.ErrInvalidData, p.off)
 		}
@@ -293,6 +297,8 @@ func detectKind(pkt []byte) (kind, int, error) {
 		// The FLAC mapping's own count field may read "unknown", so the header run is
 		// closed by the last-block flag instead; need is unused for this kind.
 		return kindFLAC, 0, nil
+	case bytes.HasPrefix(pkt, skeletonID):
+		return 0, 0, fmt.Errorf("%w: the file's first stream is an Ogg Skeleton; files led by one are not read", waxerr.ErrUnsupportedFormat)
 	}
 	return 0, 0, fmt.Errorf("%w: unrecognized Ogg codec (not Vorbis, Opus, or FLAC)", waxerr.ErrUnsupportedFormat)
 }

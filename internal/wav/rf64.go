@@ -49,6 +49,9 @@ type ds64 struct {
 // before the chunk walk, which needs its sizes and the container boundary.
 func parseDS64(r io.ReaderAt, size, limit int64) (*ds64, error) {
 	head, err := bits.ReadSlice(r, 12, 8, limit)
+	if fatal := bits.Fatal(err); fatal != nil {
+		return nil, fatal
+	}
 	if err != nil || string(head[0:4]) != "ds64" {
 		return nil, fmt.Errorf("%w: RF64/BW64 file has no ds64 chunk where one is required", waxerr.ErrInvalidData)
 	}

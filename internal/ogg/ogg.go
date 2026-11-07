@@ -41,19 +41,46 @@ func (c Codec) Extensions() []string {
 	return []string{".ogg", ".oga"}
 }
 
-// Sniff: OggS plus id signature ("\x01vorbis", "OpusHead", or "\x7FFLAC") near start
-// (id packet is alone on page 0).
+// skeletonID opens the BOS packet of a Skeleton stream, which may come before the codec's.
+var skeletonID = []byte("fishead\x00")
+
+// Sniff: the id signature ("\x01vorbis", "OpusHead", or "\x7FFLAC") opens the packet that begins the
+// stream on its first page, or on the next page when the first begins a Skeleton stream. Page headers
+// are walked inside header; the signature anywhere else does not count.
 func (c Codec) Sniff(header []byte) bool {
-	if !bytes.HasPrefix(header, oggMagic) {
-		return false
-	}
+	sig := vorbisID
 	switch c.format {
 	case core.FormatOggOpus:
-		return bytes.Contains(header, opusHead)
+		sig = opusHead
 	case core.FormatOggFLAC:
-		return bytes.Contains(header, flacID)
+		sig = flacID
 	}
-	return bytes.Contains(header, vorbisID)
+	pkt, next, ok := bosPacket(header, 0)
+	if ok && bytes.HasPrefix(pkt, skeletonID) {
+		pkt, _, ok = bosPacket(header, next)
+	}
+	return ok && bytes.HasPrefix(pkt, sig)
+}
+
+// bosPacket returns the first packet of the beginning-of-stream page at off in b, cut at the end of
+// b, and where the page ends; ok is false when b holds no such page header there.
+func bosPacket(b []byte, off int) (pkt []byte, next int, ok bool) {
+	if off+pageFixedHdr > len(b) || !bytes.Equal(b[off:off+4], oggMagic) || b[off+4] != 0 || b[off+5]&flagBOS == 0 {
+		return nil, 0, false
+	}
+	body := off + pageFixedHdr + int(b[off+26])
+	if body > len(b) {
+		return nil, 0, false
+	}
+	pktLen, bodyLen, open := 0, 0, true
+	for _, lacing := range b[off+pageFixedHdr : body] {
+		bodyLen += int(lacing)
+		if open {
+			pktLen += int(lacing)
+			open = lacing == maxSegments
+		}
+	}
+	return b[body:min(body+pktLen, len(b))], body + bodyLen, true
 }
 
 func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {

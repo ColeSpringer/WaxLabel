@@ -188,13 +188,14 @@ func TestMonkeysAudioLegacyBitDepthFlags(t *testing.T) {
 
 // descriptorAPEFile is a 3.98+ Monkey's Audio file whose APE_DESCRIPTOR declares descLen bytes
 // (at least 52), zero past the documented ones, then the header (one 1000-sample frame, 44.1 kHz
-// stereo 16-bit) and audio zero bytes standing in for the frames.
+// stereo 16-bit) and audio zero bytes standing in for the frames, which the descriptor declares.
 func descriptorAPEFile(descLen uint32, audio int) []byte {
 	b := make([]byte, int(descLen)+24+audio)
 	copy(b, "MAC ")
 	binary.LittleEndian.PutUint16(b[4:6], 3990)
 	binary.LittleEndian.PutUint32(b[8:12], descLen)
 	binary.LittleEndian.PutUint32(b[12:16], 24)
+	binary.LittleEndian.PutUint32(b[24:28], uint32(audio))
 	h := b[descLen : descLen+24]
 	binary.LittleEndian.PutUint16(h[0:2], 2000)    // compression level
 	binary.LittleEndian.PutUint32(h[4:8], 73728)   // blocks per frame
@@ -229,6 +230,20 @@ func TestMonkeysAudioHeaderAtTheDeclaredDescriptorLength(t *testing.T) {
 				t.Errorf("title after the edit = %q, want After", got)
 			}
 		})
+	}
+}
+
+// A descriptor whose byte counts end before the header it locates (it declares no header bytes)
+// places no audio end, so the header is read where the descriptor puts it.
+func TestMonkeysAudioEndBeforeItsHeaderIsUnknown(t *testing.T) {
+	data := descriptorAPEFile(100, 0) // the header at 100..124
+	binary.LittleEndian.PutUint32(data[12:16], 0)
+	doc, err := wl.Parse(context.Background(), wl.BytesSource(data))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if tr := doc.Properties().First(); tr.TotalSamples != 1000 || tr.SampleRate != 44100 {
+		t.Errorf("track = %+v, want the header at 100: 1000 samples at 44.1 kHz", tr)
 	}
 }
 

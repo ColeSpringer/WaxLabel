@@ -2,6 +2,7 @@ package id3
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/colespringer/waxlabel/internal/core"
@@ -273,17 +274,20 @@ func movementSplit(v string) (num, total string, split bool) {
 	return n, t, true
 }
 
-// LegacyV1Families projects a preserved ID3v1 tag into legacy family entries. MP3,
-// FLAC, and the APEv2-native containers all carry one as a non-authoritative trailer,
-// so the projection lives here rather than being written out per codec.
+// LegacyV1Families projects a preserved ID3v1 run, one or more stacked 128-byte tags, into
+// legacy family entries, every tag in file order. MP3, raw AAC, FLAC, and the APEv2-native
+// containers all carry one as a non-authoritative trailer, so the projection lives here rather
+// than being written out per codec.
 func LegacyV1Families(auth tag.TagSet, raw []byte) []core.FamilyValue {
-	v1, ok := ParseV1(raw)
-	if !ok {
-		return nil
-	}
-	contribs := make([]core.Contribution, 0, 8)
-	for _, p := range v1.Pairs() {
-		contribs = append(contribs, core.Contribution{Key: p.Key, Value: p.Value})
+	var contribs []core.Contribution
+	for block := range slices.Chunk(raw, 128) {
+		v1, ok := ParseV1(block)
+		if !ok {
+			continue
+		}
+		for _, p := range v1.Pairs() {
+			contribs = append(contribs, core.Contribution{Key: p.Key, Value: p.Value})
+		}
 	}
 	return core.LegacyFamilies(auth, core.FamilyID3v1, contribs)
 }
@@ -291,8 +295,8 @@ func LegacyV1Families(auth tag.TagSet, raw []byte) []core.FamilyValue {
 // LegacyV2Families projects a preserved, non-authoritative ID3v2 tag into legacy family
 // entries, and reports whether it also carries content the canonical set does not fold
 // in (pictures, chapters, or synced lyrics), which a legacy strip cannot prove redundant.
-// FLAC's stray leading tag and Musepack's both take this path. An unreadable tag, or one
-// parsed but ignored whole ([Tag.Ignored]), reports opaque with no entries.
+// The stray leading tag of FLAC, WavPack, Monkey's Audio and Musepack takes this path. An
+// unreadable tag, or one parsed but ignored whole ([Tag.Ignored]), reports opaque with no entries.
 func LegacyV2Families(auth tag.TagSet, raw []byte, maxElements int) ([]core.FamilyValue, bool) {
 	if len(raw) == 0 {
 		return nil, false

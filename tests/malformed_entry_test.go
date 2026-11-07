@@ -228,3 +228,38 @@ func TestFLACStrayID3MalformedTailBlocksTheStrip(t *testing.T) {
 		t.Error("a stray ID3v2 with an unreadable region must grade opaque, or --fix would strip it")
 	}
 }
+
+// An APE tag footer at the end of a WavPack, Monkey's Audio, Musepack, MP3, ADTS or FLAC file whose
+// tag would start inside the first block or frame, the file header or the stream header is not read
+// as a tag, and is reported rather than ignored.
+func TestAPETagInsideTheFirstUnitReported(t *testing.T) {
+	inHeader := descriptorAPEFile(52, 0) // header at 52..76 past the marker
+	copy(inHeader[44:], apeTagText(nil)) // a footer-only tag over the last 32 bytes
+	// reaching declares the tag that ends stream to start at offset at.
+	reaching := func(stream []byte, at int) []byte {
+		b := slices.Concat(stream, apeTagText(map[string]string{"Title": "Inside"}))
+		put32le(b[len(b)-20:], len(b)-at)
+		return b
+	}
+	for _, c := range []struct {
+		name string
+		data []byte
+	}{
+		{"wavpack block", wvBlock(1|wvRate44k|wvFinal, 4410, slices.Concat(make([]byte, 64), apeTagText(map[string]string{"Title": "Inside"})))},
+		{"monkey's audio header", inHeader},
+		{"musepack stream header", reaching(mpcSV7(100, 0), 10)}, // inside the 24-byte SV7 header
+		{"mp3 frame", reaching(mp3Frames(4), 100)},
+		{"adts frame", reaching(adtsStream(2, 4, 200), 100)},
+		{"flac metadata", reaching(readFixture(t, notagsFLAC), 100)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			doc := mustParseBytes(t, c.data)
+			if doc.Tags().Len() != 0 || hasWarning(doc, wl.WarnLegacyAPE) {
+				t.Errorf("tags %v, warnings %v: a tag was read from inside the first unit", doc.Tags().Keys(), doc.Warnings())
+			}
+			if !hasWarning(doc, wl.WarnMalformedTagEntry) || !lintHasCode(doc, "malformed-tag-entry") {
+				t.Errorf("the misplaced footer went unreported; warnings %v", doc.Warnings())
+			}
+		})
+	}
+}

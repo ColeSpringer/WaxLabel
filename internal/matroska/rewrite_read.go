@@ -8,21 +8,22 @@ import (
 // This file captures the byte-level rewrite base at parse time: the raw bytes and
 // in-buffer offsets the write path patches or re-renders.
 
-// captureRaw reads an element's full bytes ([start, dataEnd)) within the alloc limit.
-// A failure (truncation, over-limit) returns nil, and the writer then refuses the edit.
-func captureRaw(src core.ReaderAtSized, el element, limit int64) []byte {
+// captureRaw reads an element's full bytes ([start, dataEnd)). A read that fails fatally
+// ([bits.Fatal]) is the error; another read failure returns nil, and the writer then refuses the
+// edit.
+func captureRaw(src core.ReaderAtSized, el element, limit int64) ([]byte, error) {
 	b, err := bits.ReadSlice(src, el.start, el.dataEnd-el.start, limit)
 	if err != nil {
-		return nil
+		return nil, bits.Fatal(err)
 	}
-	return b
+	return b, nil
 }
 
 // firstChildIsCRC reports whether a master element's first child is a CRC-32, so a
-// re-render preserves that integrity convention.
-func firstChildIsCRC(src core.ReaderAtSized, el element, limit int64) bool {
-	c, ok := readElement(src, el.dataStart, el.dataEnd, limit)
-	return ok && c.id == idCRC32 && c.dataEnd-c.dataStart == 4
+// re-render preserves that integrity convention. A header read that fails fatally is the error.
+func firstChildIsCRC(src core.ReaderAtSized, el element, limit int64) (bool, error) {
+	c, ok, err := readElement(src, el.dataStart, el.dataEnd, limit)
+	return ok && c.id == idCRC32 && c.dataEnd-c.dataStart == 4, err
 }
 
 // rawCRC finds a master element's leading CRC-32 within its own captured bytes.
@@ -51,20 +52,20 @@ func rawCRC(raw []byte, contentOff int) *crcSpot {
 
 // captureSeekHead records the SeekHead's SeekPosition slots so the writer can
 // shift a moved target in place at its original width.
-func captureSeekHead(src core.ReaderAtSized, el element, depth *bits.Depth, limit int64) *seekHead {
-	raw := captureRaw(src, el, limit)
+func captureSeekHead(src core.ReaderAtSized, el element, depth *bits.Depth, limit int64) (*seekHead, error) {
+	raw, err := captureRaw(src, el, limit)
 	if raw == nil {
-		return nil
+		return nil, err
 	}
-	return seekFromRaw(raw, el.start, depth, limit)
+	return seekFromRaw(raw, el.start, depth, limit), nil
 }
 
 // seekFromRaw parses a SeekHead from its own bytes, recording the element's file
 // position (fileStart) and the in-raw position-slot offsets.
 func seekFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *seekHead {
 	rs := core.BytesSource(raw)
-	root, ok := readElement(rs, 0, int64(len(raw)), limit)
-	if !ok {
+	root, ok, err := readElement(rs, 0, int64(len(raw)), limit)
+	if !ok || err != nil {
 		return nil
 	}
 	sh := &seekHead{start: fileStart, end: fileStart + int64(len(raw)), raw: raw, crc: rawCRC(raw, int(root.dataStart))}
@@ -74,8 +75,8 @@ func seekFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *s
 		}
 		// A per-Seek leading CRC-32 is valid but is not recomputed by the in-place
 		// patch. Latch the flag once and rebuild instead.
-		if !sh.hasNestedCRC && firstChildIsCRC(rs, c, limit) {
-			sh.hasNestedCRC = true
+		if !sh.hasNestedCRC {
+			sh.hasNestedCRC, _ = firstChildIsCRC(rs, c, limit) // in memory: no read fails
 		}
 		var e seekEntry
 		var have bool
@@ -87,7 +88,8 @@ func seekFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *s
 				}
 			case idSeekPosition:
 				if s.dataLen() > 0 && s.dataLen() <= 8 {
-					e.valOff, e.valLen, e.target = int(s.dataStart), int(s.dataLen()), readUint(rs, s, limit)
+					e.valOff, e.valLen = int(s.dataStart), int(s.dataLen())
+					e.target, _ = readUint(rs, s, limit) // in memory: no read fails
 					have = true
 				}
 			}
@@ -103,18 +105,18 @@ func seekFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *s
 
 // captureCues records the CueClusterPosition slots (segment-relative cluster
 // offsets) the same way, so a tag edit that shifts the clusters can repoint them.
-func captureCues(src core.ReaderAtSized, el element, depth *bits.Depth, limit int64) *cuesIndex {
-	raw := captureRaw(src, el, limit)
+func captureCues(src core.ReaderAtSized, el element, depth *bits.Depth, limit int64) (*cuesIndex, error) {
+	raw, err := captureRaw(src, el, limit)
 	if raw == nil {
-		return nil
+		return nil, err
 	}
-	return cuesFromRaw(raw, el.start, depth, limit)
+	return cuesFromRaw(raw, el.start, depth, limit), nil
 }
 
 func cuesFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *cuesIndex {
 	rs := core.BytesSource(raw)
-	root, ok := readElement(rs, 0, int64(len(raw)), limit)
-	if !ok {
+	root, ok, err := readElement(rs, 0, int64(len(raw)), limit)
+	if !ok || err != nil {
 		return nil
 	}
 	ci := &cuesIndex{
@@ -129,14 +131,15 @@ func cuesFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *c
 			case idCuePoint, idCueTrackPos:
 				// A leading CRC-32 on CuePoint or CueTrackPositions is valid but is not
 				// recomputed by patchPositions. Latch the flag once and rebuild instead.
-				if !ci.hasNestedCRC && firstChildIsCRC(rs, c, limit) {
-					ci.hasNestedCRC = true
+				if !ci.hasNestedCRC {
+					ci.hasNestedCRC, _ = firstChildIsCRC(rs, c, limit) // in memory: no read fails
 				}
 				walk(c.dataStart, c.dataEnd) // descend to the CueClusterPosition leaves
 			case idCueClusterPos:
 				if c.dataLen() > 0 && c.dataLen() <= 8 {
+					target, _ := readUint(rs, c, limit) // in memory: no read fails
 					ci.clusters = append(ci.clusters, seekEntry{
-						valOff: int(c.dataStart), valLen: int(c.dataLen()), target: readUint(rs, c, limit),
+						valOff: int(c.dataStart), valLen: int(c.dataLen()), target: target,
 					})
 				}
 			}
@@ -151,8 +154,8 @@ func cuesFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *c
 // rebuild.
 func buildCuePoints(ci *cuesIndex) (points []cuePoint, ok bool) {
 	rs := core.BytesSource(ci.raw)
-	root, found := readElement(rs, 0, int64(len(ci.raw)), ci.limit)
-	if !found {
+	root, found, err := readElement(rs, 0, int64(len(ci.raw)), ci.limit)
+	if !found || err != nil {
 		return nil, false
 	}
 	// Use a fresh Depth.
@@ -194,7 +197,8 @@ func capturePoints(rs core.ReaderAtSized, raw []byte, root element, depth *bits.
 // every other meaningful child (CueTime, unmodeled fields) verbatim into prefix, with a
 // leading CRC stripped (re-added via hasCRC) and Void dropped as padding.
 func capturePoint(rs core.ReaderAtSized, raw []byte, cp element, depth *bits.Depth, limit int64) (cuePoint, bool) {
-	pt := cuePoint{hasCRC: firstChildIsCRC(rs, cp, limit)}
+	hasCRC, _ := firstChildIsCRC(rs, cp, limit) // in memory: no read fails
+	pt := cuePoint{hasCRC: hasCRC}
 	ok := true
 	seenTrack := false
 	idx := 0
@@ -227,7 +231,8 @@ func capturePoint(rs core.ReaderAtSized, raw []byte, cp element, depth *bits.Dep
 // CueClusterPosition in pre and those after it in post (both verbatim) and recording
 // the position target.
 func captureTrackPos(rs core.ReaderAtSized, raw []byte, ctp element, depth *bits.Depth, limit int64) (cueTrackPos, bool) {
-	tp := cueTrackPos{hasCRC: firstChildIsCRC(rs, ctp, limit)}
+	hasCRC, _ := firstChildIsCRC(rs, ctp, limit) // in memory: no read fails
+	tp := cueTrackPos{hasCRC: hasCRC}
 	positions, bad := 0, false
 	idx := 0
 	err := eachChild(rs, ctp.dataStart, ctp.dataEnd, depth, limit, func(c element) error {
@@ -241,7 +246,8 @@ func captureTrackPos(rs core.ReaderAtSized, raw []byte, ctp element, depth *bits
 		case c.id == idCueClusterPos:
 			positions++
 			if c.dataLen() > 0 && c.dataLen() <= 8 {
-				tp.target, tp.hasPos = readUint(rs, c, limit), true
+				tp.target, _ = readUint(rs, c, limit) // in memory: no read fails
+				tp.hasPos = true
 			} else {
 				bad = true
 			}
@@ -273,18 +279,18 @@ func countTrackPos(points []cuePoint) int {
 // captureInfo records the Info element's bytes, CRC, and Title-child location, so a
 // Title edit can splice, insert, or remove the Title and recompute the CRC while the
 // other children (Duration, SegmentUID, ...) stay verbatim.
-func captureInfo(src core.ReaderAtSized, el element, depth *bits.Depth, limit int64) *infoBlock {
-	raw := captureRaw(src, el, limit)
+func captureInfo(src core.ReaderAtSized, el element, depth *bits.Depth, limit int64) (*infoBlock, error) {
+	raw, err := captureRaw(src, el, limit)
 	if raw == nil {
-		return nil
+		return nil, err
 	}
-	return infoFromRaw(raw, el.start, depth, limit)
+	return infoFromRaw(raw, el.start, depth, limit), nil
 }
 
 func infoFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *infoBlock {
 	rs := core.BytesSource(raw)
-	root, ok := readElement(rs, 0, int64(len(raw)), limit)
-	if !ok {
+	root, ok, err := readElement(rs, 0, int64(len(raw)), limit)
+	if !ok || err != nil {
 		return nil
 	}
 	ib := &infoBlock{start: fileStart, end: fileStart + int64(len(raw)), raw: raw, crc: rawCRC(raw, int(root.dataStart)), titleOff: -1, titleEnd: -1}

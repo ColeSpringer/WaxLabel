@@ -434,7 +434,7 @@ func assertSeekHeadResolves(t *testing.T, out []byte, wantEntries int) {
 	src := core.BytesSource(out)
 	for i, e := range wb.seek.entries {
 		abs := wb.segDataStart + int64(e.target)
-		el, ok := readElement(src, abs, int64(len(out)), 1<<20)
+		el, ok, _ := readElement(src, abs, int64(len(out)), 1<<20)
 		if !ok {
 			t.Errorf("SeekHead entry %d (position %d) does not resolve to an element", i, e.target)
 			continue

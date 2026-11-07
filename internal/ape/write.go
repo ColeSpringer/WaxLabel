@@ -17,7 +17,8 @@ import (
 // Bit 30 (no footer) is never set; every written tag has a footer for end-scan.
 const (
 	flagIsHeader = 1 << 29
-	writeVersion = 2000 // APEv2
+	// WriteVersion is the version a new tag is written in: APEv2.
+	WriteVersion = 2000
 	// headerPresentBit: both records of a headed tag (footer scan steps back).
 	headerPresentBit = flagHasHeader
 	headerFlagsBits  = flagHasHeader | flagIsHeader
@@ -329,7 +330,7 @@ func Render(items []Item, version int, hasHeader bool) ([]byte, error) {
 
 	out := make([]byte, 0, total)
 	if hasHeader {
-		out = append(out, record(tagSize, len(items), version, headerFlagsBits)...)
+		out = append(out, record{version: version, size: int64(tagSize), count: uint32(len(items)), flags: headerFlagsBits}.encode()...)
 	}
 	for _, it := range items {
 		payload := it.Payload()
@@ -345,7 +346,7 @@ func Render(items []Item, version int, hasHeader bool) ([]byte, error) {
 	if hasHeader {
 		footerFlags = headerPresentBit
 	}
-	return append(out, record(tagSize, len(items), version, footerFlags)...), nil
+	return append(out, record{version: version, size: int64(tagSize), count: uint32(len(items)), flags: footerFlags}.encode()...), nil
 }
 
 // checkRenderLimits: refuse lists past reader/field limits.
@@ -360,15 +361,4 @@ func checkRenderLimits(items []Item) error {
 		}
 	}
 	return nil
-}
-
-// record: one 32-byte header or footer.
-func record(tagSize, itemCount, version int, flags uint32) []byte {
-	b := make([]byte, footerLen)
-	copy(b[0:8], preamble)
-	binary.LittleEndian.PutUint32(b[8:12], uint32(version))
-	binary.LittleEndian.PutUint32(b[12:16], uint32(tagSize))
-	binary.LittleEndian.PutUint32(b[16:20], uint32(itemCount))
-	binary.LittleEndian.PutUint32(b[20:24], flags)
-	return b // b[24:32] is the reserved field, which must be zero
 }

@@ -49,9 +49,9 @@ func (Codec) SkipsLeadingID3() bool { return false }
 // Sniff matches ....ftyp. Brand is not inspected here; Parse rejects moov-less
 // fragments and marks fragmented files unwritable.
 //
-// Steps over a leading free/skip/wide within the 64-byte [core.DetectLeading]
-// window. A box that does not fit hides ftyp; each step advances by at least a
-// header so the walk terminates.
+// Steps over a leading free/skip/wide within the [core.SniffWindow]. A box that
+// does not fit hides ftyp; each step advances by at least a header so the walk
+// terminates.
 func (Codec) Sniff(header []byte) bool {
 	for off := 0; off+8 <= len(header); {
 		switch string(header[off+4 : off+8]) {

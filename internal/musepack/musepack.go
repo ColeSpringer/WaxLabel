@@ -1,10 +1,10 @@
 // Package musepack implements Musepack (.mpc) metadata for the public waxlabel
 // package. The codec is internal.
 //
-// Layout: SV7 fixed header/frames or SV8 keyed packets, optional APEv2, optional
-// trailing ID3v1 (same trailing store as WavPack/Monkey's Audio via internal/ape).
-// APEv2 is authoritative. Some SV7 files also have a leading ID3v2: preserved as
-// legacy, never canonical.
+// Layout: SV7 fixed header/frames or SV8 keyed packets, then the tail internal/tail reads, the
+// same trailing store as WavPack/Monkey's Audio: APE tags, Lyrics3 blocks, ID3v1 tags and junk.
+// The APE tag nearest the end of the file is authoritative. Some SV7 files also have a leading
+// ID3v2: preserved as legacy, never canonical.
 //
 // SV8 CT chapter packets are read where the reference decoder looks and preserved
 // by the verbatim stream copy; not written (chapters are read-only).
@@ -50,6 +50,24 @@ func (Codec) Sniff(header []byte) bool {
 	return false
 }
 
+// Resync finds the first SV7 marker with its version byte in window, or SV8 marker followed by a
+// valid packet ([core.Resyncer]).
+func (c Codec) Resync(window []byte) (int, bool) {
+	for i := range window {
+		b := window[i:]
+		if !c.Sniff(b) {
+			continue
+		}
+		if string(b[:4]) != sv8Magic {
+			return i, true // SV7: Sniff checked the version byte
+		}
+		if _, ok := parsePacket(b[4:], int64(len(b)-4)); ok {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 // Parse reads metadata from src into a Media.
 func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	return parse(ctx, src, opts)
@@ -81,7 +99,7 @@ func chapterCapability(m *core.Media) core.Capability {
 	}
 }
 
-// EssenceExtent returns musepack-v1 and decoder-critical stream config.
+// EssenceExtent returns musepack-v2 and decoder-critical stream config.
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	var b [16]byte
 	if d, ok := m.Native.(*doc); ok && d != nil {
@@ -92,5 +110,5 @@ func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 		// Full 64-bit sample count: high half alone is zero for any real file.
 		binary.BigEndian.PutUint64(b[6:14], h.totalSamples)
 	}
-	return "musepack-v1", b[:]
+	return "musepack-v2", b[:]
 }

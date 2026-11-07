@@ -110,28 +110,29 @@ func vintLen(first byte) int {
 	return 0
 }
 
-// readVINT reads a variable-length integer in [off, end).
-func readVINT(src core.ReaderAtSized, off, end, limit int64, keepMarker bool) (val uint64, n int64, unknown, ok bool) {
+// readVINT reads a variable-length integer in [off, end). ok is false for one that is not there or
+// does not decode; a read that fails fatally ([bits.Fatal]) is the error.
+func readVINT(src core.ReaderAtSized, off, end, limit int64, keepMarker bool) (val uint64, n int64, unknown, ok bool, err error) {
 	if off < 0 || off >= end {
-		return 0, 0, false, false
+		return 0, 0, false, false, nil
 	}
 	// One read of up to 8 bytes (a VINT's max length) instead of a first-byte read
 	// followed by a second for the rest.
 	want := min(end-off, 8)
 	buf, err := bits.ReadSlice(src, off, want, limit)
 	if err != nil {
-		return 0, 0, false, false
+		return 0, 0, false, false, bits.Fatal(err)
 	}
 	length := vintLen(buf[0])
 	if length == 0 || int64(length) > want {
-		return 0, 0, false, false
+		return 0, 0, false, false, nil
 	}
 	buf = buf[:length]
 	if keepMarker {
 		for _, c := range buf {
 			val = val<<8 | uint64(c)
 		}
-		return val, int64(length), false, true
+		return val, int64(length), false, true, nil
 	}
 	mask := byte(0x80 >> (length - 1))
 	val = uint64(buf[0] &^ mask)
@@ -139,7 +140,7 @@ func readVINT(src core.ReaderAtSized, off, end, limit int64, keepMarker bool) (v
 		val = val<<8 | uint64(buf[i])
 	}
 	maxVal := (uint64(1) << uint(7*length)) - 1
-	return val, int64(length), val == maxVal, true
+	return val, int64(length), val == maxVal, true, nil
 }
 
 // element is one parsed EBML element header: its ID and the byte range of its data.
@@ -154,19 +155,20 @@ type element struct {
 
 func (e element) dataLen() int64 { return e.dataEnd - e.dataStart }
 
-// readElement parses the element header at off within [off, end).
-func readElement(src core.ReaderAtSized, off, end, limit int64) (element, bool) {
-	id, idn, _, ok := readVINT(src, off, end, limit, true)
+// readElement parses the element header at off within [off, end). ok is false for a header that is
+// not there or does not decode; a read that fails fatally ([bits.Fatal]) is the error.
+func readElement(src core.ReaderAtSized, off, end, limit int64) (element, bool, error) {
+	id, idn, _, ok, err := readVINT(src, off, end, limit, true)
 	if !ok {
-		return element{}, false
+		return element{}, false, err
 	}
-	size, szn, unknown, ok := readVINT(src, off+idn, end, limit, false)
+	size, szn, unknown, ok, err := readVINT(src, off+idn, end, limit, false)
 	if !ok {
-		return element{}, false
+		return element{}, false, err
 	}
 	dataStart := off + idn + szn
 	if dataStart > end {
-		return element{}, false
+		return element{}, false, nil
 	}
 	dataEnd := end
 	if !unknown {
@@ -177,28 +179,31 @@ func readElement(src core.ReaderAtSized, off, end, limit int64) (element, bool) 
 			dataEnd = end
 		}
 	}
-	return element{id: id, start: off, dataStart: dataStart, dataEnd: dataEnd, unknown: unknown, next: dataEnd}, true
+	return element{id: id, start: off, dataStart: dataStart, dataEnd: dataEnd, unknown: unknown, next: dataEnd}, true, nil
 }
 
 // resolveUnknownEnd returns the end of an unknown-size element whose data begins at
 // from. walkSegment uses it so siblings after a streamed Cluster (trailing Tags or
-// Attachments) are still visited.
-func resolveUnknownEnd(src core.ReaderAtSized, from, end int64, limit int64) int64 {
+// Attachments) are still visited. A header read that fails fatally is the error.
+func resolveUnknownEnd(src core.ReaderAtSized, from, end int64, limit int64) (int64, error) {
 	off := from
 	for off < end {
-		el, ok := readElement(src, off, end, limit)
+		el, ok, err := readElement(src, off, end, limit)
+		if err != nil {
+			return 0, err
+		}
 		if !ok {
-			return end
+			return end, nil
 		}
 		if level1IDs[el.id] {
-			return off
+			return off, nil
 		}
 		if el.unknown || el.dataEnd <= off {
-			return end
+			return end, nil
 		}
 		off = el.dataEnd
 	}
-	return end
+	return end, nil
 }
 
 // intVal converts an EBML unsigned integer to an int, returning 0 for a value too large
@@ -211,8 +216,8 @@ func intVal(v uint64) int {
 }
 
 // eachChild calls fn for each element in [start, end). It stops without error on a
-// header it cannot parse or an element that makes no forward progress. depth bounds
-// nesting.
+// header it cannot parse or an element that makes no forward progress; a header read that
+// fails fatally ([bits.Fatal]) is the error. depth bounds nesting.
 func eachChild(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limit int64, fn func(element) error) error {
 	if err := depth.Enter(); err != nil {
 		return err
@@ -220,7 +225,10 @@ func eachChild(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limi
 	defer depth.Leave()
 	off := start
 	for off < end {
-		el, ok := readElement(src, off, end, limit)
+		el, ok, err := readElement(src, off, end, limit)
+		if err != nil {
+			return err
+		}
 		if !ok {
 			return nil
 		}
@@ -249,12 +257,17 @@ func walkSegment(src core.ReaderAtSized, start, end int64, depth *bits.Depth, li
 	defer depth.Leave()
 	off := start
 	for off < end {
-		el, ok := readElement(src, off, end, limit)
+		el, ok, err := readElement(src, off, end, limit)
+		if err != nil {
+			return err
+		}
 		if !ok {
 			return nil
 		}
 		if el.unknown {
-			el.dataEnd = resolveUnknownEnd(src, el.dataStart, end, limit)
+			if el.dataEnd, err = resolveUnknownEnd(src, el.dataStart, end, limit); err != nil {
+				return err
+			}
 		}
 		if err := fn(el); err != nil {
 			return err
@@ -267,43 +280,45 @@ func walkSegment(src core.ReaderAtSized, start, end int64, depth *bits.Depth, li
 	return nil
 }
 
-// readUint reads an EBML unsigned integer (big-endian, 1-8 bytes).
-func readUint(src core.ReaderAtSized, el element, limit int64) uint64 {
+// readUint reads an EBML unsigned integer (big-endian, 1-8 bytes), 0 for one of another width or
+// one cut short; a read that fails fatally ([bits.Fatal]) is the error.
+func readUint(src core.ReaderAtSized, el element, limit int64) (uint64, error) {
 	n := el.dataLen()
 	if n <= 0 || n > 8 {
-		return 0
+		return 0, nil
 	}
 	b, err := bits.ReadSlice(src, el.dataStart, n, limit)
 	if err != nil {
-		return 0
+		return 0, bits.Fatal(err)
 	}
 	var v uint64
 	for _, c := range b {
 		v = v<<8 | uint64(c)
 	}
-	return v
+	return v, nil
 }
 
-// readFloat reads an EBML float (4 or 8 bytes). A 0-byte float is 0.0 per spec.
-func readFloat(src core.ReaderAtSized, el element, limit int64) (float64, bool) {
+// readFloat reads an EBML float (4 or 8 bytes). A 0-byte float is 0.0 per spec. ok is false for
+// another width or one cut short; a read that fails fatally ([bits.Fatal]) is the error.
+func readFloat(src core.ReaderAtSized, el element, limit int64) (float64, bool, error) {
 	n := el.dataLen()
 	switch n {
 	case 0:
-		return 0, true
+		return 0, true, nil
 	case 4:
 		b, err := bits.ReadSlice(src, el.dataStart, 4, limit)
 		if err != nil {
-			return 0, false
+			return 0, false, bits.Fatal(err)
 		}
-		return float64(math.Float32frombits(binary.BigEndian.Uint32(b))), true
+		return float64(math.Float32frombits(binary.BigEndian.Uint32(b))), true, nil
 	case 8:
 		b, err := bits.ReadSlice(src, el.dataStart, 8, limit)
 		if err != nil {
-			return 0, false
+			return 0, false, bits.Fatal(err)
 		}
-		return math.Float64frombits(binary.BigEndian.Uint64(b)), true
+		return math.Float64frombits(binary.BigEndian.Uint64(b)), true, nil
 	default:
-		return 0, false
+		return 0, false, nil
 	}
 }
 
@@ -315,6 +330,14 @@ func readString(src core.ReaderAtSized, el element, limit int64) (string, error)
 		return "", err
 	}
 	return strings.TrimRight(string(b), "\x00"), nil
+}
+
+// readLabel reads an informational string element (a DocType, CodecID, scope keyword or
+// language): a read that fails fatally ([bits.Fatal]) is the error, and any other failure reads
+// as "".
+func readLabel(src core.ReaderAtSized, el element, limit int64) (string, error) {
+	s, err := readString(src, el, limit)
+	return s, bits.Fatal(err)
 }
 
 // maxAudioSpecificConfig bounds the CodecPrivate prefix given to the AAC config decoder,

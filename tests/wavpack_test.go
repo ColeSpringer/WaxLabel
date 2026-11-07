@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os/exec"
 	"slices"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/testfile"
@@ -191,6 +195,204 @@ func TestWavPackTrailingID3v1Preserved(t *testing.T) {
 	}
 	if got := mustParseBytes(t, out2).Fields().Album; got != "Stripped" {
 		t.Errorf("album after strip = %q", got)
+	}
+}
+
+// The WavPack audio ends where the stream says: after the sample group that reaches the total a
+// first block at index 0 states or, otherwise, before a block whose index restarts or goes backward.
+// Blocks past that are junk, even a valid stream of their own. A cut starts past index 0, where a
+// stated total places no end: ffmpeg's -ss back-patches the cut's own count, a byte carve keeps the
+// original's. The blocks of a multichannel group share an index, and a block with no samples carries
+// the stream's metadata.
+func TestWavPackStreamEndsWhereItSays(t *testing.T) {
+	const noTotal = 0xFFFFFFFF
+	blk := func(flags, total, index, samples uint32) []byte {
+		return wvGroupBlock(1|wvRate44k|flags, total, index, samples, make([]byte, 8))
+	}
+	group := uint32(wvInitial | wvFinal)
+	sample, notags := readFixture(t, sampleWV), readFixture(t, notagsWV)
+	for _, c := range []struct {
+		name   string
+		stream []byte
+		junk   int // bytes past the stream's end
+	}{
+		{"total reached, another stream after", slices.Concat(sample[:apeTagStart(sample)], notags[:apeTagStart(notags)]), apeTagStart(notags)},
+		{"total reached, the index going on", slices.Concat(blk(group, 4410, 0, 4410), blk(group, 4410, 4410, 4410)), 40},
+		{"group block with another index", slices.Concat(blk(wvInitial, noTotal, 0, 4410), blk(wvMono|wvFinal, noTotal, 4410, 4410)), 40},
+		{"no total, index restarts", slices.Concat(blk(group, noTotal, 0, 4410), blk(group, noTotal, 4410, 4410), blk(group, noTotal, 0, 4410)), 40},
+		{"no total, index goes backward", slices.Concat(blk(group, noTotal, 0, 4410), blk(group, noTotal, 8820, 4410), blk(group, noTotal, 4410, 4410)), 40},
+		{"multichannel group sharing its index", slices.Concat(blk(wvInitial, 8820, 0, 4410), blk(wvMono, 8820, 0, 4410),
+			blk(wvMono|wvFinal, 8820, 0, 4410), blk(group, 8820, 4410, 4410)), 0},
+		{"metadata block after the last group", slices.Concat(blk(group, 4410, 0, 4410), blk(0, 4410, 0, 0)), 0},
+		{"cut stating its own count", slices.Concat(blk(group, 13230, 441000, 4410), blk(group, 13230, 445410, 4410),
+			blk(group, 13230, 449820, 4410)), 0},
+		{"multichannel cut stating its own count", slices.Concat(blk(wvInitial, 8820, 441000, 4410), blk(wvFinal, 8820, 441000, 4410),
+			blk(wvInitial, 8820, 445410, 4410), blk(wvFinal, 8820, 445410, 4410)), 0},
+		{"total of 0, as ffmpeg leaves it on a pipe", slices.Concat(blk(group, 0, 0, 4410), blk(group, 0, 4410, 4410)), 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			src := slices.Concat(c.stream, headedAPETag(t, "Title", "T"))
+			doc := mustParseBytes(t, src)
+			w, ok := docWarning(doc, wl.WarnTrailingBytes)
+			if want := fmt.Sprintf("%d byte(s) after the WavPack stream", c.junk); c.junk > 0 && (!ok || !strings.HasPrefix(w.Message, want)) {
+				t.Errorf("junk warning = %q (present %v), want it to start %q", w.Message, ok, want)
+			}
+			if c.junk == 0 && ok {
+				t.Errorf("the whole stream is audio, but %q", w.Message)
+			}
+			if !essenceOf(t, src).Equal(essenceOf(t, c.stream[:len(c.stream)-c.junk])) {
+				t.Error("the digest does not cover the stream up to its end")
+			}
+		})
+	}
+}
+
+// A WavPack stream whose first block states no total (the reference's unknown-length escape, or the 0
+// ffmpeg leaves when it writes to a pipe) takes its length from its blocks: it reads its duration and
+// takes a tag edit. When the walk to its end does not finish, here past the element limit, the length
+// is unknown but the stream is still audio.
+func TestWavPackWithoutAStatedTotal(t *testing.T) {
+	for _, total := range []uint32{0, 0xFFFFFFFF} {
+		t.Run(fmt.Sprintf("%#x", total), func(t *testing.T) {
+			blk := func(index uint32) []byte {
+				return wvGroupBlock(1|wvRate44k|wvInitial|wvFinal, total, index, 4410, make([]byte, 8))
+			}
+			src := slices.Concat(blk(0), blk(4410), blk(8820))
+			doc := mustParseBytes(t, src)
+			if tr := doc.Properties().First(); tr.TotalSamples != 13230 || tr.Duration != 300*time.Millisecond {
+				t.Errorf("track = %+v, want the 13230 samples, 300 ms, the blocks hold", tr)
+			}
+			plan, err := doc.Edit().Set(tag.Title, "Tagged").Prepare()
+			if err != nil {
+				t.Fatalf("a tag edit was refused: %v", err)
+			}
+			re := mustParseBytes(t, applyToBytes(t, src, plan))
+			if re.Fields().Title != "Tagged" || re.Properties().First().TotalSamples != 13230 {
+				t.Errorf("after the edit: title %q, %d samples", re.Fields().Title, re.Properties().First().TotalSamples)
+			}
+			capped := mustParseLimited(t, src, wl.Limits{MaxElements: 2})
+			if n := capped.Properties().First().TotalSamples; n != 0 || hasWarning(capped, wl.WarnNoAudioFrames) {
+				t.Errorf("past the element limit: %d samples, warnings %v; want an unknown length, still audio", n, capped.Warnings())
+			}
+		})
+	}
+}
+
+// A stream that starts past index 0 is a cut, whose stated total is no length: ffmpeg's -ss back-patches
+// the cut's own count, while a byte carve keeps the whole original's in every block. Its length comes
+// from its blocks, or is unknown when the walk to its end does not finish.
+func TestWavPackCutLengthFromItsBlocks(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		total uint32
+	}{{"byte carve", 882000}, {"ffmpeg -ss cut", 13230}} {
+		t.Run(c.name, func(t *testing.T) {
+			blk := func(index uint32) []byte {
+				return wvGroupBlock(1|wvRate44k|wvInitial|wvFinal, c.total, index, 4410, make([]byte, 8))
+			}
+			src := slices.Concat(blk(441000), blk(445410), blk(449820))
+			if tr := mustParseBytes(t, src).Properties().First(); tr.TotalSamples != 13230 || tr.Duration != 300*time.Millisecond {
+				t.Errorf("track = %+v, want the 13230 samples, 300 ms, the blocks hold", tr)
+			}
+			capped := mustParseLimited(t, src, wl.Limits{MaxElements: 2})
+			if n := capped.Properties().First().TotalSamples; n != 0 || hasWarning(capped, wl.WarnNoAudioFrames) {
+				t.Errorf("past the element limit: %d samples, warnings %v; want an unknown length, still audio", n, capped.Warnings())
+			}
+		})
+	}
+}
+
+// A stream whose blocks all hold no samples is no audio, whatever total it states. A walk the element
+// limit stops before it meets a block with samples cannot tell, so a stream opening with a metadata
+// block reads as audio under any limit.
+func TestWavPackNoAudioOnlyWhenNoBlockHoldsSamples(t *testing.T) {
+	blk := func(flags, index, samples uint32) []byte {
+		return wvGroupBlock(1|wvRate44k|flags, 8820, index, samples, make([]byte, 8))
+	}
+	group := uint32(wvInitial | wvFinal)
+	if doc := mustParseBytes(t, slices.Concat(blk(0, 0, 0), blk(0, 0, 0))); !hasWarning(doc, wl.WarnNoAudioFrames) {
+		t.Errorf("metadata blocks alone under a stated total: warnings %v, want no-audio", doc.Warnings())
+	}
+	src := slices.Concat(blk(0, 0, 0), blk(group, 0, 4410), blk(group, 4410, 4410))
+	for _, limits := range []wl.Limits{{MaxElements: 1}, {}} {
+		doc := mustParseLimited(t, src, limits)
+		if hasWarning(doc, wl.WarnNoAudioFrames) {
+			t.Errorf("MaxElements %d: warnings %v, want no no-audio", limits.MaxElements, doc.Warnings())
+			continue
+		}
+		if _, err := doc.Edit().Set(tag.Title, "T").Prepare(); err != nil {
+			t.Errorf("MaxElements %d: a tag edit was refused: %v", limits.MaxElements, err)
+		}
+	}
+}
+
+// A cut reads what its first block's sub-blocks say, as a stream from sample 0 does: a rate stored in an
+// ID_SAMPLE_RATE sub-block, and DSD.
+func TestWavPackCutReadsItsSubBlocks(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		flags       uint32
+		body        []byte
+		rate, depth int
+	}{
+		{"rate sub-block", wvRateUnknown, wvSubBlock(0x27, []byte{0xB0, 0x93, 0x00}), 37808, 16},
+		{"DSD", wvRateUnknown | wvDSD, slices.Concat(wvSubBlock(0x0E, []byte{0x01}), wvSubBlock(0x27, []byte{0x00, 0x11, 0x2B})), 2822400, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			blk := func(index uint32) []byte {
+				return wvGroupBlock(1|c.flags|wvInitial|wvFinal, 0, index, 4410, c.body)
+			}
+			tr := mustParseBytes(t, slices.Concat(blk(441000), blk(445410))).Properties().First()
+			if tr.SampleRate != c.rate || tr.BitsPerSample != c.depth {
+				t.Errorf("track = %+v, want %d Hz at %d bits", tr, c.rate, c.depth)
+			}
+		})
+	}
+}
+
+// A multichannel stream's channels add up over its first sample group whatever index it starts at, so a
+// cut out of a 6-channel stream reads 6 channels.
+func TestWavPackMultichannelCutChannels(t *testing.T) {
+	blk := func(flags, index uint32) []byte {
+		return wvGroupBlock(1|wvRate44k|flags, 8820, index, 4410, make([]byte, 8))
+	}
+	src := slices.Concat(blk(wvInitial, 441000), blk(0, 441000), blk(wvFinal, 441000),
+		blk(wvInitial, 445410), blk(0, 445410), blk(wvFinal, 445410))
+	if got := mustParseBytes(t, src).Properties().First().Channels; got != 6 {
+		t.Errorf("channels = %d, want the 6 of the first group's three stereo blocks", got)
+	}
+}
+
+// A file joined from two WavPack streams keeps its digest and bitrate across a tag edit: the first
+// stream ends where it says, so the second, junk to it, is not taken for audio once the edit moves it
+// up behind the blocks.
+func TestJoinedWavPackDigestStableAcrossAnEdit(t *testing.T) {
+	sample := readFixture(t, sampleWV)
+	src := slices.Concat(sample, readFixture(t, notagsWV))
+	essence := essenceOf(t, sample)
+	doc := mustParseBytes(t, src)
+	if !essenceOf(t, src).Equal(essence) {
+		t.Error("the joined file's digest differs from the first stream's")
+	}
+	plan, err := doc.Edit().Set(tag.Album, "Edited").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, src, plan)
+	if !essenceOf(t, out).Equal(essence) {
+		t.Error("the digest changed across the edit")
+	}
+	if before, after := doc.Properties().First().Bitrate, mustParseBytes(t, out).Properties().First().Bitrate; before != after {
+		t.Errorf("bitrate %d before the edit, %d after", before, after)
+	}
+}
+
+// A block header the source fails to read is an I/O fault inside the file: the parse fails with it
+// rather than leaving the WavPack audio end unknown, which would give the digest of another layout.
+func TestWavPackUnreadableBlockFailsTheParse(t *testing.T) {
+	src := &testfile.Faulty{Src: wl.BytesSource(readFixture(t, sampleWV)), Fails: testfile.Covering(14744)} // the second block's header
+	if _, err := wl.Parse(context.Background(), src); !errors.Is(err, syscall.EIO) || errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("err = %v, want the read's own failure", err)
 	}
 }
 

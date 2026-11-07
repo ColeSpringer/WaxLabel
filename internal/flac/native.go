@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/tail"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 )
 
@@ -47,8 +48,7 @@ type comment struct {
 
 // doc is the parsed FLAC native document. Implements [core.NativeDoc].
 type doc struct {
-	leadingID3    []byte // stray ID3v2 before "fLaC", preserved
-	trailingID3v1 []byte // 128-byte ID3v1 after audio, preserved
+	leadingID3 []byte // stray ID3v2 before "fLaC", preserved
 
 	blocks   []block   // all metadata blocks, in original order
 	vendor   string    // Vorbis comment vendor string
@@ -69,12 +69,11 @@ type doc struct {
 
 	streamInfo core.AudioTrack
 
-	flacStart  int64 // offset of "fLaC" (== len(leadingID3))
+	flacStart  int64 // offset of "fLaC": past leadingID3 and any leading bytes kept with it
 	audioStart int64 // first audio byte (after last metadata block)
-	audioEnd   int64 // one past last audio byte (excludes trailingJunk and trailingID3v1)
-	// trailingJunk: bytes between the last frame and any ID3v1 trailer
-	// (frameTailWarnings). Outside the audio extent; copied on rewrite.
-	trailingJunk int64
+
+	// layout is what follows the frames, which end at layout.Start; every tag in it is legacy.
+	layout tail.Layout
 }
 
 func (d *doc) Format() core.Format { return core.FormatFLAC }
@@ -83,7 +82,6 @@ func (d *doc) Format() core.Format { return core.FormatFLAC }
 func (d *doc) Clone() core.NativeDoc {
 	c := &doc{
 		leadingID3:      slices.Clone(d.leadingID3),
-		trailingID3v1:   slices.Clone(d.trailingID3v1),
 		vendor:          d.vendor,
 		comments:        slices.Clone(d.comments),
 		commentPictures: core.ClonePictures(d.commentPictures),
@@ -93,8 +91,7 @@ func (d *doc) Clone() core.NativeDoc {
 		dupContent:             slices.Clone(d.dupContent),
 		flacStart:              d.flacStart,
 		audioStart:             d.audioStart,
-		audioEnd:               d.audioEnd,
-		trailingJunk:           d.trailingJunk,
+		layout:                 d.layout.Clone(),
 	}
 	c.blocks = make([]block, len(d.blocks))
 	for i, b := range d.blocks {
@@ -119,7 +116,10 @@ func cloneByteSlices(in [][]byte) [][]byte {
 func (d *doc) Describe() []core.NativeEntry {
 	var out []core.NativeEntry
 	if len(d.leadingID3) > 0 {
-		out = append(out, core.NativeEntry{Kind: "ID3v2 (leading)", Size: len(d.leadingID3), Note: "preserved"})
+		out = append(out, core.LeadingID3Entry(len(d.leadingID3)))
+	}
+	if gap := d.flacStart - int64(len(d.leadingID3)); gap > 0 {
+		out = append(out, core.LeadingBytesEntry(gap))
 	}
 	for _, b := range d.blocks {
 		e := core.NativeEntry{Kind: blockName(b.code), Size: len(b.body)}
@@ -132,13 +132,7 @@ func (d *doc) Describe() []core.NativeEntry {
 		}
 		out = append(out, e)
 	}
-	if d.trailingJunk > 0 {
-		out = append(out, core.NativeEntry{Kind: "trailing bytes", Size: int(d.trailingJunk), Note: "preserved"})
-	}
-	if len(d.trailingID3v1) > 0 {
-		out = append(out, core.NativeEntry{Kind: "ID3v1 (trailing)", Size: len(d.trailingID3v1), Note: "preserved"})
-	}
-	return out
+	return append(out, d.layout.Entries("FLAC frames")...)
 }
 
 // PaddingBytes is the reusable padding region for in-place rewrite (PaddingAfter).

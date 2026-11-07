@@ -1,18 +1,32 @@
 package flac
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
 // Tail walk: one small end window, grow only until a frame header is found.
-// Past the cap, leave undiagnosed rather than scanning a multi-GB file.
+// Past the cap, leave undiagnosed rather than scanning a multi-GB file. First the
+// zeros the tail ends in are measured back from the tags in zeroStep reads, so the
+// window opens on the frames before them; that scan stops likewise, at the
+// allocation limit, and a longer run stays audio.
 const (
 	tailWindowStart = 64 << 10
 	tailWindowCap   = 4 << 20
+	zeroStep        = 64 << 10
+	// maxFrameHeader is the longest frame header and how far the window reaches into
+	// a zero run, so a header or CRC trailer running into the run reads as it would
+	// with all of the run in the window.
+	maxFrameHeader = 16
 )
+
+// errPastEnd is a window past the end of the file, which places no end.
+var errPastEnd = errors.New("flac: tail window past the end of the file")
 
 // tailCandidate is a validated frame header in the tail window.
 type tailCandidate struct {
@@ -21,46 +35,104 @@ type tailCandidate struct {
 	hdr        frameHeader
 }
 
-// frameTailWarnings finds truncation (samples short of STREAMINFO) and trailing
-// junk after the last frame. FLAC has no encoded byte length, so both come from
-// frames (sync + header CRC-8, coded number, frame CRC-16). junk is the located
-// trailing length for carving. Best-effort: unreadable or unplaceable streams
-// report nothing. Only context cancel is returned as err.
-func frameTailWarnings(ctx context.Context, src core.ReaderAtSized, d *doc, limit int64) (ws []core.Warning, junk int64, err error) {
-	si := d.streamInfo
-	audioLen := d.audioEnd - d.audioStart
-	if si.TotalSamples == 0 || audioLen <= 0 {
-		return nil, 0, nil
+// audioEnd returns where the frames that start at start end in src, given boundary, where the tags
+// peeled from the end of the file begin, and the warnings the walk makes. FLAC has no encoded byte
+// length, so the end comes from frames (sync + header CRC-8, coded number, frame CRC-16): the end of
+// the last frame, or boundary when the samples fall short of STREAMINFO's total, so a cut stream
+// stays audio. It is -1 when the walk cannot tell: no total, a tail no window up to the cap places,
+// or a zero run at least as long as the scan bound, which it warns. A read over limit is refused, and
+// one that fails inside the file is an error; ctx is checked before each.
+func audioEnd(ctx context.Context, src core.ReaderAtSized, start, boundary int64, si core.AudioTrack, limit int64) (int64, []core.Warning, error) {
+	if si.TotalSamples == 0 || boundary <= start {
+		return -1, nil, nil
 	}
+	bound := max(limit/zeroStep, 1) * zeroStep // whole zeroStep reads within limit
+	run, measured, err := zeroRun(ctx, src, start, boundary, bound, limit)
+	if err == nil && !measured {
+		return -1, core.WarnTrailing(nil, run, "at the end of the FLAC stream", fmt.Sprintf(
+			"are zeros in a run at least as long as the %d-byte scan bound, the whole 64 KiB reads within the allocation limit, so they stay in the audio essence", bound)), nil
+	}
+	end, truncated := int64(-1), false
+	if err == nil {
+		end, truncated, err = lastFrame(ctx, src, start, boundary-run+min(run, maxFrameHeader), si, limit)
+	}
+	switch {
+	case errors.Is(err, errPastEnd):
+		return -1, nil, nil
+	case err != nil:
+		return -1, nil, err
+	case truncated:
+		return boundary, core.WarnTruncated(nil, "STREAMINFO"), nil
+	}
+	return end, nil, nil
+}
+
+// zeroRun measures the run of zero bytes that ends at boundary, reading back from it in zeroStep
+// reads, down to start and no further than bound, a multiple of zeroStep. measured is false when
+// those reads find only zeros and bytes are left before them; run then counts the bytes read.
+func zeroRun(ctx context.Context, src core.ReaderAtSized, start, boundary, bound, limit int64) (run int64, measured bool, err error) {
+	pos := boundary
+	for range bound / zeroStep {
+		if pos == start {
+			break
+		}
+		n := min(zeroStep, pos-start)
+		b, err := window(ctx, src, pos, n, limit)
+		if err != nil {
+			return 0, false, err
+		}
+		if k := len(bytes.TrimRight(b, "\x00")); k > 0 {
+			return boundary - (pos - n + int64(k)), true, nil
+		}
+		pos -= n
+	}
+	return boundary - pos, pos == start, nil
+}
+
+// lastFrame walks the frames in [start, end) back from end, in windows growing from tailWindowStart
+// to tailWindowCap, and returns where the last one ends, -1 when no window places it, and whether
+// the stream is truncated.
+func lastFrame(ctx context.Context, src core.ReaderAtSized, start, end int64, si core.AudioTrack, limit int64) (int64, bool, error) {
 	// Fixed strategy: frame number maps to samples only with constant block size.
 	fixedUnit := 0
 	if si.MinBlockSize == si.MaxBlockSize {
 		fixedUnit = si.MinBlockSize
 	}
-
-	// Alloc limit narrows the search like the 4 MiB cap.
-	effCap := min(int64(tailWindowCap), limit)
+	region := end - start
 	for w := int64(tailWindowStart); ; w *= 4 {
-		w = min(w, audioLen, effCap)
-		if err := ctx.Err(); err != nil {
-			return nil, 0, err
-		}
-		win, err := bits.ReadSlice(src, d.audioEnd-w, w, limit)
+		w = min(w, region, tailWindowCap)
+		win, err := window(ctx, src, end, w, limit)
 		if err != nil {
-			return nil, 0, nil
+			return -1, false, err
 		}
 		st := scanTailWindow(win, si, fixedUnit)
-		if ws, junk, conclusive := tailVerdict(win, st, w == audioLen, si); conclusive {
-			return ws, junk, nil
+		if at, truncated, conclusive := tailVerdict(win, st, w == region, si); conclusive {
+			if at < 0 {
+				return -1, truncated, nil
+			}
+			return end - w + int64(at), false, nil
 		}
 		// Fixed strategy without constant block size cannot be placed.
 		if !st.have && st.fixedUnplaceable {
-			return nil, 0, nil
+			return -1, false, nil
 		}
-		if w == audioLen || w >= effCap {
-			return nil, 0, nil
+		if w == region || w >= tailWindowCap {
+			return -1, false, nil
 		}
 	}
+}
+
+// window reads the n bytes of src before end, after checking ctx, as [bits.ReadWithin] does; bytes
+// past the end of the file are errPastEnd.
+func window(ctx context.Context, src core.ReaderAtSized, end, n, limit int64) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	b, err := bits.ReadWithin(src, end-n, n, limit)
+	if err == nil && b == nil {
+		return nil, errPastEnd
+	}
+	return b, err
 }
 
 // tailScan is O(1) scan state: best candidate, whether an earlier same-strategy
@@ -122,25 +194,26 @@ func scanTailWindow(win []byte, si core.AudioTrack, fixedUnit int) tailScan {
 	return st
 }
 
-// tailVerdict turns one window scan into warnings. conclusive is false when a
+// tailVerdict reads one window scan: where in win the last frame ends, -1 when it
+// cannot be placed, and whether the stream is truncated. conclusive is false when a
 // wider window might change the answer (no candidate, or one uncorroborated
 // checksum). Needs a second chaining header or whole-region frame-zero anchor.
-// Overrun streams are left undiagnosed.
-func tailVerdict(win []byte, st tailScan, wholeRegion bool, si core.AudioTrack) ([]core.Warning, int64, bool) {
+// Overrun streams are left unplaced.
+func tailVerdict(win []byte, st tailScan, wholeRegion bool, si core.AudioTrack) (end int, truncated, conclusive bool) {
 	if !st.have {
-		return nil, 0, false
+		return -1, false, false
 	}
 	if st.overrun {
-		return nil, 0, true
+		return -1, false, true
 	}
 	anchored := wholeRegion && st.first.off == 0 && st.first.start == 0
 	if !st.fChained && !anchored {
-		return nil, 0, false
+		return -1, false, false
 	}
 	f := st.f
 
 	if f.end < si.TotalSamples {
-		return core.WarnTruncated(nil, "STREAMINFO"), 0, true
+		return -1, true, true
 	}
 
 	// Timeline complete; last frame starts at f. End via CRC-16 residue (frame
@@ -166,17 +239,13 @@ func tailVerdict(win []byte, st tailScan, wholeRegion bool, si core.AudioTrack) 
 	}
 	if latest < 0 {
 		// Samples accounted for but final trailer missing.
-		return core.WarnTruncated(nil, "STREAMINFO"), 0, true
+		return -1, true, true
 	}
-	end := runStart
+	end = runStart
 	if latest-runStart <= 2 {
 		end = latest
 	}
-	if end == len(win) { // frame ends at audio region end
-		return nil, 0, true
-	}
-	n := int64(len(win) - end)
-	return core.WarnTrailing(nil, n, "after the FLAC stream", "belong to no frame"), n, true
+	return end, false, true
 }
 
 // Frame CRC-8 (poly 0x07) and CRC-16 (poly 0x8005), MSB-first, init 0, no final XOR.

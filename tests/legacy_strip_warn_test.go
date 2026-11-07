@@ -1,6 +1,11 @@
 package waxlabel_test
 
 import (
+	"bytes"
+	"context"
+	"fmt"
+	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -197,4 +202,383 @@ func TestWAVLegacyStripWarnsAboutUnmappedItems(t *testing.T) {
 			t.Errorf("warning does not name %s: %q", id, w.Message)
 		}
 	}
+}
+
+// stackedV1 is two ID3v1 tags, one after the other, holding values the clean fixtures do not.
+func stackedV1() []byte {
+	return slices.Concat(testfile.ID3v1("First Title", "", "First Album", "", "", 255),
+		testfile.ID3v1("Second Title", "", "", "", "second comment", 255))
+}
+
+// Stacked ID3v1 tags after a WavPack, Monkey's Audio, Musepack, MP3, ADTS or FLAC stream are each read
+// into the family view. A strip names the values only they held and removes the whole run in one go,
+// leaving the clean file, and the digest is the clean file's throughout.
+func TestStackedID3v1AfterTheStream(t *testing.T) {
+	for _, path := range []string{notagsWV, notagsAPE, chaptersMPC, notagsMP3, notagsAAC, notagsFLAC} {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			clean := readFixture(t, path)
+			src := slices.Concat(clean, stackedV1())
+			essence := essenceOf(t, clean)
+
+			doc := mustParseBytes(t, src)
+			var titles []string
+			for _, f := range doc.Families() {
+				if f.Family == wl.FamilyID3v1 && f.Key == tag.Title {
+					titles = append(titles, f.Values...)
+				}
+			}
+			if !slices.Equal(titles, []string{"First Title", "Second Title"}) {
+				t.Errorf("ID3v1 titles in the family view = %v, want one per tag", titles)
+			}
+			if w, ok := docWarning(doc, wl.WarnTrailingID3v1); !ok || !strings.Contains(w.Message, "2 stacked") {
+				t.Errorf("ID3v1 warning = %q (present %v), want it to count both tags", w.Message, ok)
+			}
+			if !essenceOf(t, src).Equal(essence) {
+				t.Error("the stacked tags changed the digest")
+			}
+
+			plan, err := doc.Edit().Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+			if err != nil {
+				t.Fatal(err)
+			}
+			w, ok := warningFor(plan, wl.WarnLegacyStripDropped)
+			if want := []tag.Key{tag.Title, tag.Album, tag.Comment}; !ok || !slices.Equal(w.Keys, want) {
+				t.Errorf("strip warning keys = %v (present %v), want %v", w.Keys, ok, want)
+			}
+			stripped := applyToBytes(t, src, plan)
+			if !bytes.Equal(stripped, clean) {
+				t.Error("one strip did not leave the clean file")
+			}
+			if !essenceOf(t, stripped).Equal(essence) {
+				t.Error("the digest changed across the strip")
+			}
+		})
+	}
+}
+
+// An ID3v1 tag sealed between the stream and the APE tag, where appending the APE tag after it left
+// it, is found as a legacy tag rather than read as audio, next to the APE tag, and a strip removes
+// it. After MP3, ADTS and FLAC, where the APE tag is legacy too, the strip removes both.
+func TestID3v1AheadOfTheAPETag(t *testing.T) {
+	coda := func(path string) []byte {
+		return slices.Concat(readFixture(t, path), headedAPETag(t, "Title", "Coda Song"))
+	}
+	for _, c := range []struct {
+		name   string
+		clean  []byte
+		legacy bool // the APE tag is legacy too, so the strip removes it
+	}{
+		{"sample.wv", readFixture(t, sampleWV), false},
+		{"sample.ape", readFixture(t, sampleAPE), false},
+		{"chapters.mpc", coda(chaptersMPC), false},
+		{"notags.mp3", coda(notagsMP3), true},
+		{"notags.aac", coda(notagsAAC), true},
+		{"notags.flac", coda(notagsFLAC), true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			start := apeTagStart(c.clean)
+			src := slices.Concat(c.clean[:start], testfile.ID3v1("Sealed Title", "", "", "", "", 255), c.clean[start:])
+			want := mustParseBytes(t, c.clean)
+			essence := essenceOf(t, c.clean)
+
+			doc := mustParseBytes(t, src)
+			if !hasWarning(doc, wl.WarnTrailingID3v1) || !hasFamily(doc, wl.FamilyID3v1, tag.Title) {
+				t.Errorf("the sealed ID3v1 tag was not found; warnings %v", doc.Warnings())
+			}
+			if !hasFamily(doc, wl.FamilyAPEv2, tag.Title) {
+				t.Errorf("the APE tag after the sealed tag is not in the family view: %+v", doc.Families())
+			}
+			if !doc.Tags().Equal(want.Tags()) || !essenceOf(t, src).Equal(essence) {
+				t.Error("the sealed tag changed the tags or the digest")
+			}
+			plan, err := doc.Edit().Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+			if err != nil {
+				t.Fatal(err)
+			}
+			stripped := applyToBytes(t, src, plan)
+			re := mustParseBytes(t, stripped)
+			if bytes.Contains(stripped, []byte("Sealed Title")) || hasWarning(re, wl.WarnTrailingID3v1) {
+				t.Error("the strip kept the sealed ID3v1 tag")
+			}
+			if gone := !bytes.Contains(stripped, []byte("APETAGEX")) && !hasWarning(re, wl.WarnLegacyAPE) &&
+				!hasFamily(re, wl.FamilyAPEv2, tag.Title); gone != c.legacy {
+				t.Errorf("APE tag gone after the strip = %v, want %v", gone, c.legacy)
+			}
+			if !re.Tags().Equal(want.Tags()) || !essenceOf(t, stripped).Equal(essence) {
+				t.Error("the strip changed the tags or the digest")
+			}
+		})
+	}
+}
+
+// A WavPack file carrying every legacy shape at once - a leading ID3v2 tag and a gap before the first
+// block, then after the blocks the APE tag, junk, a Lyrics3 block and stacked ID3v1 tags - reads as
+// the clean file does. One legacy strip leaves the blocks, the junk and the APE tag, which a re-parse
+// reads alike, and the digest is the clean file's throughout.
+func TestWavPackEveryLegacyShape(t *testing.T) {
+	clean := readFixture(t, sampleWV)
+	start := apeTagStart(clean)
+	stuck := trailerJunk(300)
+	src := slices.Concat(leadingTitleID3(), leadingGap, clean, stuck,
+		testfile.Lyrics3v2([2]string{"LYR", "words"}), stackedV1())
+	want := mustParseBytes(t, clean)
+	essence := essenceOf(t, clean)
+
+	doc := mustParseBytes(t, src)
+	if !doc.Tags().Equal(want.Tags()) || !reflect.DeepEqual(doc.Properties(), want.Properties()) {
+		t.Errorf("tags %v, properties %+v; want the clean file's %v, %+v",
+			doc.Tags().Keys(), doc.Properties(), want.Tags().Keys(), want.Properties())
+	}
+	for _, code := range []wl.WarningCode{wl.WarnStrayLeadingID3, wl.WarnLeadingBytes, wl.WarnTrailingBytes,
+		wl.WarnTrailingLyrics3, wl.WarnTrailingID3v1} {
+		if !hasWarning(doc, code) {
+			t.Errorf("no %s warning; got %v", code, doc.Warnings())
+		}
+	}
+	if !essenceOf(t, src).Equal(essence) {
+		t.Error("the digest differs from the clean file's")
+	}
+
+	plan, err := doc.Edit().Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripped := applyToBytes(t, src, plan)
+	if !bytes.HasPrefix(stripped, slices.Concat(clean[:start], stuck)) || apeTagStart(stripped) != start+len(stuck) {
+		t.Error("the strip did not leave the blocks, the junk, then the APE tag")
+	}
+	re := mustParseBytes(t, stripped)
+	if !re.Tags().Equal(doc.Tags()) || !reflect.DeepEqual(re.Properties(), doc.Properties()) {
+		t.Errorf("after the strip: tags %v, properties %+v; want %v, %+v",
+			re.Tags().Keys(), re.Properties(), doc.Tags().Keys(), doc.Properties())
+	}
+	for _, code := range []wl.WarningCode{wl.WarnStrayLeadingID3, wl.WarnLeadingBytes, wl.WarnTrailingLyrics3, wl.WarnTrailingID3v1} {
+		if hasWarning(re, code) {
+			t.Errorf("the strip kept what %s reports", code)
+		}
+	}
+	if !hasWarning(re, wl.WarnTrailingBytes) {
+		t.Error("the junk is no longer reported")
+	}
+	if !essenceOf(t, stripped).Equal(essence) {
+		t.Error("the digest changed across the strip")
+	}
+}
+
+// An MP3 carrying every legacy shape at once - an ID3v2 tag and bytes before the first frame, then
+// after the frames an APE tag, junk, a Lyrics3 block and stacked ID3v1 tags - reads as the tag and
+// the frames alone do. One legacy strip leaves the tag, the bytes before the first frame, the frames
+// and the junk, which a re-parse reads alike, and the digest is the bare stream's throughout.
+func TestMP3EveryLegacyShape(t *testing.T) {
+	audio := readFixture(t, notagsMP3)
+	stuck := trailerJunk(300)
+	src := slices.Concat(leadingTitleID3(), leadingGap, audio, apeTag(map[string]string{"Album": "APE Album"}), stuck,
+		testfile.Lyrics3v2([2]string{"LYR", "words"}), stackedV1())
+	want := mustParseBytes(t, slices.Concat(leadingTitleID3(), audio))
+	essence := essenceOf(t, audio)
+
+	doc := mustParseBytes(t, src)
+	if !doc.Tags().Equal(want.Tags()) || !reflect.DeepEqual(doc.Properties(), want.Properties()) {
+		t.Errorf("tags %v, properties %+v; want the tag and frames alone's %v, %+v",
+			doc.Tags().Keys(), doc.Properties(), want.Tags().Keys(), want.Properties())
+	}
+	for _, code := range []wl.WarningCode{wl.WarnLeadingBytes, wl.WarnLegacyAPE, wl.WarnTrailingBytes,
+		wl.WarnTrailingLyrics3, wl.WarnTrailingID3v1} {
+		if !hasWarning(doc, code) {
+			t.Errorf("no %s warning; got %v", code, doc.Warnings())
+		}
+	}
+	if !hasFamily(doc, wl.FamilyAPEv2, tag.Album) || !hasFamily(doc, wl.FamilyID3v1, tag.Comment) {
+		t.Errorf("the APE and ID3v1 tags are not in the family view: %+v", doc.Families())
+	}
+	if !essenceOf(t, src).Equal(essence) {
+		t.Error("the digest differs from the bare stream's")
+	}
+
+	plan, err := doc.Edit().Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripped := applyToBytes(t, src, plan)
+	if !bytes.HasSuffix(stripped, slices.Concat(leadingGap, audio, stuck)) {
+		t.Error("the strip did not leave the bytes before the first frame, the frames, then the junk")
+	}
+	re := mustParseBytes(t, stripped)
+	if !re.Tags().Equal(doc.Tags()) || !reflect.DeepEqual(re.Properties(), doc.Properties()) {
+		t.Errorf("after the strip: tags %v, properties %+v; want %v, %+v",
+			re.Tags().Keys(), re.Properties(), doc.Tags().Keys(), doc.Properties())
+	}
+	for _, code := range []wl.WarningCode{wl.WarnLegacyAPE, wl.WarnTrailingLyrics3, wl.WarnTrailingID3v1} {
+		if hasWarning(re, code) {
+			t.Errorf("the strip kept what %s reports", code)
+		}
+	}
+	for _, code := range []wl.WarningCode{wl.WarnLeadingBytes, wl.WarnTrailingBytes} {
+		if !hasWarning(re, code) {
+			t.Errorf("the strip lost what %s reports", code)
+		}
+	}
+	if !essenceOf(t, stripped).Equal(essence) {
+		t.Error("the digest changed across the strip")
+	}
+}
+
+// A legacy strip must not move the audio end. MP3 and ADTS measure their end as a strip leaves the
+// file, so an APE tag between two concatenated streams leaves the second in the essence, kept around
+// the tag, and a tag filling the MP3 resync window hides nothing from it. Each shape parses, strips
+// under the essence check and re-reads to the digest of the stripped file, which a plain edit, which
+// keeps the tags, shares; a long second stream costs a few reads, not a walk of its frames. The ID3
+// tags between two joined files are no tail tags: they stay in the audio with both streams, reported
+// by their count, whether or not the last tag is stripped.
+func TestLegacyStripKeepsTheAudioEnd(t *testing.T) {
+	mp3, aac := readFixture(t, notagsMP3), readFixture(t, notagsAAC)
+	ape := headedAPETag(t, "Title", "Coda")
+	v1 := testfile.ID3v1("V1", "", "", "", "", 255)
+	long := mp3Frames(10000)
+	lead := ffmpegTag()
+	for _, c := range []struct {
+		name   string
+		data   []byte   // the file
+		audio  []byte   // what its essence covers
+		strip  []byte   // what the strip leaves
+		ape    bool     // the APE tag is a legacy tail tag, in the family view
+		reads  int      // most reads a parse may make, 0 for no bound
+		native []string // the native view's entries
+		warn   []string // how its trailing-bytes warnings begin, in order
+	}{
+		{"mp3: a tag between two streams", slices.Concat(mp3, ape, mp3, v1), slices.Concat(mp3, mp3), slices.Concat(mp3, mp3), true, 0,
+			[]string{"MPEG audio", "APEv2", "MPEG audio", "ID3v1"}, []string{"16482 byte(s) after an APE tag are audio"}},
+		{"aac: a tag between two streams", slices.Concat(aac, ape, aac, v1), slices.Concat(aac, aac), slices.Concat(aac, aac), true, 0,
+			[]string{"ADTS audio", "APEv2", "ADTS audio", "ID3v1"}, []string{"23548 byte(s) after an APE tag are audio"}},
+		{"mp3: a tag before a long second stream", slices.Concat(mp3, ape, long, v1), slices.Concat(mp3, long), slices.Concat(mp3, long), true, 64,
+			[]string{"MPEG audio", "APEv2", "MPEG audio", "ID3v1"}, []string{fmt.Sprintf("%d byte(s) after an APE tag are audio", len(long))}},
+		{"mp3: a tag filling the resync window", slices.Concat(mp3Frames(40), apeTag(map[string]string{"Title": strings.Repeat("x", 100<<10)}), trailerJunk(10)),
+			mp3Frames(40), slices.Concat(mp3Frames(40), trailerJunk(10)), true, 0,
+			[]string{"MPEG audio", "APEv2", "trailing bytes"}, []string{"10 byte(s) after the MPEG stream belong to no tag"}},
+		// The count of the first stream ends at a tag the second goes on behind, as cat leaves two
+		// tagged files: the tags between stay in the audio and are counted, whether they lie in the
+		// resync window before the tags at the end or before it.
+		{"mp3: an ID3v1 tag between two streams", slices.Concat(mp3, v1, mp3, v1), slices.Concat(mp3, v1, mp3), slices.Concat(mp3, v1, mp3), false, 0,
+			[]string{"MPEG audio", "ID3v1"}, []string{"1 ID3 tag(s) between joined MPEG streams"}},
+		{"mp3: two ffmpeg-made files", slices.Concat(lead, mp3, lead, mp3, v1), slices.Concat(mp3, lead, mp3),
+			slices.Concat(lead, mp3, lead, mp3), false, 0,
+			[]string{"ID3v2.4", "MPEG audio", "ID3v1"}, []string{"1 ID3 tag(s) between joined MPEG streams"}},
+		{"mp3: two ffmpeg-made files, the second long", slices.Concat(lead, mp3, lead, long, v1), slices.Concat(mp3, lead, long),
+			slices.Concat(lead, mp3, lead, long), false, 64,
+			[]string{"ID3v2.4", "MPEG audio", "ID3v1"}, []string{"1 ID3 tag(s) between joined MPEG streams"}},
+		// The resync window opens 34 bytes before the tag, inside the first stream's last frame.
+		{"mp3: two ffmpeg-made files, the join at the window's start", slices.Concat(lead, mp3, lead, mp3Frames(157)),
+			slices.Concat(mp3, lead, mp3Frames(157)), slices.Concat(lead, mp3, lead, mp3Frames(157)), false, 0,
+			[]string{"ID3v2.4", "MPEG audio"}, []string{"1 ID3 tag(s) between joined MPEG streams"}},
+		// With no VBR header the frames in the window pass the tag the second file opens with.
+		{"mp3: two files without a VBR header", slices.Concat(mp3Frames(40), lead, mp3Frames(40), trailerJunk(10)),
+			slices.Concat(mp3Frames(40), lead, mp3Frames(40)), slices.Concat(mp3Frames(40), lead, mp3Frames(40), trailerJunk(10)), false, 0,
+			[]string{"MPEG audio", "trailing bytes"},
+			[]string{"10 byte(s) after the MPEG stream belong to no tag", "1 ID3 tag(s) between joined MPEG streams"}},
+		// The frame walk goes on past the tag the second file opens with, as the frames after it are
+		// the same stream's, and past every such tag after it.
+		{"aac: two ffmpeg-made files", slices.Concat(lead, aac, lead, aac, v1), slices.Concat(aac, lead, aac),
+			slices.Concat(lead, aac, lead, aac), false, 0,
+			[]string{"ID3v2.4", "ADTS audio", "ID3v1"}, []string{"1 ID3 tag(s) between joined ADTS streams"}},
+		{"aac: three ffmpeg-made files", slices.Concat(lead, aac, lead, aac, lead, aac, v1), slices.Concat(aac, lead, aac, lead, aac),
+			slices.Concat(lead, aac, lead, aac, lead, aac), false, 0,
+			[]string{"ID3v2.4", "ADTS audio", "ID3v1"}, []string{"2 ID3 tag(s) between joined ADTS streams"}},
+		{"aac: an ID3v1 and an ID3v2 tag between two streams", slices.Concat(aac, v1, lead, aac, v1), slices.Concat(aac, v1, lead, aac),
+			slices.Concat(aac, v1, lead, aac), false, 0,
+			[]string{"ADTS audio", "ID3v1"}, []string{"2 ID3 tag(s) between joined ADTS streams"}},
+		// The first stream's count holds over the file, where a single frame follows it before the tag,
+		// and not over it without the tag, where the frames after the tag go on from that frame.
+		{"mp3: one frame, then a tag the stream goes on past", slices.Concat(mp3, mp3Frames(1), ape, mp3Frames(39), v1),
+			slices.Concat(mp3, mp3Frames(40)), slices.Concat(mp3, mp3Frames(40)), true, 0,
+			[]string{"MPEG audio", "MPEG audio", "APEv2", "MPEG audio", "ID3v1"},
+			[]string{"417 byte(s) before an APE tag are audio", "16263 byte(s) after an APE tag are audio"}},
+		// With no VBR header the frames in the window claim the tag between two runs of them as audio,
+		// and the tag wins: it is read and stripped, and the second run goes on from the first across it.
+		{"mp3: a tag between two runs of frames", slices.Concat(mp3Frames(40), ape, mp3Frames(40), trailerJunk(10)),
+			slices.Concat(mp3Frames(40), mp3Frames(40)), slices.Concat(mp3Frames(40), mp3Frames(40), trailerJunk(10)), true, 0,
+			[]string{"MPEG audio", "APEv2", "MPEG audio", "trailing bytes"},
+			[]string{fmt.Sprintf("%d byte(s) after an APE tag are audio", 40*417), "10 byte(s) after the MPEG stream belong to no tag"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			src := &countingSource{ReaderAtSized: wl.BytesSource(c.data)}
+			doc, err := wl.Parse(context.Background(), src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.reads > 0 && src.reads > c.reads {
+				t.Errorf("%d reads of a %d-byte file, want at most %d", src.reads, len(c.data), c.reads)
+			}
+			var native []string
+			for _, e := range doc.Native().Describe() {
+				if !strings.HasPrefix(e.Kind, " ") {
+					native = append(native, e.Kind)
+				}
+			}
+			if !slices.Equal(native, c.native) {
+				t.Errorf("native view = %q, want %q", native, c.native)
+			}
+			var warns []string
+			for _, w := range doc.Warnings() {
+				if w.Code == wl.WarnTrailingBytes {
+					warns = append(warns, w.Message)
+				}
+			}
+			if len(warns) != len(c.warn) {
+				t.Errorf("trailing-bytes warnings = %q, want %d", warns, len(c.warn))
+			} else {
+				for i, want := range c.warn {
+					if !strings.HasPrefix(warns[i], want) {
+						t.Errorf("trailing-bytes warning %q does not begin %q", warns[i], want)
+					}
+				}
+			}
+			essence := essenceOf(t, c.audio)
+			if !essenceOf(t, c.data).Equal(essence) {
+				t.Error("the digest is not the audio's")
+			}
+			if hasFamily(doc, wl.FamilyAPEv2, tag.Title) != c.ape {
+				t.Errorf("APE title in the family view = %v, want %v", !c.ape, c.ape)
+			}
+			if w, ok := docWarning(doc, wl.WarnTruncatedAudio); ok {
+				t.Errorf("a stream that goes on reads as truncated: %q", w.Message)
+			}
+			plans := map[string]struct {
+				prepare func() (*wl.Plan, error)
+				want    func(out []byte) bool
+			}{
+				"strip": {func() (*wl.Plan, error) {
+					return doc.Edit().Prepare(wl.WithLegacyPolicy(wl.LegacyStrip), wl.WithVerifyEssence())
+				}, func(out []byte) bool { return bytes.Equal(out, c.strip) }},
+				"edit": {func() (*wl.Plan, error) {
+					return doc.Edit().Set(tag.Title, "Edited").Prepare(wl.WithVerifyEssence())
+				}, func(out []byte) bool { return bytes.HasSuffix(out, c.data[frontTagLen(c.data):]) }},
+			}
+			for name, p := range plans {
+				plan, err := p.prepare()
+				if err != nil {
+					t.Fatalf("%s: prepare: %v", name, err)
+				}
+				var w writerTo
+				if _, _, err := plan.Execute(context.Background(), wl.WriteTo(&w, wl.BytesSource(c.data))); err != nil {
+					t.Errorf("%s under the essence check: %v", name, err)
+					continue
+				}
+				if !p.want(w.b) {
+					t.Errorf("%s did not leave the bytes expected", name)
+				}
+				if !essenceOf(t, w.b).Equal(essence) {
+					t.Errorf("%s changed the digest", name)
+				}
+			}
+		})
+	}
+}
+
+// frontTagLen is the length of the ID3v2 tag that opens b, its header's sync-safe size plus the
+// header, or 0 when none does.
+func frontTagLen(b []byte) int {
+	if len(b) < 10 || string(b[:3]) != "ID3" {
+		return 0
+	}
+	return 10 + (int(b[6])<<21 | int(b[7])<<14 | int(b[8])<<7 | int(b[9]))
 }

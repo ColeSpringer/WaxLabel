@@ -1,9 +1,10 @@
 // Package apen implements Monkey's Audio (.ape) metadata for the public waxlabel
 // package. The codec is internal.
 //
-// Layout: "MAC " header, compressed frames, optional APEv2, optional trailing ID3v1.
-// Same trailing-store shape as WavPack/Musepack via internal/ape. APEv2 is authoritative;
-// ID3v1 is preserved only. Audio is copied verbatim on write.
+// Layout: optional leading ID3v2, "MAC " header, compressed frames, then the tail internal/tail
+// reads, the same trailing store as WavPack/Musepack: APE tags, Lyrics3 blocks, ID3v1 tags and
+// junk. The APE tag nearest the end of the file is authoritative; the ID3 containers and Lyrics3
+// blocks are preserved as legacy only. Audio is copied verbatim on write.
 //
 // Named for the container so it is distinct from internal/ape (the APEv2 tag).
 // Reimplemented from the public Monkey's Audio header docs; reference code informed
@@ -29,12 +30,26 @@ func init() { core.Register(New()) }
 func (Codec) Format() core.Format  { return core.FormatMonkeysAudio }
 func (Codec) Extensions() []string { return []string{".ape"} }
 
-// SkipsLeadingID3 is false: the file starts with MAC. Legacy ID3 here is trailing ID3v1.
-func (Codec) SkipsLeadingID3() bool { return false }
+// SkipsLeadingID3 is true: some taggers write a front ID3v2, preserved as legacy.
+// core.DetectLeading peeks past it for "MAC ".
+func (Codec) SkipsLeadingID3() bool { return true }
 
-// Sniff matches "MAC " at offset 0 (trailing space is part of the marker).
+// Sniff matches "MAC " at offset 0 (trailing space is part of the marker). Leading-ID3v2 files are
+// recognized via DetectLeading instead.
 func (Codec) Sniff(header []byte) bool {
 	return len(header) >= 4 && string(header[:4]) == fileMagic
+}
+
+// Resync finds the first "MAC " in window followed by a supported version ([core.Resyncer]).
+func (c Codec) Resync(window []byte) (int, bool) {
+	for i := range window {
+		if b := window[i:]; c.Sniff(b) {
+			if _, err := parseVersion(b); err == nil {
+				return i, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // Parse reads metadata from src into a Media.
@@ -47,7 +62,7 @@ func (Codec) Capabilities(_ *core.Media, _ core.WriteOptions) core.Capabilities 
 	return ape.Capabilities(core.FormatMonkeysAudio, false)
 }
 
-// EssenceExtent returns monkeys-audio-v1 and decoder-critical header fields
+// EssenceExtent returns monkeys-audio-v2 and decoder-critical header fields
 // (version, compression, flags, geometry) mixed ahead of the frames.
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	var b [18]byte
@@ -62,5 +77,5 @@ func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 		// Whole frame size: documented values fit in 32 bits; high-half alone would be zero.
 		binary.BigEndian.PutUint32(b[14:18], h.blocksPerFrame)
 	}
-	return "monkeys-audio-v1", b[:]
+	return "monkeys-audio-v2", b[:]
 }

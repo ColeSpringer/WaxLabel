@@ -6,119 +6,160 @@ import (
 	"math"
 	"time"
 
-	"github.com/colespringer/waxlabel/internal/ape"
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
+	"github.com/colespringer/waxlabel/internal/tail"
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// scanWindow bounds the search past the audio start for the first MPEG frame
+// scanWindow bounds the search past the stream start for the first MPEG frame
 // and its VBR header.
 const scanWindow = 64 << 10
 
-// parse reads MP3 metadata: front ID3v2 (authoritative), audio geometry, trailing
-// legacy containers (preserved, surfaced, warned).
+// parse reads MP3 metadata: front ID3v2 (authoritative), audio geometry from the first frame, and
+// the tail after the audio, whose tags are legacy (preserved, surfaced, warned).
 func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	size := src.Size()
 	limit := opts.Limits.MaxAllocBytes
-	d := &doc{size: size}
-	var warnings []core.Warning
+	d := &doc{}
 
-	// Front ID3v2 tag.
-	tg, id3Len, frontWs, err := id3.ReadFront(src, size, limit, opts.Limits.MaxElements)
+	// Front ID3v2 tag, and the stream behind it: where the chained tags end when what opens there
+	// sniffs as MP3 (a frame header on its own), else at the first frame a second one confirms in the
+	// resync window from there, else at the first frame [lenientStart] accepts in the scanWindow bytes
+	// from the tag's end, short of the tags at the end of the file; with none, nowhere.
+	tg, id3Len, warnings, err := id3.ReadFront(src, size, limit, opts.Limits.MaxElements)
 	if err != nil {
 		return nil, err
 	}
-	warnings = append(warnings, frontWs...)
-	d.id3 = tg
-	d.id3Len = id3Len
-	d.audioStart = d.id3Len
-
-	// Trailing legacy inward: ID3v1 then APEv2 before it. Strict LooksLikeID3v1 can miss
-	// odd-year/control-byte trailers (and coexisting APE); accepted vs false-flagging audio.
-
-	tailEnd := size
-	// Scan back in 128-byte steps for stacked ID3v1 runs (one --legacy strip). Strict
-	// gate per block so audio on a 128-byte boundary is not mistaken for a tag.
-
-	id3v1Start := size
-	for id3v1Start-128 >= d.audioStart {
-		block, err := bits.ReadSlice(src, id3v1Start-128, 128, limit)
-		if err != nil || !id3.LooksLikeID3v1(block) {
-			break
-		}
-		id3v1Start -= 128
+	d.id3, d.id3Len = tg, id3Len
+	lenient := false // the start is the one lenientStart found
+	at, stream, leading, err := id3.StreamBehindFront(src, id3Len, limit, Codec{}, "MPEG frame", func(from int64) (at int64, ok bool, err error) {
+		at, ok, err = lenientStart(src, from, limit, opts.Limits.MaxElements)
+		lenient = ok
+		return at, ok, err
+	})
+	if err != nil {
+		return nil, err
 	}
-	if id3v1Start < size {
-		if run, err := bits.ReadSlice(src, id3v1Start, size-id3v1Start, limit); err == nil {
-			d.id3v1 = run
-			tailEnd = id3v1Start
-			// Report the run length: a re-tagging tool can leave several stacked ID3v1 tags.
-			msg := "legacy ID3v1 tag follows the audio; preserved"
-			if blocks := (size - id3v1Start) / 128; blocks > 1 {
-				msg = fmt.Sprintf("%d stacked legacy ID3v1 tags follow the audio; preserved", blocks)
-			}
-			warnings = core.Warn(warnings, core.WarnTrailingID3v1, msg)
+	d.firstFrameOff = at
+
+	// No tag starts inside the first frame.
+	floor := d.firstFrameOff
+	if stream {
+		head, err := bits.ReadSlice(src, d.firstFrameOff, min(size-d.firstFrameOff, 4), limit)
+		if err != nil {
+			return nil, err
+		}
+		if h, ok := decodeHeader(head); ok {
+			floor += max(int64(frameLength(h)), 4)
 		}
 	}
-	var apeTag *ape.Tag
-	if at, ok, _ := ape.ParseAt(src, tailEnd, limit, opts.Limits.MaxElements); ok && at.Offset >= d.audioStart {
-		if apeBytes, err := bits.ReadSlice(src, at.Offset, at.Size, limit); err == nil {
-			d.ape = apeBytes
-			d.apeOffset = at.Offset
-			d.apeTag = at
-			tailEnd = at.Offset
-			apeTag = at
-			warnings = core.Warn(warnings, core.WarnLegacyAPE,
-				"APEv2 tag present; preserved")
+
+	// The first frame found before the tags gives the audio properties and, with the tags peeled,
+	// where the audio ends. Asked again without the tags, the end sees the file as a strip leaves it,
+	// so it reads its window from the source it is given; what the last asking found stands.
+	var info mpegInfo
+	var end measure
+	found := false
+	first, peeled := measure{end: -1}, int64(-1) // the first measure, over the file, and where its tags begin
+	d.layout, err = tail.ScanLegacy(src, size, floor, limit, opts.Limits.MaxElements, func(in core.ReaderAtSized, boundary int64) (int64, error) {
+		info, end, found = mpegInfo{}, measure{}, false
+		if !stream {
+			return -1, nil
 		}
+		window, err := bits.ReadSlice(in, d.firstFrameOff, min(boundary-d.firstFrameOff, scanWindow), limit)
+		if err != nil {
+			// The bytes exist; surface the failed read rather than report no audio.
+			return 0, err
+		}
+		i, f, ok := parseMPEG(window)
+		if !ok {
+			return -1, nil
+		}
+		info, found = f, true
+		end, err = audioEnd(ctx, in, f, d.firstFrameOff+int64(i), boundary, limit)
+		if peeled < 0 {
+			first, peeled = end, boundary
+		}
+		return end.end, err
+	})
+	if err != nil {
+		return nil, err
 	}
-	d.audioEnd = max(tailEnd, d.audioStart)
+	if lenient && !found {
+		// The scan above, reading on to the tags it peels, finds no audio at the frame lenientStart
+		// took, so that frame starts nothing and no gap sits before it; the tags stay as scanned.
+		d.firstFrameOff, leading = id3Len, nil
+	}
+	warnings = append(warnings, leading...)
 
-	// Audio properties from the first MPEG frame (and its VBR header, for length).
-	win := min(d.audioEnd-d.audioStart, scanWindow)
-	if window, err := bits.ReadSlice(src, d.audioStart, win, limit); err == nil {
-		if info, ok := parseMPEG(window); ok {
-			d.firstHeader = info.header
-			d.track = buildTrack(info, d.audioEnd-d.audioStart)
-			// Xing frame count → duration → average bitrate. Truncation: average falls
-			// below 8 kbps (incl. 0). CBR without Xing count: undetectable here.
-
-			if info.vbrFrames > 0 && d.track.Bitrate < 8000 {
-				warnings = core.Warn(warnings, core.WarnTruncatedAudio,
-					"fewer audio frames than the Xing/Info header declares; file may be truncated")
-			}
-		} else if d.audioEnd > d.audioStart {
-			// Non-empty essence with no MPEG frame: not audio. Shared no-audio warning;
-			// set/plan/verify refuse (distinct from empty-range no-audio).
-
-			warnings = core.Warn(warnings, core.WarnNoAudioFrames,
-				"no MPEG audio frames found; file may not be audio")
+	// The ID3v2 projection comes first, as the tail's legacy family entries sit behind its values,
+	// flagged as conflicts when they disagree; what the tail cannot carry (a binary APE item, a
+	// Lyrics3 block) is opaque, so the safe fix keeps it and dump surfaces it.
+	media := &core.Media{Format: core.FormatMP3, Native: d, Tags: tag.NewTagSet()}
+	var proj id3.Projection
+	if d.id3 != nil {
+		proj = id3.Project(d.id3)
+		media.Tags, media.Pictures, media.Chapters = proj.Tags, proj.Pictures, proj.Chapters
+		media.SyncedLyrics, media.Families = proj.SyncedLyrics, proj.Families
+	}
+	ws, audioBytes := d.layout.Project(media, d.firstFrameOff, "after the MPEG stream")
+	warnings = append(warnings, ws...)
+	if found {
+		if end.joined {
+			// The stream goes on where the header's byte count ends, so the header counts only part of
+			// it, and its frame count gives no duration either.
+			info.vbrFrames = 0
 		}
+		if end.gap > 0 {
+			warnings = core.Warn(warnings, core.WarnTrailingBytes, fmt.Sprintf(
+				"%d byte(s) between the MPEG frames belong to no frame, a tag perhaps, and the frames go on past them, so they stay in the audio essence; preserved verbatim",
+				end.gap))
+		}
+		warnings = id3.WarnJoinedTags(warnings, end.tags, "MPEG")
+		d.firstHeader = info.header
+		d.track = buildTrack(info, audioBytes)
+		// A header's byte count past the tags by a frame or more is a truncation, and so is a byte
+		// count or a frame that claims audio past a tag found before them, where the audio ends, unless
+		// the stream goes on after the tag. Where frames follow the tag, the measure over the file
+		// itself, the tag's bytes inside the stream, says how far a byte count runs past the file.
+		// Without a byte count that covers a frame, a frame count shows one only by an average bitrate
+		// below 8 kbps (incl. 0); CBR without a header or such a tag: undetectable here.
+		tagged := d.layout.Start < peeled
+		on := tagged && end.end > d.layout.Start
+		past, n := end.past, end.past
+		switch {
+		case on && end.last >= d.layout.Start:
+			past, n = first.past, first.past
+		case tagged && end.end < 0:
+			n = end.counted - d.layout.Start
+		}
+		switch {
+		case past > 0:
+			warnings = core.WarnTruncated(warnings, fmt.Sprintf("the VBR header, by %d byte(s),", n))
+		case tagged && !on && first.claim > d.layout.Start:
+			warnings = core.WarnTruncated(warnings, fmt.Sprintf("the last MPEG frame, by %d byte(s),", first.claim-d.layout.Start))
+		case info.byteCount() == 0 && info.vbrFrames > 0 && d.track.Bitrate < 8000:
+			warnings = core.Warn(warnings, core.WarnTruncatedAudio,
+				"fewer audio frames than the Xing/Info header declares; file may be truncated")
+		}
+	} else if audioBytes > 0 {
+		// Non-empty essence with no MPEG frame: not audio. Shared no-audio warning;
+		// set/plan/verify refuse (distinct from empty-range no-audio).
+
+		warnings = core.Warn(warnings, core.WarnNoAudioFrames,
+			"no MPEG audio frames found; file may not be audio")
 	}
 	if d.track.Codec == "" {
 		d.track.Codec = "MPEG audio"
 	}
 
-	media := &core.Media{
-		Format:     core.FormatMP3,
-		Native:     d,
-		AudioStart: d.audioStart,
-		AudioEnd:   d.audioEnd,
-	}
-	media.Tags = tag.NewTagSet()
 	if d.id3 != nil {
-		proj := id3.Project(d.id3)
-		media.Tags = proj.Tags
-		media.Pictures = proj.Pictures
-		media.Chapters = proj.Chapters
 		core.OpenPastDurationEnds(media.Chapters, d.track.Duration)
-		media.SyncedLyrics = proj.SyncedLyrics
-		media.Families = proj.Families
 		if proj.NumericGenre {
 			warnings = core.Warn(warnings, core.WarnNumericGenre,
 				"a numeric genre reference was resolved to a name")
@@ -127,20 +168,29 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		warnings = append(warnings, id3.EncoderNoise(d.id3)...)
 	}
 
-	// Legacy family/source entries (ID3v1, APEv2): surfaced for the family view,
-	// flagged as conflicts when they disagree with the authoritative ID3v2 value.
-	media.Families = append(media.Families, legacyFamilies(media.Tags, d.id3v1, apeTag)...)
-
-	// An APEv2 with a binary/cover/locator item (NonText) holds content Pairs() skips, so
-	// a legacy strip cannot prove it redundant. Mark it so the safe fix preserves it and
-	// dump surfaces it. ID3v1 is pure text and never opaque.
-	media.LegacyOpaqueContent = apeHasNonText(apeTag)
-
 	media.Properties = core.Properties{Container: "MP3", Tracks: []core.AudioTrack{d.track}}
 	media.Warnings = warnings
-	media.Identity = core.Identity{Size: size}
-	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media)
+	if err := core.SetIdentity(src, media); err != nil {
+		return nil, err
+	}
 	return media, nil
+}
+
+// lenientStart finds the first frame the parser's own scan accepts, one whose next frame agrees, a
+// free-format one, or one whose next frame would lie past the scanned bytes: at most scanWindow of
+// them from from, none at or past where the tags at the end of the file begin, as a tail scan
+// floored at from finds them with no audio end. So no frame is looked for inside those tags.
+func lenientStart(src core.ReaderAtSized, from, limit int64, maxElements int) (int64, bool, error) {
+	l, err := tail.ScanLegacy(src, src.Size(), from, limit, maxElements, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	window, err := bits.ReadSlice(src, from, min(l.Start-from, scanWindow), limit)
+	if err != nil {
+		return 0, false, err
+	}
+	i, _, ok := firstFrame(window, confirmNextFrame)
+	return from + int64(i), ok, nil
 }
 
 // buildTrack assembles the audio properties, computing an accurate duration from
@@ -163,43 +213,4 @@ func buildTrack(info mpegInfo, audioBytes int64) core.AudioTrack {
 		}
 	}
 	return t
-}
-
-// apeHasNonText reports whether an APEv2 tag carries a binary/cover/locator item
-// (NonText), which Pairs() skips and a legacy strip cannot prove redundant. parse and
-// buildResult share it. A nil tag is never opaque.
-func apeHasNonText(t *ape.Tag) bool {
-	if t == nil {
-		return false
-	}
-	for _, it := range t.Items {
-		if it.NonText() {
-			return true
-		}
-	}
-	return false
-}
-
-// legacyFamilies builds family/source entries for the trailing ID3v1 and APEv2
-// containers. Each entry is marked unselected (a conflict) when its value
-// disagrees with the authoritative ID3v2 value for the same key.
-func legacyFamilies(auth tag.TagSet, id3v1 []byte, apeTag *ape.Tag) []core.FamilyValue {
-	var out []core.FamilyValue
-	add := func(key tag.Key, value string, fam core.Family) {
-		out = append(out, core.FamilyValue{
-			Key: key, Family: fam, Scope: core.ScopeTrack,
-			Values: []string{value}, Selected: core.FamilySelected(auth, key, value), Legacy: true,
-		})
-	}
-	if v1, ok := id3.ParseV1(id3v1); ok {
-		for _, p := range v1.Pairs() {
-			add(p.Key, p.Value, core.FamilyID3v1)
-		}
-	}
-	if apeTag != nil {
-		for _, p := range apeTag.Pairs() {
-			add(p.Key, p.Value, core.FamilyAPEv2)
-		}
-	}
-	return out
 }

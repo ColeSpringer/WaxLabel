@@ -14,7 +14,7 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// maxHeaderBytes caps the leading Header read (stops a huge declared size).
+// maxHeaderBytes bounds the leading read when the Header Object declares a bogus size.
 const maxHeaderBytes = 64 << 20
 
 // hundredNS is the ASF duration tick.
@@ -30,6 +30,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	limit := opts.Limits.MaxAllocBytes
 
 	head, err := bits.ReadSlice(src, 0, min(size, objectHeaderLen), limit)
+	if fatal := bits.Fatal(err); fatal != nil {
+		return nil, fatal
+	}
 	if err != nil || len(head) < objectHeaderLen {
 		return nil, fmt.Errorf("%w: ASF file shorter than an object header", waxerr.ErrInvalidData)
 	}
@@ -38,11 +41,12 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if headerLen < 30 || headerLen > size {
 		headerLen = 0
 	}
+	// A declared header is read whole or refused; a bogus one is read up to a fixed window.
 	window := headerLen
 	if window <= 0 {
-		window = size
+		window = min(size, maxHeaderBytes)
 	}
-	buf, err := bits.ReadSlice(src, 0, min(window, min(limit, maxHeaderBytes)), limit)
+	buf, err := bits.ReadSlice(src, 0, window, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +56,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 
 	d := &doc{size: size, headerEnd: headerLen}
-	d.dataStart, d.dataEnd = locateData(src, headerLen, size, limit)
+	if d.dataStart, d.dataEnd, err = locateData(src, headerLen, size, limit); err != nil {
+		return nil, err
+	}
 	var contribs []core.Contribution
 	var warnings []core.Warning
 	// ffmpeg often writes Content Description and repeats as Extended Content
@@ -118,35 +124,37 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		warnings = core.WarnInvalidKey(warnings, name)
 	}
 	media.Warnings = warnings
-	media.Identity = core.Identity{Size: size}
-	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media)
+	if err := core.SetIdentity(src, media); err != nil {
+		return nil, err
+	}
 	return media, nil
 }
 
 // locateData finds the Data Object after the Header and returns its packet extent.
 // Bound at declared end so trailing Simple Index is not folded into the digest.
-// Unknown header length or missing Data Object yields a zero extent.
-func locateData(src core.ReaderAtSized, headerEnd, size, limit int64) (start, end int64) {
+// Unknown header length or missing Data Object yields a zero extent; a read that fails fatally
+// ([bits.Fatal]) is the error.
+func locateData(src core.ReaderAtSized, headerEnd, size, limit int64) (start, end int64, err error) {
 	if headerEnd <= 0 || headerEnd+objectHeaderLen > size {
-		return 0, 0
+		return 0, 0, nil
 	}
 	head, err := bits.ReadSlice(src, headerEnd, objectHeaderLen, limit)
 	if err != nil {
-		return 0, 0
+		return 0, 0, bits.Fatal(err)
 	}
 	var id guid
 	copy(id[:], head[0:16])
 	if id != guidData {
-		return 0, 0
+		return 0, 0, nil
 	}
 	objLen := int64(binary.LittleEndian.Uint64(head[16:24]))
 	// Body opens with File ID (16) + packet count (8) + reserved (2).
 	const dataHeaderLen = objectHeaderLen + 16 + 8 + 2
 	// Check with subtraction: headerEnd+objLen can overflow int64.
 	if objLen < dataHeaderLen || objLen > size-headerEnd {
-		return 0, 0
+		return 0, 0, nil
 	}
-	return headerEnd + dataHeaderLen, headerEnd + objLen
+	return headerEnd + dataHeaderLen, headerEnd + objLen, nil
 }
 
 // readFileProperties: play duration, preroll, declared file size.

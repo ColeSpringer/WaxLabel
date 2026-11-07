@@ -17,10 +17,6 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// maxMetaChunk bounds the metadata chunks (LIST, id3) read into memory. The data
-// chunk is never read here; only its range is recorded.
-const maxMetaChunk = 64 << 20
-
 // maxFactChunk bounds the "fact" read. Only the leading 4-byte dwSampleLength is
 // decoded; the format-specific fields a longer fact chunk may carry are copied
 // verbatim on rewrite.
@@ -40,8 +36,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	size := src.Size()
 	limit := opts.Limits.MaxAllocBytes
 
-	hdr, err := bits.ReadSlice(src, 0, 12, limit)
-	if err != nil {
+	hdr, err := bits.ReadSlice(src, 0, min(size, 12), limit)
+	if fatal := bits.Fatal(err); fatal != nil {
+		return nil, fatal
+	}
+	if err != nil || len(hdr) < 12 {
 		return nil, fmt.Errorf("%w: WAV file shorter than a RIFF header", waxerr.ErrInvalidData)
 	}
 	form := string(hdr[0:4])
@@ -136,7 +135,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// The first INFO list is authoritative; parse it and mark any extras dropped.
 	if len(infoIdxs) > 0 {
 		i := infoIdxs[0]
-		body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, min(d.chunks[i].bodyLen, maxMetaChunk), limit)
+		body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, d.chunks[i].bodyLen, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -148,9 +147,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			return nil, err
 		}
 		if err == nil {
-			// Bytes a rewrite destroys: those the item model does not carry, plus any past
-			// the maxMetaChunk cut. The error path leaves it 0.
-			d.infoTail = int64(unread) + max(0, d.chunks[i].bodyLen-int64(len(body)))
+			// Bytes a rewrite destroys: those the item model does not carry. The error path
+			// leaves it 0.
+			d.infoTail = int64(unread)
 			// Suppress the read warning when the walker clamped this chunk to EOF, which
 			// oversized-chunk or unknown-chunk-size already reports.
 			infoTailClamped = i == len(d.chunks)-1 &&
@@ -161,7 +160,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		markDup(d, infoIdxs[1:])
 		// Record what each dropped LIST/INFO holds; the writer grades it against what it stores.
 		for _, j := range infoIdxs[1:] {
-			body, err := bits.ReadSlice(src, d.chunks[j].bodyOff, min(d.chunks[j].bodyLen, maxMetaChunk), limit)
+			body, err := bits.ReadSlice(src, d.chunks[j].bodyOff, d.chunks[j].bodyLen, limit)
+			if fatal := bits.Fatal(err); fatal != nil {
+				return nil, fatal
+			}
 			if err != nil {
 				continue
 			}
@@ -177,7 +179,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// duplicate or a corrupt one beside a valid one, is marked dropped so the output
 	// never carries two.
 	for _, i := range id3Idxs {
-		body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, min(d.chunks[i].bodyLen, maxMetaChunk), limit)
+		body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, d.chunks[i].bodyLen, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -199,7 +201,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 				continue
 			}
 			d.chunks[i].dupTag = true
-			body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, min(d.chunks[i].bodyLen, maxMetaChunk), limit)
+			body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, d.chunks[i].bodyLen, limit)
+			if fatal := bits.Fatal(err); fatal != nil {
+				return nil, fatal
+			}
 			if err != nil {
 				continue
 			}
@@ -265,8 +270,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 	media.Properties = core.Properties{Container: d.containerName(), Tracks: []core.AudioTrack{d.track}}
 	media.Warnings = warnings
-	media.Identity = core.Identity{Size: size}
-	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media)
+	if err := core.SetIdentity(src, media); err != nil {
+		return nil, err
+	}
 	return media, nil
 }
 

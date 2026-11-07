@@ -5,21 +5,24 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
+	"github.com/colespringer/waxlabel/internal/tail"
 )
 
 // doc is the AAC native document: optional front ID3v2 tag (sole writable store),
-// ADTS geometry, and first-frame config for the essence digest. Satisfies
-// [core.NativeDoc].
+// ADTS geometry, first-frame config for the essence digest, and the legacy tail.
+// Satisfies [core.NativeDoc].
 type doc struct {
 	id3    *id3.Tag // front ID3v2 (nil if none)
 	id3Len int64    // on-disk ID3v2 region length (0 if none)
 
-	audioStart int64      // first ADTS byte (== id3Len)
-	audioEnd   int64      // ADTS stream end (EOF)
-	header     adtsHeader // first frame header (essence config)
-	track      core.AudioTrack
+	// firstFrameOff is the first ADTS frame: id3Len, or past chained tags or a gap, which a rewrite
+	// keeps after the new tag, out of the essence.
+	firstFrameOff int64
+	header        adtsHeader // first frame header (essence config)
+	track         core.AudioTrack
 
-	size int64
+	// layout is what follows the frames, which end at layout.Start; every tag in it is legacy.
+	layout tail.Layout
 }
 
 func (d *doc) Format() core.Format { return core.FormatAAC }
@@ -30,6 +33,7 @@ func (d *doc) Clone() core.NativeDoc {
 	if d.id3 != nil {
 		c.id3 = d.id3.Clone()
 	}
+	c.layout = d.layout.Clone()
 	return &c
 }
 
@@ -49,9 +53,12 @@ func (d *doc) Describe() []core.NativeEntry {
 			out = append(out, core.NativeEntry{Kind: "  " + f.ID, Size: len(f.Body), Note: id3.FrameNote(f)})
 		}
 	}
+	if gap := d.firstFrameOff - d.id3Len; gap > 0 {
+		out = append(out, core.LeadingBytesEntry(gap))
+	}
 	out = append(out, core.NativeEntry{
-		Kind: "ADTS audio", Size: int(d.audioEnd - d.audioStart),
+		Kind: "ADTS audio", Size: int(d.layout.Start - d.firstFrameOff),
 		Note: d.track.Codec,
 	})
-	return out
+	return append(out, d.layout.Entries("ADTS audio")...)
 }

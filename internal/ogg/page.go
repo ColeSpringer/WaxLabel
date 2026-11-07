@@ -58,14 +58,17 @@ func scanPages(ctx context.Context, src core.ReaderAtSized, size, limit, scanBud
 		}
 		hdr, e := bits.ReadSlice(src, off, pageFixedHdr, limit)
 		if e != nil {
-			// Within file by loop guard: real I/O error, not clean EOF.
-			return nil, off, fmt.Errorf("%w: read page header at %d: %v", waxerr.ErrInvalidData, off, e)
+			// Within file by loop guard: over the limit or a real I/O error, not clean EOF.
+			return nil, off, fmt.Errorf("read page header at %d: %w", off, e)
 		}
 		if !bytes.Equal(hdr[0:4], oggMagic) || hdr[4] != 0 {
 			break // not a page boundary here; stop the scan (trailing junk / next stream)
 		}
 		segCount := int64(hdr[26])
 		segs, e := bits.ReadSlice(src, off+pageFixedHdr, segCount, limit)
+		if fatal := bits.Fatal(e); fatal != nil {
+			return nil, off, fatal
+		}
 		if e != nil {
 			return nil, off, fmt.Errorf("%w: truncated segment table at %d", waxerr.ErrInvalidData, off)
 		}

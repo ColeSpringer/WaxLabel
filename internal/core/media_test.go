@@ -18,3 +18,14 @@ func TestCloneDetachesTextItems(t *testing.T) {
 		t.Errorf("mutating the clone changed the original: %+v / %+v", m.Comments, m.Lyrics)
 	}
 }
+
+// TestFamilyNumbering: nothing projects Lyrics3, so its slot is retired but kept, and the families
+// after it keep the numbers the root package re-exports.
+func TestFamilyNumbering(t *testing.T) {
+	if got := Family(5).String(); got != "unknown" {
+		t.Errorf("Family(5) = %q, want unknown", got)
+	}
+	if FamilyAPEv2 != 4 || FamilyMP4 != 6 || FamilyASF != 10 {
+		t.Errorf("APEv2, MP4, ASF = %d, %d, %d; want 4, 6, 10", FamilyAPEv2, FamilyMP4, FamilyASF)
+	}
+}

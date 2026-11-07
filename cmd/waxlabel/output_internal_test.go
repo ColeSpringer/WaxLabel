@@ -1,17 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/atomicfile"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -210,5 +214,139 @@ func TestPerFileReasonAndEntryAgree(t *testing.T) {
 				t.Errorf("errorEntry message = %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+// TestClassifyWalkReadFault: a device error while a parse walks the stream to find where its audio
+// ends keeps its cause, so it is an I/O failure (exit 6), not corrupt data (exit 4).
+func TestClassifyWalkReadFault(t *testing.T) {
+	flac, err := os.ReadFile(td("sample.flac"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wv, err := os.ReadFile(td("sample.wv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		data []byte
+		at   int // a byte only the walk reads
+	}{
+		{"the FLAC frame walk", flac, bytes.LastIndex(flac, []byte{0xFF, 0xF8, 0x79, 0x88, 0x09})}, // the last frame's header
+		{"the WavPack block walk", wv, 14744},                                                      // the second block's header
+	} {
+		_, err := wl.Parse(context.Background(), &testfile.Faulty{Src: wl.BytesSource(c.data), Fails: testfile.Covering(int64(c.at))})
+		if cl := classifyError(err); cl.exitCode != 6 || cl.code != "io" {
+			t.Errorf("%s: %v classifies (%d,%q), want (6,%q)", c.name, err, cl.exitCode, cl.code, "io")
+		}
+	}
+}
+
+// TestClassifyTolerantReadFault: a device error in bytes whose reader tolerates a short read or an
+// absent structure is an I/O failure (exit 6), as is one in bytes only the metadata fingerprint
+// reads.
+func TestClassifyTolerantReadFault(t *testing.T) {
+	skipped := testfile.WAVChunk("junk", bytes.Repeat([]byte{0x5A}, 4096)) // past the 1 KiB detection sniffs
+	wav := testfile.WAV(testfile.WAVFmtPCM(), skipped, testfile.WAVData(64))
+	for _, c := range []struct {
+		name string
+		data []byte
+		at   int64
+	}{
+		{"the Musepack stream header", fixtureBytes(t, "chapters.mpc"), 1500},
+		{"the Monkey's Audio header", fixtureBytes(t, "sample.ape"), 2000},
+		{"an Ogg header page body", fixtureBytes(t, "sample.ogg"), 1500},
+		{"an Ogg segment table", fixtureBytes(t, "sample.opus"), 14874},
+		{"the MP4 mvhd", fixtureBytes(t, "sample.m4a"), 9065},
+		{"the MP4 chapter track", fixtureBytes(t, "sample_chapters.m4b"), 19795},
+		{"the Matroska Cues", fixtureBytes(t, "sample.mka"), 13431},
+		{"a WAV chunk only the fingerprint reads", wav, int64(bytes.Index(wav, skipped) + 2048)},
+	} {
+		_, err := wl.Parse(context.Background(), &testfile.Faulty{Src: wl.BytesSource(c.data), Fails: testfile.Covering(c.at)})
+		if cl := classifyError(err); cl.exitCode != 6 || cl.code != "io" {
+			t.Errorf("%s: %v classifies (%d,%q), want (6,%q)", c.name, err, cl.exitCode, cl.code, "io")
+		}
+	}
+}
+
+// fixtureBytes reads the testdata fixture name.
+func fixtureBytes(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(td(name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// shortSource is a source that declares size bytes but holds only data, as a file cut short under a
+// parse does: its reads past data end early with io.EOF.
+type shortSource struct {
+	data []byte
+	size int64
+}
+
+func (s shortSource) Size() int64 { return s.size }
+
+func (s shortSource) ReadAt(p []byte, off int64) (int, error) {
+	if off >= int64(len(s.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, s.data[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// TestClassifyHeaderReadFault: an ordinary header read fails by the walks' rule. A device error keeps
+// its cause, so it is an I/O failure (exit 6); a source that ends before the bytes the header declares
+// is corrupt data (exit 4).
+func TestClassifyHeaderReadFault(t *testing.T) {
+	flac, err := os.ReadFile(td("sample.flac"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const at = 4000 // inside the PADDING block the metadata walk reads, past the 1 KiB detection sniffs
+	for _, c := range []struct {
+		name string
+		src  wl.ReaderAtSized
+		exit int
+		code string
+	}{
+		{"a device error", &testfile.Faulty{Src: wl.BytesSource(flac), Fails: testfile.Covering(at)}, 6, "io"},
+		{"a short read", shortSource{flac[:at], int64(len(flac))}, 4, "invalid-data"},
+	} {
+		_, err := wl.Parse(context.Background(), c.src)
+		if cl := classifyError(err); cl.exitCode != c.exit || cl.code != c.code {
+			t.Errorf("%s: %v classifies (%d,%q), want (%d,%q)", c.name, err, cl.exitCode, cl.code, c.exit, c.code)
+		}
+	}
+}
+
+// TestClassifyDetectionReadFault: a device error while format detection reads the file is an I/O
+// failure (exit 6), in the first KiB and in the window after a leading tag, while a file whose first
+// bytes match no format is still unsupported (exit 3).
+func TestClassifyDetectionReadFault(t *testing.T) {
+	flac, err := os.ReadFile(td("sample.flac"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tag := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", strings.Repeat("x", 2000)))
+	for _, c := range []struct {
+		name string
+		src  wl.ReaderAtSized
+		exit int
+		code string
+	}{
+		{"a device error in the first KiB", &testfile.Faulty{Src: wl.BytesSource(flac), Fails: testfile.Covering(100)}, 6, "io"},
+		{"a device error in the window after a leading tag", &testfile.Faulty{Src: wl.BytesSource(slices.Concat(tag, flac)), Fails: testfile.Covering(int64(len(tag) + 100))}, 6, "io"},
+		{"bytes that match no format", wl.BytesSource([]byte("matches no format at all")), 3, "unsupported-format"},
+	} {
+		_, err := wl.Parse(context.Background(), c.src)
+		if cl := classifyError(err); cl.exitCode != c.exit || cl.code != c.code {
+			t.Errorf("%s: %v classifies (%d,%q), want (%d,%q)", c.name, err, cl.exitCode, cl.code, c.exit, c.code)
+		}
 	}
 }

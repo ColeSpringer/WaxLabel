@@ -78,6 +78,9 @@ func (d *Document) verifySource(src core.ReaderAtSized, current core.Identity, s
 	}
 	if parsed.HasFinger {
 		fp, ok, err := core.ReadFingerprint(src, d.media)
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			err = nil // a source cut short since the parse is a changed file, not corrupt data
+		}
 		if err != nil {
 			return fmt.Errorf("%w: the metadata fingerprint could not be re-read (%w)", waxerr.ErrSourceChanged, err)
 		}
@@ -413,7 +416,10 @@ func (r *readErrors) ReadAt(p []byte, off int64) (int, error) {
 
 func (p *Plan) checkOutput(ctx context.Context, out core.ReaderAtSized, srcEssence []byte) (*Document, error) {
 	format := p.doc.media.Format
-	codec, ok := detectCodec(out)
+	codec, ok, err := detectCodec(out)
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, fmt.Errorf("%w: the output would no longer be recognizable as %s", waxerr.ErrInvalidData, format)
 	}

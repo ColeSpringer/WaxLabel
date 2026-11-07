@@ -3,9 +3,11 @@ package waxlabel_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"math"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -121,6 +123,42 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte{0xFF, 0xF1, 0x50, 0x40, 0x01, 0x00, 0xFC})                                                                               // valid ADTS header, frame_length 8 but only 7 bytes present (short payload)
 	f.Add([]byte{0xFF, 0xF1, 0x50, 0x00, 0x00, 0x00, 0x00})                                                                               // ADTS sync but frame_length 0 (below header)
 	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), 0xFF, 0xF1, 0x50, 0x40, 0x01, 0x5F, 0xFC))                                    // empty front ID3 then a bare ADTS frame
+	// WavPack and Monkey's Audio behind a leading ID3v2.
+	f.Add(append(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "x")), wvBlock(1|wvRate44k|wvFinal, 4410, make([]byte, 16))...))
+	f.Add(append(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "x")), append(legacyAPEHeader(3970, 2000, 0, 2, 44100, 1, 100), make([]byte, 64)...)...))
+	// Streams behind a leading tag and a gap or a second tag, and Ogg behind a Skeleton page.
+	f.Add(slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "x")), []byte{1, 2, 3}, adtsStream(2, 3, 16)))
+	f.Add(slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "x")), []byte{1, 2, 3}, mp3Frames(3)))
+	f.Add(slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "x")), []byte{1, 2, 3}, wvBlock(1|wvRate44k|wvFinal, 4410, make([]byte, 16))))
+	f.Add(slices.Concat(testfile.ID3v2(4), testfile.ID3v2(4, testfile.TextFrame(4, "TALB", "y")), testfile.TaggedFLAC("x")))
+	f.Add(slices.Concat(testfile.OggPage(2, 0, 7, 0, []byte("fishead\x00\x03\x00")), testfile.OggPage(2, 0, 1, 0, []byte("\x01vorbis\x00"))))
+	// Streams joined past the ID3 tags a file opens with, and a truncated MP3 with a tag after its last
+	// whole frame.
+	f.Add(slices.Concat(adtsStream(2, 2, 16), testfile.ID3v2(4), adtsStream(2, 2, 16), testfile.ID3v1("t", "", "", "", "", 255), adtsStream(2, 2, 16)))
+	f.Add(slices.Concat(mp3Frames(3), testfile.ID3v2(4, testfile.TextFrame(4, "TSSE", "x")), mp3Frames(3)))
+	truncated := mp3VBRStream(4, 6)
+	truncated[43] = 3 // frame count and byte count present
+	binary.BigEndian.PutUint32(truncated[48:52], 6*417)
+	f.Add(slices.Concat(truncated, apeTagText(map[string]string{"Title": "a"}), trailerJunk(10)))
+	// Streams cut inside a frame, then a tag longer than the frame's rest and junk.
+	long := apeTagText(map[string]string{"Comment": strings.Repeat("c", 600)})
+	f.Add(slices.Concat(truncated[:2*417+300], long, trailerJunk(10)))
+	f.Add(slices.Concat(adtsStream(2, 3, 300)[:2*307+100], long, trailerJunk(10)))
+	// Streams followed by two APE tags, junk, a Lyrics3 block and stacked ID3v1 tags: APE-tagged ones
+	// whose audio end is known (WavPack, SV8) or not (SV7), and MP3, ADTS and FLAC, whose tags are all
+	// legacy, the MP3 end found by a VBR header's byte count (notags.mp3) or by the frames, the FLAC
+	// end by the frame walk over the one-frame stream or notags.flac.
+	streams := [][]byte{wvBlock(1|wvRate44k|wvFinal, 4410, make([]byte, 16)), mpcSV8(44100, 0, 0, 2), mpcSV7(4, 0),
+		mp3VBRStream(3, 3), mp3Frames(3), adtsStream(2, 3, 16), []byte(flacTail + "\xff\xf8\x19\x18\x00\xed\x00\x12\x34\x00\x12\x34\x60\x78")}
+	for _, p := range []string{notagsMP3, notagsFLAC} {
+		if b, err := os.ReadFile(p); err == nil {
+			streams = append(streams, b)
+		}
+	}
+	for _, stream := range streams {
+		f.Add(slices.Concat(stream, apeTagText(map[string]string{"Title": "a"}), apeTagText(map[string]string{"Title": "b"}), trailerJunk(40),
+			testfile.Lyrics3v2([2]string{"LYR", "x"}), testfile.ID3v1("t", "", "", "", "", 255), testfile.ID3v1("u", "", "", "", "", 255)))
+	}
 	// Regression seeds recovered from prior fuzz runs.
 	f.Add([]byte("\x00\x00\x00\bftyp0000moov0")) // MP4: 8-byte ftyp box then a short moov tail
 	f.Add([]byte("RIFF0000WAVE000000000"))       // WAV: RIFF/WAVE with ASCII-digit chunk sizes

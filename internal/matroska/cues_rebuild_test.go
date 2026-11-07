@@ -63,7 +63,8 @@ func collectCueUint(t *testing.T, cues []byte, want uint64) []uint64 {
 	walk = func(s, e int64) {
 		_ = eachChild(rs, s, e, bits.NewDepth(64), maxElement, func(c element) error {
 			if c.id == want {
-				out = append(out, readUint(rs, c, maxElement))
+				v, _ := readUint(rs, c, maxElement)
+				out = append(out, v)
 			}
 			switch c.id {
 			case idCues, idCuePoint, idCueTrackPos:
@@ -414,7 +415,7 @@ func validateNestedCRCs(t *testing.T, raw []byte) int {
 		_ = eachChild(rs, start, end, bits.NewDepth(64), maxElement, func(c element) error {
 			switch c.id {
 			case idCues, idCuePoint, idCueTrackPos, idSeekHead, idSeek:
-				if first, ok := readElement(rs, c.dataStart, c.dataEnd, maxElement); ok &&
+				if first, ok, _ := readElement(rs, c.dataStart, c.dataEnd, maxElement); ok &&
 					first.id == idCRC32 && first.dataEnd-first.dataStart == 4 {
 					stored, _ := bits.ReadSlice(rs, first.start, first.dataEnd-first.start, maxElement)
 					content, _ := bits.ReadSlice(rs, first.dataEnd, c.dataEnd-first.dataEnd, maxElement)

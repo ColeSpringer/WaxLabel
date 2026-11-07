@@ -68,6 +68,22 @@ type failingReaderAt struct{ size int64 }
 func (f failingReaderAt) ReadAt([]byte, int64) (int, error) { return 0, errDisk }
 func (f failingReaderAt) Size() int64                       { return f.size }
 
+// TestShortFingerprintRereadIsSourceChanged: a source that serves fewer bytes than its size when the
+// save re-reads the fingerprint is a changed file, not corrupt data.
+func TestShortFingerprintRereadIsSourceChanged(t *testing.T) {
+	path, _ := tempFixture(t, "sample.flac")
+	doc, err := ParseFile(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, samePath := range []bool{true, false} {
+		err := doc.verifySource(cutShort{size: doc.media.Identity.Size}, doc.media.Identity, samePath)
+		if !errors.Is(err, waxerr.ErrSourceChanged) || errors.Is(err, waxerr.ErrInvalidData) {
+			t.Errorf("samePath=%v: err = %v, want ErrSourceChanged and no invalid data", samePath, err)
+		}
+	}
+}
+
 // TestUnreadableFingerprintRefuses: a parse-time fingerprint the save cannot re-read is a
 // refusal, not a skipped check, and the refusal keeps the read's cause.
 func TestUnreadableFingerprintRefuses(t *testing.T) {

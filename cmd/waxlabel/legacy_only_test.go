@@ -102,6 +102,29 @@ func leadingTitlePictureFLAC() []byte {
 	return slices.Concat(id3, testfile.TaggedFLAC("test"))
 }
 
+// TestDumpNoteNamesLeadingBytes: bytes kept with a leading ID3v2 are opaque legacy content, and the
+// dump note names them as the lint finding does.
+func TestDumpNoteNamesLeadingBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gap.flac")
+	gap := slices.Concat(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Lead Title")), []byte{1, 2, 3}, testfile.TaggedFLAC("test"))
+	if err := os.WriteFile(path, gap, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _, code := runCLI(t, "dump", path)
+	if code != 0 {
+		t.Fatalf("dump exit = %d", code)
+	}
+	for line := range strings.Lines(out) {
+		if strings.Contains(line, "a legacy container holds non-tag content") {
+			if !strings.Contains(line, "leading bytes") {
+				t.Errorf("the opaque-content note does not name the leading bytes: %q", line)
+			}
+			return
+		}
+	}
+	t.Errorf("dump missing the opaque-content note:\n%s", out)
+}
+
 // TestDumpAndLintSurfaceLegacyOnly: dump legacy note and lint legacy-only-tags for legacy-only tag.
 func TestDumpAndLintSurfaceLegacyOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.flac")
@@ -137,7 +160,7 @@ func TestDumpShowsBothLegacyNotes(t *testing.T) {
 	if !strings.Contains(out, "only in a legacy container") {
 		t.Errorf("dump missing the legacy-only-tags note:\n%s", out)
 	}
-	if !strings.Contains(out, "non-tag metadata not shown") {
+	if !strings.Contains(out, "a legacy container holds non-tag content") {
 		t.Errorf("dump missing the opaque-content note (shadowed?):\n%s", out)
 	}
 
@@ -146,5 +169,80 @@ func TestDumpShowsBothLegacyNotes(t *testing.T) {
 		if !strings.Contains(lintOut, code) {
 			t.Errorf("lint missing %s finding:\n%s", code, lintOut)
 		}
+	}
+}
+
+// TestStackedID3v1AfterTheStream: value-bearing stacked ID3v1 after a WavPack, Monkey's Audio,
+// Musepack, MP3, ADTS or FLAC stream. lint reports the values held only there and leaves the ID3v1
+// finding unfixable, lint --fix keeps both tags, --legacy strip --strict refuses naming the keys, and
+// one --legacy strip removes the whole run.
+func TestStackedID3v1AfterTheStream(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"notags.wv", "notags.ape", "chapters.mpc", "notags.mp3", "notags.aac", "notags.flac"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			audio, err := os.ReadFile(td(name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			stacked := slices.Concat(audio, id3v1Block("First", "Album One", "", 255), id3v1Block("Second", "", "a comment", 255))
+			write := func() string {
+				path := filepath.Join(t.TempDir(), name)
+				if err := os.WriteFile(path, stacked, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			}
+
+			path := write()
+			out, _, _ := runCLI(t, "--json", "lint", path)
+			codes := map[string]jsonFinding{}
+			for _, jl := range decodeJSONList[jsonLint](t, out) {
+				for _, f := range jl.Findings {
+					codes[f.Code] = f
+				}
+			}
+			if _, ok := codes["legacy-only-tags"]; !ok {
+				t.Errorf("lint missing legacy-only-tags: %v", codes)
+			}
+			if f, ok := codes["trailing-id3v1"]; !ok || f.Fixable {
+				t.Errorf("trailing-id3v1 finding = %+v (present %v), want it present and not fixable", f, ok)
+			}
+
+			runCLI(t, "lint", "--fix", path)
+			fixed, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := trailingID3v1Count(fixed); got != 2 {
+				t.Errorf("after lint --fix, trailing ID3v1 tags = %d, want both kept", got)
+			}
+
+			strict := write()
+			_, errb, code := runCLI(t, "set", strict, "--legacy", "strip", "--strict", "--set", "ARTIST=X")
+			if code != 2 {
+				t.Errorf("--legacy strip --strict exit = %d, want 2:\n%s", code, errb)
+			}
+			for _, key := range []string{"TITLE", "ALBUM", "COMMENT"} {
+				if !strings.Contains(errb, key) {
+					t.Errorf("the refusal does not name %s:\n%s", key, errb)
+				}
+			}
+			if kept, err := os.ReadFile(strict); err != nil || !bytes.Equal(kept, stacked) {
+				t.Errorf("--strict refused but the file changed (read error %v)", err)
+			}
+
+			strip := write()
+			if _, errb, code := runCLI(t, "set", strip, "--legacy", "strip", "--set", "ARTIST=X"); code != 0 {
+				t.Fatalf("--legacy strip exit = %d\n%s", code, errb)
+			}
+			stripped, err := os.ReadFile(strip)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := trailingID3v1Count(stripped); got != 0 || bytes.Contains(stripped, []byte("Album One")) {
+				t.Errorf("after one --legacy strip, trailing ID3v1 tags = %d, want the whole run gone", got)
+			}
+		})
 	}
 }

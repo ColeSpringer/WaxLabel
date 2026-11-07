@@ -416,25 +416,10 @@ func TestVerifyComparesReparsedEssence(t *testing.T) {
 	}
 }
 
-// eioFrom reads b but fails, with an I/O error, any read that reaches offset from.
-type eioFrom struct {
-	b    []byte
-	from int64
-}
-
-func (r eioFrom) Size() int64 { return int64(len(r.b)) }
-
-func (r eioFrom) ReadAt(p []byte, off int64) (int, error) {
-	if off+int64(len(p)) > r.from {
-		return 0, &fs.PathError{Op: "read", Path: "source", Err: syscall.EIO}
-	}
-	return BytesSource(r.b).ReadAt(p, off)
-}
-
 // TestReadBackKeepsReadErrors: a read that fails during a write's read-back keeps its cause, as a
 // failed copy does, instead of reading as corrupt output. A WriteTo source that fails inside the
 // audio streams nothing, with or without verify, and an output that cannot be read at all is not
-// called unrecognizable.
+// called unrecognizable, while one cut short is invalid data by its short read.
 func TestReadBackKeepsReadErrors(t *testing.T) {
 	ctx := context.Background()
 	data := testdataBytes(t, "sample.flac")
@@ -442,7 +427,7 @@ func TestReadBackKeepsReadErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := eioFrom{b: data, from: doc.media.AudioStart}
+	src := &testfile.Faulty{Src: BytesSource(data), Fails: testfile.From(doc.media.AudioStart)}
 	for _, verify := range []bool{false, true} {
 		var opts []WriteOption
 		if verify {
@@ -466,7 +451,17 @@ func TestReadBackKeepsReadErrors(t *testing.T) {
 	if _, err := plan.verifyOutput(ctx, failingReaderAt{size: 1 << 10}, nil); !errors.Is(err, errDisk) || errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("unreadable output: err = %v, want the read error, not invalid data", err)
 	}
+	if _, err := plan.verifyOutput(ctx, cutShort{size: 1 << 10}, nil); !errors.Is(err, waxerr.ErrInvalidData) || !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("output cut short: err = %v, want invalid data from the short read", err)
+	}
 }
+
+// cutShort declares size bytes but holds none, as an output cut short under the read-back does: every
+// read ends early with io.EOF.
+type cutShort struct{ size int64 }
+
+func (c cutShort) Size() int64                       { return c.size }
+func (c cutShort) ReadAt([]byte, int64) (int, error) { return 0, io.EOF }
 
 // TestHashKeepsReadErrors: a read that fails inside the hashed bytes keeps its cause, while a source
 // that ends inside the essence is invalid data.
@@ -482,7 +477,7 @@ func TestHashKeepsReadErrors(t *testing.T) {
 		"HashAudioEssence": doc.HashAudioEssence,
 		"HashFile":         doc.HashFile,
 	} {
-		if _, err := hash(ctx, WithHashSource(eioFrom{b: data, from: mid})); !errors.Is(err, syscall.EIO) || errors.Is(err, waxerr.ErrInvalidData) {
+		if _, err := hash(ctx, WithHashSource(&testfile.Faulty{Src: BytesSource(data), Fails: testfile.From(mid)})); !errors.Is(err, syscall.EIO) || errors.Is(err, waxerr.ErrInvalidData) {
 			t.Errorf("%s with a read error: err = %v, want the read error, not invalid data", name, err)
 		}
 	}

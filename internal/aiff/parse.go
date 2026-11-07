@@ -16,9 +16,6 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// maxMetaChunk bounds the metadata chunks (native text or ID3) read into memory.
-const maxMetaChunk = 64 << 20
-
 // maxCommChunk bounds the "COMM" read: the 18 common bytes plus an AIFF-C compression
 // type. The compression name is not decoded; the chunk is copied verbatim on rewrite.
 const maxCommChunk = 64
@@ -37,8 +34,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	size := src.Size()
 	limit := opts.Limits.MaxAllocBytes
 
-	hdr, err := bits.ReadSlice(src, 0, 12, limit)
-	if err != nil {
+	hdr, err := bits.ReadSlice(src, 0, min(size, 12), limit)
+	if fatal := bits.Fatal(err); fatal != nil {
+		return nil, fatal
+	}
+	if err != nil || len(hdr) < 12 {
 		return nil, fmt.Errorf("%w: AIFF file shorter than a FORM header", waxerr.ErrInvalidData)
 	}
 	if string(hdr[0:4]) != "FORM" {
@@ -90,7 +90,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 				commFound = true
 			}
 		case isTextChunk(ch.id4()):
-			body, err := bits.ReadSlice(src, ch.bodyOff, min(ch.bodyLen, maxMetaChunk), limit)
+			body, err := bits.ReadSlice(src, ch.bodyOff, ch.bodyLen, limit)
 			if err != nil {
 				return nil, err
 			}
@@ -105,7 +105,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// duplicate or a corrupt one beside a valid one, is marked dropped so the output
 	// never carries two.
 	for _, i := range id3Idxs {
-		body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, min(d.chunks[i].bodyLen, maxMetaChunk), limit)
+		body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, d.chunks[i].bodyLen, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +128,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			}
 			d.chunks[i].dupTag = true
 			// Record what this dropped chunk holds; the writer grades it against what it stores.
-			body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, min(d.chunks[i].bodyLen, maxMetaChunk), limit)
+			body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, d.chunks[i].bodyLen, limit)
+			if fatal := bits.Fatal(err); fatal != nil {
+				return nil, fatal
+			}
 			if err != nil {
 				continue
 			}
@@ -156,7 +159,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		d.audioOff = soundDataStart(ch.bodyOff, ch.bodyLen)
 		d.audioEnd = ch.bodyOff + ch.bodyLen
 		if ch.bodyLen >= ssndHeaderLen {
-			if hdr, err := bits.ReadSlice(src, ch.bodyOff, 4, limit); err == nil {
+			hdr, err := bits.ReadSlice(src, ch.bodyOff, 4, limit)
+			if fatal := bits.Fatal(err); fatal != nil {
+				return nil, fatal
+			}
+			if err == nil {
 				ssndAlign = int64(binary.BigEndian.Uint32(hdr))
 			}
 		}
@@ -203,8 +210,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 	media.Properties = core.Properties{Container: formType, Tracks: []core.AudioTrack{d.track}}
 	media.Warnings = warnings
-	media.Identity = core.Identity{Size: size}
-	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media)
+	if err := core.SetIdentity(src, media); err != nil {
+		return nil, err
+	}
 	return media, nil
 }
 

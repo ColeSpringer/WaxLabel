@@ -2,9 +2,16 @@ package aac
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"slices"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/testfile"
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // buildADTS assembles a 7-byte ADTS fixed header (no CRC) from decoded fields.
@@ -70,11 +77,75 @@ func TestDecodeADTSConfigIndependentOfFrameLength(t *testing.T) {
 func TestEssenceExtentConfig(t *testing.T) {
 	d := &doc{header: adtsHeader{objectType: 2, sfIndex: 4, chanConfig: 2}}
 	ver, cfg := Codec{}.EssenceExtent(&core.Media{Native: d})
-	if ver != "aac-adts-v1" {
-		t.Errorf("extent version = %q, want aac-adts-v1", ver)
+	if ver != "aac-adts-v2" {
+		t.Errorf("extent version = %q, want aac-adts-v2", ver)
 	}
 	// Static fields only; never per-frame frame_length.
 	if !bytes.Equal(cfg, []byte{2, 4, 2}) {
 		t.Errorf("config = %v, want [2 4 2]", cfg)
+	}
+}
+
+// Resync confirms an ADTS frame only by a second header at its frame length, inside the window, that
+// agrees on object type, rate index and channel config.
+func TestResyncNeedsAnAgreeingSecondHeader(t *testing.T) {
+	frame := func(profile, sfIndex, chanConfig int) []byte {
+		b := make([]byte, 64)
+		copy(b, buildADTS(profile, sfIndex, chanConfig, len(b)))
+		return b
+	}
+	lc := frame(1, 4, 2)
+	for _, c := range []struct {
+		name   string
+		window []byte
+		off    int
+		ok     bool
+	}{
+		{"two agreeing frames", slices.Concat([]byte{1, 2}, lc, lc), 2, true},
+		{"lone frame", slices.Concat([]byte{1, 2}, lc), 0, false},
+		{"second header cut by the window", slices.Concat(lc, lc[:adtsHeaderSize-1]), 0, false},
+		{"another object type", slices.Concat(lc, frame(0, 4, 2)), 0, false},
+		{"another rate index", slices.Concat(lc, frame(1, 3, 2)), 0, false},
+		{"another channel config", slices.Concat(lc, frame(1, 4, 1)), 0, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if off, ok := (Codec{}).Resync(c.window); off != c.off || ok != c.ok {
+				t.Errorf("Resync = %d, %v; want %d, %v", off, ok, c.off, c.ok)
+			}
+		})
+	}
+}
+
+// The frame walk reads only inside the file, so a read there that fails is an error: a window of
+// frames, and past the ID3 tags a joined stream opens with, the tags' headers and the frame headers
+// after them, read from the file when the tags outrun the window. A window past the end of the file,
+// where an end beyond it puts the walk, ends the walk with no error.
+func TestWalkFailedRead(t *testing.T) {
+	frame := slices.Concat(buildADTS(1, 4, 2, 384), make([]byte, 377))
+	first, _ := decodeADTS(frame)
+	stream := bytes.Repeat(frame, 200) // more than one 64 KiB window
+	tag := testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", strings.Repeat("x", 100<<10)))
+	joined := slices.Concat(bytes.Repeat(frame, 10), tag, bytes.Repeat(frame, 10))
+	after := 10*len(frame) + len(tag) // where the stream goes on past the tag
+	for _, c := range []struct {
+		name string
+		data []byte
+		from int
+	}{
+		{"a window of frames", stream, 70000},
+		{"the header of a tag after the one passed", joined, after + 10},
+		{"a frame header past the tag", joined, after + len(frame) + 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := adtsWalk{last: -1}
+			err := w.walk(context.Background(), &testfile.Faulty{Src: core.BytesSource(c.data), Fails: testfile.From(int64(c.from))}, int64(len(c.data)), 1<<20, 100, first)
+			if !errors.Is(err, syscall.EIO) || errors.Is(err, waxerr.ErrInvalidData) {
+				t.Errorf("err = %v, want the read's own failure", err)
+			}
+		})
+	}
+	w := adtsWalk{last: -1}
+	if err := w.walk(context.Background(), core.BytesSource(stream[:1000]), int64(len(stream)), 1<<20, 100, first); err != nil || w.stop != 0 {
+		t.Errorf("a window past the end of the file: stop %d, %v; want the walk ended at 0 with no error", w.stop, err)
 	}
 }

@@ -3,8 +3,8 @@ package aac
 import "github.com/colespringer/waxlabel/internal/mpeg4audio"
 
 // adtsHeader is a decoded ADTS fixed header: static stream config plus frame
-// length. Config feeds the essence digest; length advances the duration walk
-// (totalADTSSamples) and is kept out of the digest (Codec.EssenceExtent).
+// length. Config feeds the essence digest; length advances the frame walk
+// ([adtsWalk.walk]) and is kept out of the digest (Codec.EssenceExtent).
 type adtsHeader struct {
 	objectType  int // MPEG-4 AOT (= profile+1): 1 Main, 2 LC, 3 SSR; profile 3 rejected
 	sfIndex     int // sampling-frequency index (0..12)
@@ -15,6 +15,11 @@ type adtsHeader struct {
 	rawBlocks   int // number_of_raw_data_blocks_in_frame (0..3); frame holds rawBlocks+1 blocks
 	// protectionAbsent: when clear, a 2-byte CRC follows the fixed header.
 	protectionAbsent bool
+}
+
+// sameConfig reports whether two headers agree on object type, rate index and channel config.
+func sameConfig(a, b adtsHeader) bool {
+	return a.objectType == b.objectType && a.sfIndex == b.sfIndex && a.chanConfig == b.chanConfig
 }
 
 // headerLen is bytes before the first raw data block (fixed header + optional CRC).

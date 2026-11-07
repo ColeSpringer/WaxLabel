@@ -56,30 +56,31 @@ func (n node) end() int64        { return n.offset + n.size }
 
 // childStart returns where a container atom's children begin: the payload start, plus
 // the 4-byte FullBox version/flags prefix when the atom is a "meta" box in its
-// ISO/iTunes form.
-func childStart(src core.ReaderAtSized, n node, limit int64) int64 {
+// ISO/iTunes form. A read of that prefix that fails fatally ([bits.Fatal]) is the error.
+func childStart(src core.ReaderAtSized, n node, limit int64) (int64, error) {
 	po := n.payloadOff()
 	if n.name != atomName("meta") || po+metaSkip > n.end() {
-		return po
+		return po, nil
 	}
 	b, err := bits.ReadSlice(src, po, metaSkip, limit)
-	if err != nil || b[0]|b[1]|b[2]|b[3] != 0 {
-		return po // bare QuickTime meta (or unreadable): children start immediately
+	if fatal := bits.Fatal(err); fatal != nil {
+		return 0, fatal
 	}
-	return po + metaSkip
+	if err != nil || b[0]|b[1]|b[2]|b[3] != 0 {
+		return po, nil // bare QuickTime meta (or cut short): children start immediately
+	}
+	return po + metaSkip, nil
 }
 
 // trailingGap returns the count of unusable bytes between where a container's children
 // end and n.end(). The children end at the last child's end, or, when childless, at the
 // child-start position (read lazily, since a container with children never needs it).
-func trailingGap(src core.ReaderAtSized, n node, limit int64) int64 {
-	var childEnd int64
+func trailingGap(src core.ReaderAtSized, n node, limit int64) (int64, error) {
 	if k := len(n.children); k > 0 {
-		childEnd = n.children[k-1].end()
-	} else {
-		childEnd = childStart(src, n, limit)
+		return n.end() - n.children[k-1].end(), nil
 	}
-	return n.end() - childEnd
+	start, err := childStart(src, n, limit)
+	return n.end() - start, err
 }
 
 // walkAtoms parses the atoms in [start, end) of src into a node tree, recursing into
@@ -152,7 +153,11 @@ walkLoop:
 		}
 		n := node{name: name, offset: off, headerLen: headerLen, size: size, truncated: truncated}
 		if containerAtoms[name] {
-			if cs := childStart(src, n, limit); cs <= n.end() {
+			cs, err := childStart(src, n, limit)
+			if err != nil {
+				return nil, err
+			}
+			if cs <= n.end() {
 				kids, err := walkAtoms(src, cs, n.end(), depth, limit, false)
 				if err != nil {
 					return nil, err
