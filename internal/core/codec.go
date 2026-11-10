@@ -117,11 +117,11 @@ func DowngradeNoOp(format Format, size int64, base, result *Media, tagsEqual, st
 		return nil
 	}
 	if !EqualPictures(base.Pictures, result.Pictures) || !EqualChapters(base.Chapters, result.Chapters) ||
-		!EqualSyncedLyrics(base.SyncedLyrics, result.SyncedLyrics) {
+		!EqualSyncedLyrics(base.SyncedLyrics, result.SyncedLyrics) || !EqualTextItems(base, result) {
 		return nil
 	}
 	np := NoOpPlan(WriteReport{Format: format, BytesBefore: size}, size, base)
-	np.Report.Warnings = append(np.Report.Warnings, WarningsWithCode(priorWarnings, WarnValueDropped, WarnValueCoerced, WarnValueReduced, WarnPictureMetadataDropped, WarnPictureUnsupported, WarnNumericGenre, WarnChapterTitleTruncated, WarnChapterMetadataDropped, WarnChapterStartOverflow, WarnChaptersFlattened, WarnSyncedLyricsMetadataDropped, WarnSyncedLyricsTimestampClamped, WarnCommentDescriptionDropped, WarnLegacyStripDropped)...)
+	np.Report.Warnings = append(np.Report.Warnings, WarningsWithCode(priorWarnings, WarnValueDropped, WarnValueCoerced, WarnValueReduced, WarnPictureMetadataDropped, WarnPictureUnsupported, WarnNumericGenre, WarnChapterTitleTruncated, WarnChapterMetadataDropped, WarnChapterStartOverflow, WarnChaptersFlattened, WarnSyncedLyricsMetadataDropped, WarnSyncedLyricsTimestampClamped, WarnLegacyStripDropped)...)
 	return np
 }
 

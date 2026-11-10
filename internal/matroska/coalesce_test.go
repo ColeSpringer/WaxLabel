@@ -108,7 +108,7 @@ func TestCoalesceWriteRoundTripsDescriptorCount(t *testing.T) {
 	if !ch.title {
 		t.Fatal("setup: title change not detected")
 	}
-	ed := computeEditDecisions(d.groups, albumGroupIndex(d.groups), base.Tags, edited.Tags)
+	ed := computeEditDecisions(d.groups, albumGroupIndex(d.groups), base, edited)
 	plan, err := planShift(d, base, edited, ch, ed, core.WriteReport{})
 	if err != nil {
 		t.Fatalf("planShift: %v", err)

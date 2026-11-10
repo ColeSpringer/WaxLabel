@@ -361,5 +361,6 @@ func buildQTMetaResult(edited *core.Media, src *doc, items []item, reg udtaRegio
 		Chapters:   core.CloneChapters(src.chapters),
 	}
 	setEssence(nd, out)
+	core.SyncTextItems(out)
 	return out
 }

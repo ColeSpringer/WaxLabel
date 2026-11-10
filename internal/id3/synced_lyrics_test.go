@@ -243,7 +243,7 @@ func TestSYLTSkipsEmptySet(t *testing.T) {
 }
 
 // TestSYLTNonLyricLanguageNotInherited checks an empty-language synced-lyrics edit does
-// not inherit the language of a leading non-lyric chord SYLT; the origLangs fallback is
+// not inherit the language of a leading non-lyric chord SYLT; the SYLT language fallback is
 // gated on a projecting frame.
 func TestSYLTNonLyricLanguageNotInherited(t *testing.T) {
 	// A leading chord SYLT (content-type != lyrics) in German.
@@ -420,10 +420,10 @@ func TestSYLTTimestampClampsAtFullMax(t *testing.T) {
 	}
 }
 
-// TestSyltLangBytesCanonicalizesCase checks SYLT language encoding folds uppercase
+// TestFrameLangBytesCanonicalizesCase checks the language encoding folds uppercase
 // ISO-639-2 codes to lowercase before the fixed-width pad, while keeping the "XXX"
 // undefined marker and short NUL-padded codes in shape.
-func TestSyltLangBytesCanonicalizesCase(t *testing.T) {
+func TestFrameLangBytesCanonicalizesCase(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"ENG", "eng"},
 		{"eng", "eng"},
@@ -431,9 +431,27 @@ func TestSyltLangBytesCanonicalizesCase(t *testing.T) {
 		{"", "XXX"},      // undefined marker unchanged
 	}
 	for _, c := range cases {
-		if got := string(syltLangBytes(c.in)); got != c.want {
-			t.Errorf("syltLangBytes(%q) = %q, want %q", c.in, got, c.want)
+		if got := string(frameLangBytes(c.in)); got != c.want {
+			t.Errorf("frameLangBytes(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestFrameLanguageEndsAtNUL: a language field reads up to its first NUL, so the model never
+// holds one, and a field that opens with a NUL is undefined.
+func TestFrameLanguageEndsAtNUL(t *testing.T) {
+	for in, want := range map[string]string{
+		"eng": "eng", "en\x00": "en", "e\x00g": "e", "\x00en": "", "\x00\x00\x00": "", "   ": "", "XXX": "", "xxx": "", "de ": "de",
+	} {
+		if got := frameLanguage(in); got != want {
+			t.Errorf("frameLanguage(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// A SYLT whose language opens with a NUL reads as a set with no language.
+	body := []byte("\x00\x00en\x02\x01\x00line\x00\x00\x00\x00\x01")
+	sets, _ := ProjectSyncedLyrics(&Tag{frames: []Frame{{ID: "SYLT", Body: body}}})
+	if len(sets) != 1 || sets[0].Language != "" {
+		t.Errorf("synced lyrics = %+v, want one set with no language", sets)
 	}
 }
 

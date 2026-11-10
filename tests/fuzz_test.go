@@ -167,6 +167,12 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x004\x12\x00\x00\x00\x00\x00\x00\x16\xbb\xdb\t\x01\x13OpusHead\x01\x02\x00\x00\x80\xbb\x00\x00\x00\x00\x00OggS\x00\x00\xc0\x03\x00\x00\x00\x00\x00\x004\x12\x00\x00\x01\x00\x00\x00\xe3K\x9c\x11\x02\x10\nOpusTags\x00\x00\x00\x00\x00\x00\x00\x00AUDIOPKT!!"))
 	f.Add([]byte{})
 	f.Add(flacCommentPictureSeed()) // FLAC with a base64 METADATA_BLOCK_PICTURE comment (regression)
+	if b, err := os.ReadFile(notagsMP3); err == nil {
+		// Comment and lyrics frames with descriptions, a shared, an undefined and a garbage language.
+		f.Add(append(testfile.ID3v2(4, commFrame(4, "eng", "", "a\x00b"), commFrame(4, "eng", "", "c"), commFrame(4, "XXX", "d", "e"),
+			commFrame(4, "\xff\xfe\x01", "iTunNORM", "f"), usltFrame(4, "deu", "d", "g"), usltFrame(4, "deu", "d", "g")), b...))
+	}
+	f.Add(languageMKA()) // comments and a lyric with a TagLanguage
 
 	ctx := context.Background()
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -204,30 +210,48 @@ func FuzzParse(f *testing.F) {
 			t.Fatalf("no-op write changed bytes: in=%d out=%d", len(data), out.Len())
 		}
 
-		// An edit on accepted input must round-trip and re-parse.
-		plan2, err := doc.Edit().Set(tag.Title, "fuzz").Prepare()
-		if err != nil {
-			// A codec may refuse some shapes: a chained Ogg (ErrChainedStream), a non-page-aligned Ogg
-			// (ErrUnalignedStream), an oversized layout (ErrInvalidData), an MP4 whose crafted offsets would
-			// overflow a 32-bit table on a grow (ErrSizeTooLarge), a fragmented MP4 (ErrFragmented), an MP4
-			// carrying an unpatchable absolute-offset box (ErrUnsupportedFormat), a Matroska layout the writer
-			// does not handle (no reserved Void, a position that would overflow its width, a Title with no
-			// Info element: ErrUnsupportedTag), or any WMA, which is read-only.
-			if errors.Is(err, waxerr.ErrChainedStream) || errors.Is(err, waxerr.ErrInvalidData) ||
-				errors.Is(err, waxerr.ErrUnalignedStream) || errors.Is(err, waxerr.ErrSizeTooLarge) ||
-				errors.Is(err, waxerr.ErrUnsupportedTag) || errors.Is(err, waxerr.ErrFragmented) ||
-				((doc.Format() == wl.FormatMP4 || doc.Format() == wl.FormatWMA) && errors.Is(err, waxerr.ErrUnsupportedFormat)) {
-				return
+		// The comment and lyrics items mirror the flat values on any accepted input.
+		assertTextItemsMatch(t, doc)
+
+		// An edit on accepted input must round-trip and re-parse. refused reports a refusal a codec
+		// may make of some shapes: a chained Ogg (ErrChainedStream), a non-page-aligned Ogg
+		// (ErrUnalignedStream), an oversized layout (ErrInvalidData), an MP4 whose crafted offsets would
+		// overflow a 32-bit table on a grow (ErrSizeTooLarge), a fragmented MP4 (ErrFragmented), an MP4
+		// carrying an unpatchable absolute-offset box (ErrUnsupportedFormat), a Matroska layout the writer
+		// does not handle (no reserved Void, a position that would overflow its width, a Title with no
+		// Info element: ErrUnsupportedTag), or any WMA, which is read-only.
+		roundTrip := func(edit func(*wl.Editor)) (refused bool) {
+			ed := doc.Edit()
+			edit(ed)
+			plan2, err := ed.Prepare()
+			if err != nil {
+				if errors.Is(err, waxerr.ErrChainedStream) || errors.Is(err, waxerr.ErrInvalidData) ||
+					errors.Is(err, waxerr.ErrUnalignedStream) || errors.Is(err, waxerr.ErrSizeTooLarge) ||
+					errors.Is(err, waxerr.ErrUnsupportedTag) || errors.Is(err, waxerr.ErrFragmented) ||
+					((doc.Format() == wl.FormatMP4 || doc.Format() == wl.FormatWMA) && errors.Is(err, waxerr.ErrUnsupportedFormat)) {
+					return true
+				}
+				t.Fatalf("edit prepare failed: %v", err)
 			}
-			t.Fatalf("edit prepare failed: %v", err)
+			var out2 bytes.Buffer
+			if _, _, err := plan2.Execute(ctx, wl.WriteTo(&out2, wl.BytesSource(data))); err != nil {
+				t.Fatalf("edit write failed: %v", err)
+			}
+			edited, err := wl.Parse(ctx, wl.BytesSource(out2.Bytes()))
+			if err != nil {
+				t.Fatalf("re-parse of edited output failed: %v", err)
+			}
+			assertTextItemsMatch(t, edited)
+			return false
 		}
-		var out2 bytes.Buffer
-		if _, _, err := plan2.Execute(ctx, wl.WriteTo(&out2, wl.BytesSource(data))); err != nil {
-			t.Fatalf("edit write failed: %v", err)
+		if roundTrip(func(e *wl.Editor) { e.Set(tag.Title, "fuzz") }) {
+			return
 		}
-		if _, err := wl.Parse(ctx, wl.BytesSource(out2.Bytes())); err != nil {
-			t.Fatalf("re-parse of edited output failed: %v", err)
-		}
+		// Comments and lyrics with qualifiers, whose frames or tags are rendered item by item beside
+		// the file's own. A refusal here leaves the chapter write below to run.
+		roundTrip(func(e *wl.Editor) {
+			e.Add(tag.Comment, "fuzz").SetLyrics(wl.Lyrics{Text: "fuzz", Description: "d", Language: "fra"})
+		})
 
 		// Chapter write: a chapter edit on an accepted MP4 rebuilds the QuickTime chapter track; on an
 		// accepted Matroska it re-renders the Chapters element. A crafted shape that parses must not panic

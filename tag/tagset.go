@@ -242,6 +242,16 @@ func (p TagPatch) Writes(key Key) bool {
 	return false
 }
 
+// Clears reports whether the patch records a Clear on key, whatever follows it.
+func (p TagPatch) Clears(key Key) bool {
+	for _, op := range p.ops {
+		if op.key == key && op.kind == opClear {
+			return true
+		}
+	}
+	return false
+}
+
 // Append adds all of other's operations after this patch's, so other's edits
 // take effect later (and thus win on conflicts).
 func (p *TagPatch) Append(other TagPatch) {

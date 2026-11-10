@@ -125,8 +125,6 @@ const (
 	WarnTrailingBytes
 	// WarnLegacyStripDropped: --legacy strip destroyed legacy-only data. Write; Warning.Keys if any; --strict.
 	WarnLegacyStripDropped
-	// WarnCommentDescriptionDropped: ID3 COMM description lost on merge/split. Plan; Warning.Keys.
-	WarnCommentDescriptionDropped
 	// WarnNonConformingIcon: type-1 icon not 32x32 PNG; still written. Plan; matches linter code.
 	WarnNonConformingIcon
 	// WarnDuplicateTagBlockDropped: rewrite dropped duplicate with extra content. Write; Warning.Keys; --strict.
@@ -263,8 +261,6 @@ func (c WarningCode) String() string {
 		return "trailing-bytes"
 	case WarnLegacyStripDropped:
 		return "legacy-strip-dropped"
-	case WarnCommentDescriptionDropped:
-		return "comment-description-dropped"
 	case WarnNonConformingIcon:
 		return "non-conforming-icon"
 	case WarnDuplicateTagBlockDropped:

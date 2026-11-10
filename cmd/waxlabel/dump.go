@@ -68,7 +68,10 @@ type jsonDocument struct {
 	Pictures     []jsonPicture      `json:"pictures"`
 	Chapters     []jsonChapter      `json:"chapters"`
 	SyncedLyrics []jsonSyncedLyrics `json:"syncedLyrics"`
-	Warnings     []jsonWarning      `json:"warnings"`
+	// Comments and Lyrics: the COMMENT and LYRICS values, in order, with their qualifiers.
+	Comments []jsonTextItem `json:"comments"`
+	Lyrics   []jsonTextItem `json:"lyrics"`
+	Warnings []jsonWarning  `json:"warnings"`
 	// LegacyOnly lists canonical keys only in legacy containers (Document.LegacyOnlyKeys). Not gated on --native. Omitted when empty.
 	LegacyOnly []string     `json:"legacyOnly,omitempty"`
 	Native     []jsonNative `json:"native,omitempty"`
@@ -129,6 +132,22 @@ type jsonSyncedLine struct {
 	Text   string `json:"text"`
 }
 
+// jsonTextItem is one comment or lyric with the description and language its format stores.
+type jsonTextItem struct {
+	Text        string `json:"text"`
+	Description string `json:"description,omitempty"`
+	Language    string `json:"language,omitempty"`
+}
+
+// jsonTextItems converts comment or lyrics items to JSON; never nil, so none marshals as [].
+func jsonTextItems[T ~struct{ Text, Description, Language string }](items []T) []jsonTextItem {
+	out := make([]jsonTextItem, len(items))
+	for i, it := range items {
+		out[i] = jsonTextItem(it)
+	}
+	return out
+}
+
 type jsonNative struct {
 	Kind string `json:"kind"`
 	Size int    `json:"size"`
@@ -175,15 +194,18 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 			PaddingBytes:  doc.Padding(),
 			OutputGainDb:  wl.OutputGainDecibels(t.OutputGain),
 		},
-		// Init all four collections non-nil so empty files emit []. jq '.[].tags[]' never breaks. native/sources stay omitempty (--native).
+		// Init every collection non-nil so empty files emit []. jq '.[].tags[]' never breaks. native/sources stay omitempty (--native).
 		Tags:         []jsonTag{},
 		Pictures:     []jsonPicture{},
 		Chapters:     []jsonChapter{},
 		SyncedLyrics: []jsonSyncedLyrics{},
+		Comments:     jsonTextItems(doc.Comments()),
+		Lyrics:       jsonTextItems(doc.Lyrics()),
 		Warnings:     []jsonWarning{},
 	}
+	notes := tagNotesOf(doc)
 	for k, vals := range doc.Tags().All() {
-		jd.Tags = append(jd.Tags, jsonTag{Key: string(k), Values: vals, Cardinality: cardinalityState(k, vals)})
+		jd.Tags = append(jd.Tags, jsonTag{Key: string(k), Values: vals, Cardinality: cardinalityState(k, vals, notes.lyrics)})
 	}
 	for _, p := range doc.Pictures() {
 		jd.Pictures = append(jd.Pictures, jsonPicture{

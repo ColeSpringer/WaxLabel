@@ -160,6 +160,10 @@ All notable changes to this project are documented here.
   canonical view does not carry (a rating, private data, a frame of a non-standard ID) is legacy
   content a strip cannot prove redundant: `--legacy strip` warns `legacy-strip-dropped`
   (`--strict` refuses) and `lint --fix` keeps the tag.
+- `copy` writes an ID3 comment's or lyric's language as the source holds it instead of
+  resetting it to `eng`. An ID3 write of several LYRICS values keeps each one a description or
+  language tells apart and warns `value-dropped` for the rest, instead of writing only the
+  first without saying so.
 
 ### Changed
 
@@ -205,6 +209,12 @@ All notable changes to this project are documented here.
   spelling ffmpeg writes. `USLT` is an alias of LYRICS on every format.
 - `PaddingPolicy.Max` also caps the padding an MP3 or ADTS front tag reuses in place, so a rewrite
   shrinks a tag with more free space than that (1 MiB by default).
+- The `comment-description-dropped` warning is gone: every ID3 comment frame keeps its own
+  description and language through an edit. A described `USLT` frame reads as LYRICS, and
+  lyrics told apart by description or language no longer lint `single-valued-multi`. A WAV or
+  AIFF gains an ID3 chunk when a comment or lyric has a description or language to store. A
+  stray or duplicate ID3v2 tag whose comment or lyric has a description, or a language other
+  than `eng`, counts as content a strip keeps and a drop reports.
 
 ### Added
 
@@ -219,6 +229,18 @@ All notable changes to this project are documented here.
 - `WithNoReplace()`, a write option that makes `SaveAsFile` refuse an existing file with
   an error matching `fs.ErrExist`, and `WithLockWait(fn)`, called when an in-place save
   waits on another process's lock.
+- Comments and lyrics carry a description and language: `Document.Comments`,
+  `Document.Lyrics`, `Editor.SetComments`, `Editor.SetLyrics`, and `--comment-desc`,
+  `--comment-lang`, `--lyrics-desc` and `--lyrics-lang` for the values an invocation sets or
+  adds. ID3 keeps both, in one `COMM` or `USLT` frame per description and language, and
+  Matroska keeps the `TagLanguage` (none where a `TagLanguageBCP47` supersedes it); elsewhere
+  an authored one warns `value-reduced`, as does a language stored in another form, and a
+  comment description that names machine data (`iTunNORM`, ReplayGain) is refused. Language
+  codes read in lowercase. `copy` carries them and grades a dropped one lossy, but not the
+  `eng` an ID3 writer fills in; a destination comment of the same text keeps what the source's
+  format cannot say of it. `diff` compares them where both formats store them, `dump` prints
+  them after the value, `caps` lists them, and JSON `dump` and `diff` gain `comments` and
+  `lyrics`.
 
 ## [1.8.0]
 

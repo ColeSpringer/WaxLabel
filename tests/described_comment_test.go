@@ -95,16 +95,13 @@ func TestUnrelatedEditPreservesDescribedComment(t *testing.T) {
 	}
 }
 
-// The ordinary case, one described comment from Windows Explorer or a CDDB-era tagger, stays
-// lossless: the merge is unambiguous, so the description and language survive the edit.
+// One described comment from Windows Explorer or a CDDB-era tagger keeps its description and
+// language across an edit of its text.
 func TestSingleDescribedCommentEditKeepsDescription(t *testing.T) {
 	data := mp3WithFrames(t, commFrame(4, "ger", "desc", "the comment"))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Comment, "New").Prepare()
 	if err != nil {
 		t.Fatal(err)
-	}
-	if _, ok := warningFor(plan, wl.WarnCommentDescriptionDropped); ok {
-		t.Errorf("an unambiguous single-frame merge warned: %v", plan.Report().Warnings)
 	}
 	out := applyToBytes(t, data, plan)
 	if !bytes.Contains(out, commFields("ger", "desc", "New")) {
@@ -116,60 +113,58 @@ func TestSingleDescribedCommentEditKeepsDescription(t *testing.T) {
 	}
 }
 
-// Several managed frames cannot all keep their description in the one frame the flat model writes,
-// so the loss is warned.
-func TestAmbiguousCommentMergeWarns(t *testing.T) {
-	data := mp3WithFrames(t,
-		commFrame(4, "eng", "", "plain comment"),
-		commFrame(4, "eng", "desc", "described comment"))
-	plan, err := mustParseBytes(t, data).Edit().Set(tag.Comment, "New").Prepare()
+// Each comment frame keeps its own description and language: an edit of one comment's text
+// leaves the other frame as it was.
+func TestCommentEditKeepsEachFramesQualifiers(t *testing.T) {
+	plain := commFrame(4, "eng", "", "plain comment")
+	data := mp3WithFrames(t, plain, commFrame(4, "ger", "desc", "described comment"))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Comment, "plain comment", "New").Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, ok := warningFor(plan, wl.WarnCommentDescriptionDropped)
-	if !ok {
-		t.Fatalf("an ambiguous merge dropped a description silently: %v", plan.Report().Warnings)
+	out := applyToBytes(t, data, plan)
+	if !bytes.Contains(out, plain) || !bytes.Contains(out, commFields("ger", "desc", "New")) {
+		t.Error("the comments did not each keep their own description and language")
 	}
-	if !slices.Contains(w.Keys, tag.Comment) {
-		t.Errorf("warning keys = %v, want COMMENT", w.Keys)
+	want := []wl.Comment{{Text: "plain comment", Language: "eng"}, {Text: "New", Description: "desc", Language: "ger"}}
+	if got := mustParseBytes(t, out).Comments(); !slices.Equal(got, want) {
+		t.Errorf("Comments() = %+v, want %+v", got, want)
 	}
 }
 
 // The description labels the comment the destination had. A value arriving from another file is
-// not the thing it labels, so keeping it would stamp the destination's "Ripped by EAC" onto the
-// source's text.
+// not the thing it labels, so a carry writes the source's comment as the source holds it.
 func TestCarriedCommentDropsTheDestinationDescription(t *testing.T) {
-	dst := mustParseBytes(t, mp3WithFrames(t, commFrame(4, "eng", "Ripped by EAC", "old comment")))
+	data := mp3WithFrames(t, commFrame(4, "ger", "Ripped by EAC", "old comment"))
 	src := mustParseBytes(t, testfile.TaggedFLAC("ref", "COMMENT=From the source"))
 
-	plan, report, err := src.PrepareTransfer(dst)
+	plan, report, err := src.PrepareTransfer(mustParseBytes(t, data))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !report.Lossless() {
 		t.Fatalf("setup: the comment should carry cleanly; report = %+v", report.Items)
 	}
-	if _, ok := warningFor(plan, wl.WarnCommentDescriptionDropped); !ok {
-		t.Errorf("a carry kept the destination's description silently: %v", plan.Report().Warnings)
+	got := mustParseBytes(t, applyToBytes(t, data, plan)).Comments()
+	if want := []wl.Comment{{Text: "From the source", Language: "eng"}}; !slices.Equal(got, want) {
+		t.Errorf("Comments() = %+v, want %+v", got, want)
 	}
 }
 
-// The description goes with the value the user removed; a removal is not a loss to report.
-func TestClearingCommentIsNotADescriptionDrop(t *testing.T) {
+// Clearing COMMENT removes a described frame with its value.
+func TestClearingCommentRemovesTheDescribedFrame(t *testing.T) {
 	data := mp3WithFrames(t, commFrame(4, "eng", "desc", "the comment"))
 	plan, err := mustParseBytes(t, data).Edit().Clear(tag.Comment).Prepare()
 	if err != nil {
 		t.Fatal(err)
-	}
-	if _, ok := warningFor(plan, wl.WarnCommentDescriptionDropped); ok {
-		t.Errorf("clearing COMMENT reported a description drop: %v", plan.Report().Warnings)
 	}
 	if v, ok := mustParseBytes(t, applyToBytes(t, data, plan)).Get(tag.Comment); ok {
 		t.Errorf("COMMENT = %v, want gone", v)
 	}
 }
 
-// With several managed COMM frames the first one's language wins.
+// A Set of one value over two comments keeps the first comment's language: the replaced text
+// passes its qualifiers on by position.
 func TestCommentLanguageFirstWins(t *testing.T) {
 	data := mp3WithFrames(t,
 		commFrame(4, "ger", "", "first"),

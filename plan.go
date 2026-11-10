@@ -21,6 +21,9 @@ type Plan struct {
 	opts core.WriteOptions
 	// True after SaveBack or SaveAsFile onto the source path; further Execute refused.
 	committed bool
+	// The edit set the comment or lyrics qualifiers itself: Changes then lists a language that
+	// appears, which is otherwise the writer's default and no change of the edit's.
+	commentsAuthored, lyricsAuthored bool
 }
 
 // zero reports an uninitialized plan. Safe on a nil receiver.
@@ -78,6 +81,8 @@ func (p *Plan) Changes() []tag.Change {
 		edited = base // no computed result changes nothing
 	}
 	changes := tag.Diff(base.Tags, edited.Tags)
+	changes = append(changes, core.TextItemChanges(tag.Comment, base.Comments, edited.Comments, core.TextLossNone, !p.commentsAuthored)...)
+	changes = append(changes, core.TextItemChanges(tag.Lyrics, base.Lyrics, edited.Lyrics, core.TextLossNone, !p.lyricsAuthored)...)
 	if !core.EqualPictures(base.Pictures, edited.Pictures) {
 		changes = append(changes, countChange("pictures", len(base.Pictures), len(edited.Pictures)))
 	}

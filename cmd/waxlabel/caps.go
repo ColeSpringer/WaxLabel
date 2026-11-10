@@ -105,6 +105,8 @@ type jsonCaps struct {
 	Pictures     *jsonCapDim `json:"pictures,omitempty"`
 	Chapters     *jsonCapDim `json:"chapters,omitempty"`
 	SyncedLyrics *jsonCapDim `json:"syncedLyrics,omitempty"`
+	// Qualifiers: which of "description" and "language" a COMMENT or LYRICS value keeps.
+	Qualifiers []string `json:"qualifiers"`
 	// Padding: "none", "partial" (an edit that fits reuses the existing region), or "full".
 	Padding string `json:"padding,omitempty"`
 	// OutputGain: "full" for Ogg Opus, "none" elsewhere.
@@ -148,6 +150,7 @@ func buildCaps(file, container string, caps wl.Capabilities) jsonCaps {
 		Pictures:      capDim(caps.Pictures),
 		Chapters:      capDim(caps.Chapters),
 		SyncedLyrics:  capDim(caps.SyncedLyrics),
+		Qualifiers:    nonNil(caps.Field(tag.Comment).TextLoss.Kept()),
 		Padding:       caps.Padding.String(),
 		OutputGain:    caps.OutputGain.String(),
 		// Non-nil keys so read-only JSON emits "keys": [].
@@ -214,6 +217,11 @@ func renderCaps(w io.Writer, jc jsonCaps) {
 	renderCapDim(w, "pictures", jc.Pictures)
 	renderCapDim(w, "chapters", jc.Chapters)
 	renderCapDim(w, "synced lyrics", jc.SyncedLyrics)
+	qualifiers := "none"
+	if len(jc.Qualifiers) > 0 {
+		qualifiers = strings.Join(jc.Qualifiers, ", ") + " (COMMENT and LYRICS)"
+	}
+	fmt.Fprintf(w, "  %-*s %s\n", capLabelWidth, "qualifiers:", qualifiers)
 	// Padding/output gain are scalar levels, not read/write dimensions.
 	if jc.Padding != "" {
 		fmt.Fprintf(w, "  %-*s %s\n", capLabelWidth, "padding:", jc.Padding)

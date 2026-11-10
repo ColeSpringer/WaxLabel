@@ -3,6 +3,7 @@ package aac
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
@@ -23,7 +24,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return nil, fmt.Errorf("aac: edited media has no AAC native document")
 	}
 
-	tagsChanged := !base.Tags.Equal(edited.Tags)
+	tagsChanged := !base.Tags.Equal(edited.Tags) || !core.EqualTextItems(base, edited)
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
 	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
 	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
@@ -62,6 +63,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			Pictures: edited.Pictures, PicturesChanged: picturesChanged,
 			Chapters: edited.Chapters, ChaptersChanged: chaptersChanged,
 			SyncedLyrics: edited.SyncedLyrics, SyncedLyricsChanged: syncedLyricsChanged,
+			Comments: edited.Comments, CommentsChanged: !slices.Equal(base.Comments, edited.Comments),
+			Lyrics: edited.Lyrics, LyricsChanged: !slices.Equal(base.Lyrics, edited.Lyrics),
 			Carried:             opts.Carried,
 			SyncedLyricsCleared: opts.SyncedLyricsCleared,
 			MediaDuration:       edited.Properties.Duration(),
@@ -127,7 +130,10 @@ func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagLen int64, s
 		Pictures:     core.ClonePictures(edited.Pictures),
 		Chapters:     core.ChaptersOpenedPastDuration(proj.Chapters, base.track.Duration),
 		SyncedLyrics: proj.SyncedLyrics,
+		Comments:     proj.Comments,
+		Lyrics:       proj.Lyrics,
 	}
 	base.layout.SetMovedEssence(m, base.firstFrameOff, tagLen+base.firstFrameOff-base.frontEnd, strip)
+	core.SyncTextItems(m)
 	return m
 }

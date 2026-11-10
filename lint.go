@@ -69,7 +69,7 @@ func (d *Document) Lint() []Finding {
 	out = append(out, lintChapters(d.media.Chapters, d.media.Properties.Duration())...)
 	out = append(out, lintValues(d.media.Tags)...)
 	out = append(out, lintNegativeNumbers(d.media.Tags)...)
-	out = append(out, lintCardinality(d.media.Tags)...)
+	out = append(out, lintCardinality(d.media)...)
 	out = append(out, lintCustomKeys(d.media.Tags)...)
 	d.markFixable(out, legacyOnly)
 	return out
@@ -305,11 +305,12 @@ func lintNegativeNumbers(ts tag.TagSet) []Finding {
 	return out
 }
 
-// lintCardinality reports single-valued known keys that hold multiple values.
-func lintCardinality(ts tag.TagSet) []Finding {
+// lintCardinality reports single-valued known keys that hold multiple values
+// ([core.SingleValuedMulti]).
+func lintCardinality(m *core.Media) []Finding {
 	var out []Finding
-	for k, vals := range ts.All() {
-		if k.SingleValuedMulti(len(vals)) {
+	for k, vals := range m.Tags.All() {
+		if core.SingleValuedMulti(k, len(vals), m.Lyrics) {
 			out = append(out, Finding{Severity: LintWarning, Code: "single-valued-multi",
 				Message: fmt.Sprintf("single-valued key holds %d values", len(vals)), Key: k})
 		}

@@ -70,6 +70,17 @@ type (
 	Disposition = core.Disposition
 )
 
+// TextItemLoss names the qualifiers a format drops from comment and lyrics items; see
+// [Capability].TextLoss.
+type TextItemLoss = core.TextItemLoss
+
+// TextItemLoss values.
+const (
+	TextLossDescriptionAndLanguage = core.TextLossDescriptionAndLanguage
+	TextLossDescription            = core.TextLossDescription
+	TextLossNone                   = core.TextLossNone
+)
+
 // TransferKind values.
 const (
 	TransferField       = core.TransferField
@@ -249,11 +260,10 @@ const (
 	WarnInvalidText = core.WarnInvalidText
 	WarnElementCap  = core.WarnElementCap
 
-	WarnTrailingBytes             = core.WarnTrailingBytes
-	WarnLegacyStripDropped        = core.WarnLegacyStripDropped
-	WarnCommentDescriptionDropped = core.WarnCommentDescriptionDropped
-	WarnNonConformingIcon         = core.WarnNonConformingIcon
-	WarnDuplicateTagBlockDropped  = core.WarnDuplicateTagBlockDropped
+	WarnTrailingBytes            = core.WarnTrailingBytes
+	WarnLegacyStripDropped       = core.WarnLegacyStripDropped
+	WarnNonConformingIcon        = core.WarnNonConformingIcon
+	WarnDuplicateTagBlockDropped = core.WarnDuplicateTagBlockDropped
 
 	WarnMalformedTagEntry        = core.WarnMalformedTagEntry
 	WarnMalformedTagEntryDropped = core.WarnMalformedTagEntryDropped

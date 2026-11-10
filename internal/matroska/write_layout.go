@@ -346,14 +346,13 @@ func buildResult(d *doc, edited *core.Media, r *rendered, ch changes, lay layout
 		resChapters = core.CloneChapters(edited.Chapters)
 	}
 
-	tags, _ := project(written)
 	res := &core.Media{
 		Format:     core.FormatMatroska,
 		Properties: edited.Properties.Clone(),
-		Tags:       tags,
 		Pictures:   resultPictures(edited.Pictures),
 		Chapters:   resChapters,
 	}
+	project(written, res)
 	// Mirror the parse side: essence digests hash only Cluster runs, so a segment with
 	// no clusters reports no audio extent. A clusterless segment with trailing bytes
 	// would otherwise report AudioStart = segDataEnd here while parse reports 0.

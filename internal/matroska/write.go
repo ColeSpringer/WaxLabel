@@ -73,7 +73,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 
 	// Per-tag outcomes for preservation, covered-set, and group render (cross-scope).
-	ed := computeEditDecisions(d.groups, albumGroupIndex(d.groups), base.Tags, edited.Tags)
+	ed := computeEditDecisions(d.groups, albumGroupIndex(d.groups), base, edited)
 
 	// TITLE SimpleTag also projects to Title: force ch.simple so title-only edits
 	// drop stale scoped TITLE via renderTags (else two titles after edit).
@@ -116,7 +116,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Edited album SimpleTag with uncapturable structure: WarnTagStructureDropped
 	// before planAbsorb (avoid double warn on absorb-then-shift).
 	if ch.simple {
-		if keys := tagStructureDropped(d, ed); len(keys) > 0 {
+		if keys := tagStructureDropped(d, ed, base); len(keys) > 0 {
 			report.Warnings = core.WarnKeyed(report.Warnings, core.WarnTagStructureDropped,
 				"an edited album tag dropped its secondary language, binary value, or nested sub-tags", keys...)
 		}
@@ -176,8 +176,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 }
 
 // changes records which Segment children an edit touches: the SimpleTag set (any
-// canonical key except Title), the Info.Title, the Attachments cover set, and the
-// Chapters element.
+// canonical key except Title, and a comment's or lyric's language), the Info.Title, the
+// Attachments cover set, and the Chapters element.
 type changes struct {
 	simple   bool
 	title    bool
@@ -199,7 +199,7 @@ func detectChanges(base, edited *core.Media) changes {
 	return changes{
 		// Compare the whole Title value list: adding or changing a later value is an
 		// edit even though only the first reaches the single-valued Info.Title.
-		simple: !b.Equal(e),
+		simple: !b.Equal(e) || textLanguagesChanged(base, edited, tag.Comment) || textLanguagesChanged(base, edited, tag.Lyrics),
 		title:  !slices.Equal(bt, et),
 		// Compare base against the reprojected edited set (roles reduced to the cover-art
 		// file names, description sanitized, MIME re-sniffed). A role Matroska cannot
@@ -410,8 +410,7 @@ func forEachSurvivingContribution(g tagGroup, gi int, ed *editDecisions, fn func
 		if ed.dropped(gi, ti) || !st.hasValue {
 			continue
 		}
-		// Sanitize the value as project does, so it matches the canonical TagSet.
-		for _, c := range projectTag(st.name, core.SanitizeUTF8(st.value), g.scope) {
+		for _, c := range projectTag(st, g.scope) {
 			fn(c)
 		}
 	}
@@ -462,10 +461,56 @@ func renderNonAlbumGroup(g tagGroup, gi int, ed *editDecisions) (out tagGroup, r
 // helpers: which parsed SimpleTags the edit drops, and per changed key the values the
 // album-scope sync must emit.
 type editDecisions struct {
-	ek        map[tag.Key]bool     // keys whose value lists changed (tag.Diff)
+	ek        map[tag.Key]bool     // keys whose value lists, or comment/lyrics languages, changed
 	albumIdx  int                  // index of the group buildAlbumGroup syncs into, -1 if none
 	drop      map[[2]int]bool      // {group index, tag index} -> dropped by this edit
 	albumVals map[tag.Key][]string // per changed key: values to emit at album scope, edited order
+	// albumLangs holds the language of each albumVals value of COMMENT and LYRICS, and langs
+	// the language of each edited value of those keys ([textLangs]).
+	albumLangs, langs map[tag.Key][]string
+}
+
+// textLangs returns the modeled language of each of m's COMMENT or LYRICS values, nil for any
+// other key.
+func textLangs(m *core.Media, key tag.Key) []string {
+	var items []core.TextItem
+	switch key {
+	case tag.Comment:
+		items = m.Comments
+	case tag.Lyrics:
+		items = m.Lyrics
+	}
+	if items == nil {
+		return nil
+	}
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = tagLanguage(it.Language)
+	}
+	return out
+}
+
+// textLanguagesChanged reports whether an edit changes the language of a COMMENT or LYRICS
+// value, which the tag sets do not show.
+func textLanguagesChanged(base, edited *core.Media, key tag.Key) bool {
+	return !slices.Equal(textLangs(base, key), textLangs(edited, key))
+}
+
+// claimOf is what a SimpleTag kept in place claims of an edited key: the value, and for a
+// comment or lyric its language too, so a tag whose language the edit changes is rendered again.
+func claimOf(key tag.Key, value, lang string) string {
+	if key != tag.Comment && key != tag.Lyrics {
+		return value
+	}
+	return value + "\x00" + lang
+}
+
+// langAt returns langs[i], or "" past its end.
+func langAt(langs []string, i int) string {
+	if i < len(langs) {
+		return langs[i]
+	}
+	return ""
 }
 
 func (ed *editDecisions) dropped(gi, ti int) bool { return ed.drop[[2]int{gi, ti}] }
@@ -478,6 +523,7 @@ type contribDecision struct {
 	key       tag.Key
 	owner     [2]int // {group index, tag index} of the SimpleTag it came from
 	value     string
+	claim     string // what keeping it claims of the edited values ([claimOf])
 	echo      bool
 	claimable bool // an emitted, non-album, non-boolean, fold-unique contribution
 	kept      bool
@@ -486,12 +532,14 @@ type contribDecision struct {
 
 // computeEditDecisions resolves one edit against the parsed groups, once per write:
 // which SimpleTags drop, and per changed key the values the album-scope sync must emit.
-func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited tag.TagSet) *editDecisions {
+func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited *core.Media) *editDecisions {
 	ed := &editDecisions{
-		ek:        editedKeySet(base, edited),
-		albumIdx:  albumIdx,
-		drop:      map[[2]int]bool{},
-		albumVals: map[tag.Key][]string{},
+		ek:         editedKeySet(base, edited),
+		albumIdx:   albumIdx,
+		drop:       map[[2]int]bool{},
+		albumVals:  map[tag.Key][]string{},
+		albumLangs: map[tag.Key][]string{},
+		langs:      map[tag.Key][]string{tag.Comment: textLangs(edited, tag.Comment), tag.Lyrics: textLangs(edited, tag.Lyrics)},
 	}
 	if len(ed.ek) == 0 {
 		return ed
@@ -511,7 +559,7 @@ func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited tag.TagS
 			if !st.hasValue {
 				continue
 			}
-			for _, c := range projectTag(st.name, core.SanitizeUTF8(st.value), g.scope) {
+			for _, c := range projectTag(st, g.scope) {
 				if c.key == tag.Title || !ed.edited(c.key) {
 					continue
 				}
@@ -525,14 +573,14 @@ func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited tag.TagS
 	}
 
 	// Per changed key, the budget an exact keep draws on: how many copies of each
-	// exact string the edit wants, and how many edited values share each folded form.
+	// exact claim the edit wants, and how many edited values share each folded form.
 	exact := make(map[tag.Key]map[string]int, len(ed.ek))
 	folds := make(map[tag.Key]map[string]int, len(ed.ek))
 	for k := range ed.ek {
-		vals, _ := edited.Get(k)
+		vals, _ := edited.Tags.Get(k)
 		ex, fl := map[string]int{}, map[string]int{}
-		for _, v := range vals {
-			ex[v]++
+		for i, v := range vals {
+			ex[claimOf(k, v, langAt(ed.langs[k], i))]++
 			fl[core.Fold(v)]++
 		}
 		exact[k], folds[k] = ex, fl
@@ -542,7 +590,8 @@ func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited tag.TagS
 	for _, k := range keyOrder {
 		boolean := tag.IsBooleanKey(k)
 		for _, e := range projectionOrder(k, contribs[k]) {
-			d := contribDecision{key: k, owner: owners[k][e.index], value: contribs[k][e.index].value}
+			c := contribs[k][e.index]
+			d := contribDecision{key: k, owner: owners[k][e.index], value: c.value, claim: claimOf(k, c.value, c.lang)}
 			if !e.emitted {
 				// An echo does not kill its tag until the album values are known.
 				d.echo, d.kept = true, !boolean
@@ -565,7 +614,7 @@ func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited tag.TagS
 	// is re-offered to a denied twin rather than relocated to album scope.
 	doomed := map[[2]int]bool{}
 	for _, d := range ds {
-		if !d.echo && (!d.claimable || exact[d.key][d.value] == 0) {
+		if !d.echo && (!d.claimable || exact[d.key][d.claim] == 0) {
 			doomed[d.owner] = true
 		}
 	}
@@ -583,8 +632,8 @@ func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited tag.TagS
 			if !d.claimable || doomed[d.owner] {
 				continue
 			}
-			if avail[d.key][d.value] > 0 {
-				avail[d.key][d.value]--
+			if avail[d.key][d.claim] > 0 {
+				avail[d.key][d.claim]--
 				d.kept, d.claimed = true, true
 			}
 		}
@@ -673,7 +722,7 @@ func releaseDoomedClaims(ds []contribDecision) {
 
 // setAlbumVals records, per changed key, the edited values no surviving scoped tag
 // claimed, in edited order. These are the values the album-scope sync writes.
-func (ed *editDecisions) setAlbumVals(edited tag.TagSet, ds []contribDecision) {
+func (ed *editDecisions) setAlbumVals(edited *core.Media, ds []contribDecision) {
 	claimed := map[tag.Key]map[string]int{}
 	for _, d := range ds {
 		if !d.claimed {
@@ -682,21 +731,45 @@ func (ed *editDecisions) setAlbumVals(edited tag.TagSet, ds []contribDecision) {
 		if claimed[d.key] == nil {
 			claimed[d.key] = map[string]int{}
 		}
-		claimed[d.key][d.value]++
+		claimed[d.key][d.claim]++
 	}
 	for k := range ed.ek {
-		vals, _ := edited.Get(k)
+		vals, _ := edited.Tags.Get(k)
 		take := claimed[k]
 		out := make([]string, 0, len(vals))
-		for _, v := range vals {
-			if take[v] > 0 {
-				take[v]--
+		var langs []string
+		for i, v := range vals {
+			lang := langAt(ed.langs[k], i)
+			if id := claimOf(k, v, lang); take[id] > 0 {
+				take[id]--
 				continue
 			}
 			out = append(out, v)
+			langs = append(langs, lang)
 		}
-		ed.albumVals[k] = out
+		ed.albumVals[k], ed.albumLangs[k] = out, langs
 	}
+}
+
+// unchangedLangs returns the language of each of vals, values of the unchanged key k: that of
+// the first edited value of that text not yet taken.
+func (ed *editDecisions) unchangedLangs(edited tag.TagSet, k tag.Key, vals []string) []string {
+	langs := ed.langs[k]
+	if langs == nil {
+		return nil
+	}
+	all, _ := edited.Get(k)
+	byText := make(map[string][]string, len(all)) // a text's languages, first to last
+	for j, a := range all {
+		byText[a] = append(byText[a], langAt(langs, j))
+	}
+	out := make([]string, len(vals))
+	for i, v := range vals {
+		if q := byText[v]; len(q) > 0 {
+			out[i], byText[v] = q[0], q[1:]
+		}
+	}
+	return out
 }
 
 // foldCovered reports whether vals carries value's case-folded form, in which case
@@ -717,22 +790,31 @@ func meaningfulLang(lang string) bool {
 }
 
 // tagStructureDropped returns the canonical keys whose dropped SimpleTag (ed.dropped)
-// carried structure the flat model cannot hold: a TagLanguage, a TagBinary value, or
-// nested sub-tags. The edit re-emits such a key flat at album scope.
-func tagStructureDropped(d *doc, ed *editDecisions) []tag.Key {
+// carried structure the flat model cannot hold: a TagLanguage or TagLanguageBCP47, a
+// TagBinary value, or nested sub-tags. The edit re-emits such a key flat at album scope. The language of a
+// comment or lyric base reads is in the model, so its tag loses none.
+func tagStructureDropped(d *doc, ed *editDecisions, base *core.Media) []tag.Key {
 	var keys []tag.Key
 	seen := map[tag.Key]bool{}
+	modeled := map[tag.Key]map[core.TextItem]bool{tag.Comment: {}, tag.Lyrics: {}}
+	for _, it := range base.Comments {
+		modeled[tag.Comment][it] = true
+	}
+	for _, it := range base.Lyrics {
+		modeled[tag.Lyrics][it] = true
+	}
 	for gi, g := range d.groups {
 		for ti, st := range g.tags {
 			if !ed.dropped(gi, ti) {
 				continue
 			}
-			// A plain string tag loses nothing on a flat re-emit.
-			if !meaningfulLang(st.lang) && st.binary == 0 && len(st.sub) == 0 {
-				continue
-			}
 			k, ok := mapping.MatroskaTagKey(st.name)
 			if !ok || seen[k] {
+				continue
+			}
+			langModeled := modeled[k][core.TextItem{Text: core.SanitizeUTF8(st.value), Language: st.language()}]
+			// A plain string tag loses nothing on a flat re-emit.
+			if (!meaningfulLang(st.lang) || langModeled) && !st.bcp47 && st.binary == 0 && len(st.sub) == 0 {
 				continue
 			}
 			seen[k] = true
@@ -784,11 +866,17 @@ func narrowsScope(g tagGroup) bool {
 }
 
 // editedKeySet returns the canonical keys whose values differ between the base and
-// edited tag sets, via the shared tag.Diff primitive.
-func editedKeySet(base, edited tag.TagSet) map[tag.Key]bool {
+// edited tag sets, via the shared tag.Diff primitive, and COMMENT or LYRICS when only a
+// language differs.
+func editedKeySet(base, edited *core.Media) map[tag.Key]bool {
 	ek := map[tag.Key]bool{}
-	for _, c := range tag.Diff(base, edited) {
+	for _, c := range tag.Diff(base.Tags, edited.Tags) {
 		ek[c.Key] = true
+	}
+	for _, k := range []tag.Key{tag.Comment, tag.Lyrics} {
+		if edited.Tags.Has(k) && textLanguagesChanged(base, edited, k) {
+			ek[k] = true
+		}
 	}
 	return ek
 }
@@ -821,7 +909,8 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 			continue // stored in Info.Title
 		}
 		vals, _ := edited.Get(k)
-		if bv, _ := base.Get(k); slices.Equal(bv, vals) {
+		var langs []string
+		if bv, _ := base.Get(k); slices.Equal(bv, vals) && !ed.edited(k) {
 			// An unchanged key carried verbatim elsewhere, by a narrower scope (covered) or by
 			// this group's own preserved SimpleTags (albumOwn), re-emits only the values not
 			// already preserved.
@@ -839,11 +928,12 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 					continue
 				}
 			}
+			langs = ed.unchangedLangs(edited, k, vals)
 		} else {
 			// A changed key emits what ed decided for album scope. Cloned because the
 			// boolean canonicalization below rewrites vals in place and ed is shared
 			// across an absorb-then-shift retry.
-			vals = slices.Clone(ed.albumVals[k])
+			vals, langs = slices.Clone(ed.albumVals[k]), ed.albumLangs[k]
 		}
 		if tag.IsBooleanKey(k) {
 			// Canonicalize a recognized boolean word to "1"/"0", matching the Vorbis, ID3, and
@@ -856,10 +946,11 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 		if mapping.MatroskaTechnicalName(name) {
 			continue // reserved technical name: never emitted, warned at plan time
 		}
-		for _, v := range vals {
+		for i, v := range vals {
 			// A present empty value (set KEY=) is emitted as a zero-length SimpleTag.
-			simple = append(simple, simpleTagBytes(name, v)...)
-			out.tags = append(out.tags, simpleTag{name: name, value: v, hasValue: true})
+			lang := langAt(langs, i)
+			simple = append(simple, simpleTagBytes(name, v, lang)...)
+			out.tags = append(out.tags, simpleTag{name: name, value: v, hasValue: true, lang: lang})
 		}
 	}
 	if len(simple) == 0 {
@@ -923,10 +1014,14 @@ func subtractFold(vals, covered []string) []string {
 	return out
 }
 
-// simpleTagBytes renders a SimpleTag with a name and a single string value.
-func simpleTagBytes(name, value string) []byte {
-	payload := append(stringElement(idTagName, name), stringElement(idTagString, value)...)
-	return encElement(idSimpleTag, payload)
+// simpleTagBytes renders a SimpleTag with a name, a single string value and, when lang is set,
+// its TagLanguage.
+func simpleTagBytes(name, value, lang string) []byte {
+	payload := stringElement(idTagName, name)
+	if lang != "" {
+		payload = append(payload, stringElement(idTagLang, lang)...)
+	}
+	return encElement(idSimpleTag, append(payload, stringElement(idTagString, value)...))
 }
 
 // albumGroupIndex returns the index of the group to sync canonical tags into: the

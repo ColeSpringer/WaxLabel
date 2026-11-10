@@ -23,9 +23,12 @@ type Projection struct {
 	Pictures     []core.Picture
 	Chapters     []core.Chapter
 	SyncedLyrics []core.SyncedLyrics
-	Families     []core.FamilyValue
-	NumericGenre bool
-	Warnings     []core.Warning
+	// Comments and Lyrics hold an item per text of each COMM and USLT frame read, in frame
+	// order, with the frame's description and language.
+	Comments, Lyrics []core.TextItem
+	Families         []core.FamilyValue
+	NumericGenre     bool
+	Warnings         []core.Warning
 }
 
 // EncoderNoise reports inherited-encoder warnings for the tag's TSSE/TENC frames (ffmpeg
@@ -77,6 +80,7 @@ func Project(t *Tag) Projection {
 	}
 	var contribs []core.Contribution
 	var pics []core.Picture
+	var comments, lyrics []core.TextItem
 	var dp dateParts
 	var warnings []core.Warning
 	numeric := false
@@ -133,31 +137,21 @@ func Project(t *Tag) Projection {
 			if owner, id, ok := decodeUFID(f.Body); ok && owner == musicBrainzOwner {
 				emit(tag.MBRecordingID, id, "UFID")
 			}
-		case f.ID == "COMM":
-			// A described comment is still a comment: Windows Explorer and CDDB-era taggers
-			// write one, and leaving it unprojected hid it from dump, lint and diff and let
-			// copy report a lossless carry that left it behind. Only a machine description
-			// (iTunes normalization, ReplayGain) stays out, through the predicate the
-			// writer's management gates also use. The source label is the literal "COMM",
-			// not the description: core.BuildFamilies marks a key unselected when distinct
-			// sources supply distinct values, so a per-description source would turn one
-			// plain plus one described comment into a spurious conflicting-families
-			// finding. Different TXXX descriptions land on different keys and never
-			// collide, so that precedent does not apply.
-			if desc, vals, ok := decodeCommentFrame(f.Body); ok && !mapping.ID3TechnicalCommentDesc(desc) {
-				for _, v := range vals {
-					emit(tag.Comment, v, "COMM")
-				}
+		case f.ID == "COMM" || f.ID == "USLT":
+			// The source label is the frame ID, not the description: core.BuildFamilies reads
+			// distinct values from distinct sources as a conflict, which a plain and a
+			// described comment are not.
+			desc, lang, texts, ok := textFrameItems(f)
+			if !ok {
+				continue
 			}
-		case f.ID == "USLT":
-			// Only an empty-description USLT projects, unlike COMM above. tag.Lyrics is not
-			// multivalued (tag/keys.go) and renderUnit's USLT branch takes
-			// edited.First(tag.Lyrics), so projecting a described USLT beside a plain one
-			// would raise a single-valued-multi finding on read and collapse to the first on
-			// write. A described USLT usually marks an alternate or translated set, which is
-			// not "the lyrics".
-			if desc, text, ok := decodeLangText(f.Body); ok && desc == "" {
-				emit(tag.Lyrics, text, "USLT")
+			key, items := tag.Comment, &comments
+			if f.ID == "USLT" {
+				key, items = tag.Lyrics, &lyrics
+			}
+			for _, text := range texts {
+				emit(key, text, f.ID)
+				*items = append(*items, core.TextItem{Text: text, Description: desc, Language: lang})
 			}
 		case f.ID == "TCON":
 			for _, v := range decodeTextFrame(f.Body) {
@@ -233,10 +227,35 @@ func Project(t *Tag) Projection {
 		Pictures:     pics,
 		Chapters:     chapters,
 		SyncedLyrics: syncedLyrics,
+		Comments:     comments,
+		Lyrics:       lyrics,
 		Families:     core.BuildFamilies(contribs, core.FamilyID3v2),
 		NumericGenre: numeric,
 		Warnings:     append(append(chapterWarnings, syncedWarnings...), warnings...),
 	}
+}
+
+// textFrameItems decodes a COMM or USLT frame the canonical view reads as COMMENT or LYRICS: its
+// description, its modeled language ([frameLanguage]) and its texts. A described comment, as
+// Windows Explorer writes one, is still a comment; ok is false for any other frame, one that does
+// not decode, and a comment under a machine description (iTunes normalization, ReplayGain).
+func textFrameItems(f Frame) (desc, lang string, texts []string, ok bool) {
+	if f.Opaque {
+		return "", "", nil, false
+	}
+	switch f.ID {
+	case "COMM":
+		desc, texts, ok = decodeCommentFrame(f.Body)
+		ok = ok && !mapping.ID3TechnicalCommentDesc(desc)
+	case "USLT":
+		var text string
+		desc, text, ok = decodeLangText(f.Body)
+		texts = []string{text}
+	}
+	if !ok {
+		return "", "", nil, false
+	}
+	return desc, frameLanguage(string(f.Body[1:4])), texts, true
 }
 
 // carried reports whether the canonical view carries all of f's content, f read from a tag of the
@@ -360,8 +379,9 @@ func LegacyV1Families(auth tag.TagSet, raw []byte) []core.FamilyValue {
 
 // LegacyV2Families projects a preserved, non-authoritative ID3v2 tag into legacy family
 // entries, and reports whether it also holds content the canonical set does not fold in,
-// which a legacy strip cannot prove redundant: pictures, chapters or synced lyrics, a frame
-// the canonical view does not carry whole ([carried]), or bytes it could not read. unread is
+// which a legacy strip cannot prove redundant: pictures, chapters or synced lyrics, a comment's
+// or lyric's description or language ([beyondDefault]), a frame the canonical view does not carry
+// whole ([carried]), or bytes it could not read. unread is
 // how many those are, for the native view: all of a tag that does not parse or is ignored
 // whole ([Tag.Ignored]), which reports opaque with no entries. The stray leading tag of FLAC,
 // WavPack, Monkey's Audio and Musepack takes this path.
@@ -391,6 +411,7 @@ func LegacyV2Families(auth tag.TagSet, raw []byte, maxElements int) (fams []core
 		unread = int64(len(raw))
 	}
 	opaque = unread > 0 || len(proj.Pictures) > 0 || len(proj.Chapters) > 0 ||
-		len(proj.SyncedLyrics) > 0 || len(t.uncarried()) > 0
+		len(proj.SyncedLyrics) > 0 || len(t.uncarried()) > 0 ||
+		slices.ContainsFunc(proj.Comments, beyondDefault) || slices.ContainsFunc(proj.Lyrics, beyondDefault)
 	return core.LegacyFamilies(auth, core.FamilyID3v2, contribs), opaque, unread
 }

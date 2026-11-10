@@ -303,5 +303,6 @@ func buildResult(edited *core.Media, base *doc, newComments []comment, audioStar
 		SyncedLyrics: projectSyncedLyrics(newComments),
 	}
 	base.layout.SetMovedEssence(m, base.audioStart, audioStart, strip)
+	core.SyncTextItems(m)
 	return m
 }

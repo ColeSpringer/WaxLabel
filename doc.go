@@ -29,6 +29,10 @@
 // Edit via [Document.Edit] -> [Editor.Prepare] -> [Plan] against a
 // [Destination]. Cross-file copy uses [Document.Transfer].
 //
+// COMMENT and LYRICS values are plain tags; [Document.Comments] and
+// [Document.Lyrics] add the description and language ID3 stores with each (Matroska
+// the language), and [Editor.SetComments] and [Editor.SetLyrics] write them.
+//
 // # Frozen contracts
 //
 // Stable across v1; other surface may still evolve:

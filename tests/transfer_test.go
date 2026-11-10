@@ -1,7 +1,9 @@
 package waxlabel_test
 
 import (
+	"bytes"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -885,5 +887,142 @@ func TestTransferExcludesOwnAudioKeys(t *testing.T) {
 	}
 	if v, _ := result.Get(tag.AcoustID); len(v) != 1 || v[0] != "recording-xyz" {
 		t.Errorf("destination ACOUSTID_ID = %v, want [recording-xyz] (carried)", v)
+	}
+}
+
+// transferItemFor returns the report's item for key.
+func transferItemFor(t *testing.T, r wl.TransferReport, key tag.Key) wl.TransferItem {
+	t.Helper()
+	for _, it := range r.Items {
+		if it.Key == key {
+			return it
+		}
+	}
+	t.Fatalf("no transfer item for %s in %+v", key, r.Items)
+	return wl.TransferItem{}
+}
+
+// A comment's and a lyric's description and language are carried where the destination stores
+// them and graded lossy, naming what goes, where it does not. The eng every ID3 comment holds is
+// no loss: an ID3 writer fills it in.
+func TestTransferCarriesCommentAndLyricsQualifiers(t *testing.T) {
+	src := mustParseBytes(t, describedMP3(t))
+	wantComment := wl.Comment{Text: "hello", Description: "My Desc", Language: "eng"}
+	wantLyrics := wl.Lyrics{Text: "la la", Description: "Lyr Desc", Language: "deu"}
+	cases := []struct {
+		dst                         string
+		commentDisp, lyricsDisp     wl.Disposition
+		commentReason, lyricsReason string
+		comment                     wl.Comment
+		lyrics                      wl.Lyrics
+	}{
+		{notagsMP3, wl.Carried, wl.Carried, "", "", wantComment, wantLyrics},
+		{notagsFLAC, wl.Lossy, wl.Lossy, "description not carried", "description and language not carried",
+			wl.Comment{Text: "hello"}, wl.Lyrics{Text: "la la"}},
+		{notagsMKA, wl.Lossy, wl.Lossy, "description not carried", "description not carried",
+			wl.Comment{Text: "hello", Language: "eng"}, wl.Lyrics{Text: "la la", Language: "deu"}},
+	}
+	for _, c := range cases {
+		t.Run(filepath.Base(c.dst), func(t *testing.T) {
+			data := readFixture(t, c.dst)
+			dst := mustParseBytes(t, data)
+			plan, report, err := src.PrepareTransfer(dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			comment, lyrics := transferItemFor(t, report, tag.Comment), transferItemFor(t, report, tag.Lyrics)
+			if comment.Kind != wl.TransferField || comment.Disposition != c.commentDisp || comment.Reason != c.commentReason {
+				t.Errorf("COMMENT graded %+v, want field %s %q", comment, c.commentDisp, c.commentReason)
+			}
+			if lyrics.Kind != wl.TransferField || lyrics.Disposition != c.lyricsDisp || lyrics.Reason != c.lyricsReason {
+				t.Errorf("LYRICS graded %+v, want field %s %q", lyrics, c.lyricsDisp, c.lyricsReason)
+			}
+			want := map[wl.Disposition]int{}
+			want[c.commentDisp]++
+			want[c.lyricsDisp]++
+			if carried, lossy, dropped := report.Counts(); carried != want[wl.Carried] || lossy != want[wl.Lossy] || dropped != 0 {
+				t.Errorf("counts = %d carried, %d lossy, %d dropped, want %v", carried, lossy, dropped, want)
+			}
+			planned, err := src.PlanTransfer(dst.Format())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(planned.Items, report.Items) {
+				t.Errorf("PlanTransfer items = %+v, PrepareTransfer items = %+v", planned.Items, report.Items)
+			}
+			out := mustParseBytes(t, applyToBytes(t, data, plan))
+			if got := out.Comments(); !slices.Equal(got, []wl.Comment{c.comment}) {
+				t.Errorf("Comments() = %+v, want %+v", got, c.comment)
+			}
+			if got := out.Lyrics(); !slices.Equal(got, []wl.Lyrics{c.lyrics}) {
+				t.Errorf("Lyrics() = %+v, want %+v", got, c.lyrics)
+			}
+		})
+	}
+}
+
+// A source language is written as it is, not reset to the eng a new comment defaults to.
+func TestTransferKeepsTheSourceCommentLanguage(t *testing.T) {
+	src := mustParseBytes(t, mp3WithFrames(t, commFrame(4, "deu", "", "Kommentar")))
+	data := readFixture(t, notagsMP3)
+	plan, _, err := src.PrepareTransfer(mustParseBytes(t, data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(applyToBytes(t, data, plan), commFields("deu", "", "Kommentar")) {
+		t.Error("the carried comment lost its language")
+	}
+}
+
+// An ID3 comment in the default language copies losslessly onto a format with no language field,
+// as it did before comments carried one; another language is a loss there.
+func TestTransferOfTheDefaultLanguageIsLossless(t *testing.T) {
+	for _, dst := range []string{notagsFLAC, "../testdata/notags.ogg", "../testdata/notags.m4a", "../testdata/notags.wv"} {
+		data := readFixture(t, dst)
+		src := mustParseBytes(t, mp3WithFrames(t, commFrame(4, "eng", "", "hello"), usltFrame(4, "eng", "", "words")))
+		if _, report, err := src.PrepareTransfer(mustParseBytes(t, data)); err != nil || !report.Lossless() {
+			t.Errorf("%s: err %v, report %+v, want lossless", filepath.Base(dst), err, report.Items)
+		}
+		german := mustParseBytes(t, mp3WithFrames(t, commFrame(4, "deu", "", "hallo")))
+		_, report, err := german.PrepareTransfer(mustParseBytes(t, data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if it := transferItemFor(t, report, tag.Comment); it.Disposition != wl.Lossy || it.Reason != "language not carried" {
+			t.Errorf("%s: a German comment graded %+v, want lossy", filepath.Base(dst), it)
+		}
+	}
+}
+
+// A copy leaves a destination comment of the same text what the source's format cannot say of
+// it: a FLAC source changes nothing, a Matroska source sets the language alone, and an ID3
+// source, which holds both qualifiers, sets both.
+func TestTransferKeepsDestinationQualifiersTheSourceCannotExpress(t *testing.T) {
+	data := mp3WithFrames(t, commFrame(4, "ger", "Ripped by EAC", "same"))
+	kept := wl.Comment{Text: "same", Description: "Ripped by EAC", Language: "ger"}
+	cases := []struct {
+		name string
+		src  []byte
+		want wl.Comment
+		noOp bool
+	}{
+		{"flac", testfile.TaggedFLAC("ref", "COMMENT=same"), kept, true},
+		{"matroska", testfile.Matroska("matroska", "", testfile.El(testfile.IDTags, testfile.TagGroup(0, langSimpleTag("COMMENT", "fra", "same")))),
+			wl.Comment{Text: "same", Description: "Ripped by EAC", Language: "fra"}, false},
+		{"id3", mp3WithFrames(t, commFrame(4, "fra", "", "same")), wl.Comment{Text: "same", Language: "fra"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			plan, report, err := mustParseBytes(t, c.src).PrepareTransfer(mustParseBytes(t, data))
+			if err != nil || !report.Lossless() {
+				t.Fatalf("transfer: %v, report %+v", err, report.Items)
+			}
+			if plan.IsNoOp() != c.noOp {
+				t.Errorf("no-op = %v, want %v", plan.IsNoOp(), c.noOp)
+			}
+			if got := mustParseBytes(t, applyToBytes(t, data, plan)).Comments(); !slices.Equal(got, []wl.Comment{c.want}) {
+				t.Errorf("Comments() = %+v, want %+v", got, c.want)
+			}
+		})
 	}
 }

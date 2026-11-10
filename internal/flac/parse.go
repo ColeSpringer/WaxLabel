@@ -181,6 +181,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	if err := core.SetIdentity(src, media); err != nil {
 		return nil, err
 	}
+	core.SyncTextItems(media)
 	return media, nil
 }
 

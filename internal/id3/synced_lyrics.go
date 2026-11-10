@@ -96,7 +96,7 @@ func decodeSYLT(body []byte) (core.SyncedLyrics, []core.Warning, bool) {
 	if !validEncoding(enc) {
 		return core.SyncedLyrics{}, nil, false
 	}
-	lang := syltLanguage(string(body[1:4]))
+	lang := frameLanguage(string(body[1:4]))
 	tsFmt := body[4]
 	content := body[5]
 	// Share byte-order state across the descriptor and every line. SYLT stores all strings
@@ -252,7 +252,7 @@ func encodeSYLT(sl core.SyncedLyrics, version byte, fallbackLang, fallbackDesc s
 		lang = fallbackLang // keep the file's existing language on a line-only edit
 	}
 	out := []byte{enc}
-	out = append(out, syltLangBytes(lang)...)
+	out = append(out, frameLangBytes(lang)...)
 	out = append(out, syltFmtMillis, syltContentLyrics)
 	out = append(out, encodeString(enc, desc)...)
 	out = append(out, term(enc)...)
@@ -268,36 +268,33 @@ func encodeSYLT(sl core.SyncedLyrics, version byte, fallbackLang, fallbackDesc s
 	return out, overflow
 }
 
-// syltLangBytes renders a modeled language into the SYLT frame's fixed 3-byte field. An
+// frameLangBytes renders a modeled language into a frame's fixed 3-byte language field. An
 // empty or undefined language writes the spec's "XXX" marker. A 1-2 byte code is
 // NUL-padded, as some encoders store short codes; "X" padding would read back as a
 // different language such as "enX". A longer value is truncated. Uppercase ASCII is
 // folded to the conventional lowercase ISO-639-2 form before the fixed-width pad, so
 // callers that bypass the CLI still write canonical bytes.
-func syltLangBytes(lang string) []byte {
+func frameLangBytes(lang string) []byte {
 	// Recognize every "undefined" form (empty, NUL/space-padded, or "xxx") with the read
-	// rule (syltLanguage), so a model language of "xxx" is not stored verbatim yet read
+	// rule (frameLanguage), so a model language of "xxx" is not stored verbatim yet read
 	// back empty.
-	if syltLanguage(lang) == "" {
+	if frameLanguage(lang) == "" {
 		return []byte{'X', 'X', 'X'}
 	}
-	b := []byte(lang)
-	for i, c := range b {
-		if c >= 'A' && c <= 'Z' {
-			b[i] = c + ('a' - 'A')
-		}
-	}
+	b := []byte(core.LowerASCII(lang))
 	for len(b) < 3 {
 		b = append(b, 0)
 	}
 	return b[:3]
 }
 
-// syltLanguage normalizes a SYLT 3-byte language field to the modeled language: the
-// spec's "XXX" (and an empty or NUL-padded field) means undefined and maps to "".
-func syltLanguage(lang string) string {
-	lang = strings.TrimRight(lang, "\x00 ")
-	if lang == "" || strings.EqualFold(lang, "xxx") {
+// frameLanguage normalizes a COMM, USLT or SYLT 3-byte language field to the modeled language,
+// in lowercase: the spec's "XXX" (and an empty or NUL-padded field) means undefined and maps to
+// "". The field ends at its first NUL, so the result is text an edit accepts.
+func frameLanguage(lang string) string {
+	lang, _, _ = strings.Cut(lang, "\x00")
+	lang = core.LowerASCII(strings.TrimRight(lang, " "))
+	if lang == "" || lang == "xxx" {
 		return ""
 	}
 	return core.SanitizeUTF8(lang)

@@ -265,5 +265,6 @@ func buildResult(edited *core.Media, base *doc, newComments []vorbis.Comment, sh
 		start := ap.bodyOff() + shift
 		media.AudioRanges = append(media.AudioRanges, [2]int64{start, start + ap.bodyLen})
 	}
+	core.SyncTextItems(media)
 	return media
 }

@@ -317,7 +317,7 @@ func TestDiscardSetIsStrictSubset(t *testing.T) {
 	}
 	// Partial losses keep the item; not discards even if named *Dropped.
 	for _, c := range []wl.WarningCode{
-		wl.WarnPictureMetadataDropped, wl.WarnCommentDescriptionDropped, wl.WarnChapterEndsDropped,
+		wl.WarnPictureMetadataDropped, wl.WarnChapterEndsDropped,
 		wl.WarnChapterMetadataDropped, wl.WarnSyncedLyricsMetadataDropped,
 		wl.WarnSyncedLyricsLineDropped, wl.WarnTagStructureDropped,
 		wl.WarnValueCoerced, wl.WarnValueReduced, wl.WarnSingleValuedMulti, wl.WarnNumericGenre,

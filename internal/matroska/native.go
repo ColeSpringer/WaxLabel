@@ -14,7 +14,8 @@ type simpleTag struct {
 	value    string
 	hasValue bool // a TagString child was present (an empty TagString is distinct from none)
 	lang     string
-	binary   int // >0 when the value was a TagBinary of this many bytes (not decoded)
+	bcp47    bool // a TagLanguageBCP47 child is present; kept in raw, not modeled
+	binary   int  // >0 when the value was a TagBinary of this many bytes (not decoded)
 	sub      []simpleTag
 	raw      []byte
 }

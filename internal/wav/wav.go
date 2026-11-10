@@ -89,6 +89,7 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	// No metadata padding. Synced lyrics need id3 (edit may create the chunk).
 	return core.NewCapabilities(core.FormatWAV, false, fields, pictures, chapters, core.AccessNone, perField).
 		WithSyncedLyrics(id3.SyncedLyricsCapability()).
+		WithTextQualifiers(core.TextLossNone, id3.DefaultLanguage).
 		WithFieldClassifier(id3.TransferClassifier)
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
@@ -28,7 +29,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	infoPresent := d.infoIdx >= 0
 	id3Present := d.id3 != nil
 
-	tagsChanged := !base.Tags.Equal(edited.Tags)
+	tagsChanged := !base.Tags.Equal(edited.Tags) || !core.EqualTextItems(base, edited)
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
 	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
 	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
@@ -52,9 +53,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// value itself, so the tag comparison above cannot see it.
 	encodingRewrite := id3.EncodingRewriteNeeded(d.id3, edited.Tags, wopts)
 
-	// Decide which containers receive the edited tags. Chapters and synced lyrics force an
-	// id3 chunk because LIST/INFO cannot store them (they are ID3 CHAP/CTOC and SYLT frames).
-	needID3 := id3Present || len(edited.Pictures) > 0 || len(edited.Chapters) > 0 || len(edited.SyncedLyrics) > 0 || !infoRepresentable(edited.Tags, changed) || stripINFO
+	// Decide which containers receive the edited tags. Chapters, synced lyrics and a comment's
+	// or lyrics' description and language force an id3 chunk because LIST/INFO cannot store
+	// them (they are ID3 CHAP/CTOC and SYLT frames and COMM/USLT fields).
+	needID3 := id3Present || len(edited.Pictures) > 0 || len(edited.Chapters) > 0 || len(edited.SyncedLyrics) > 0 ||
+		id3.NeedsTextFrames(edited) || !infoRepresentable(edited.Tags, changed) || stripINFO
 	writeINFO := (infoPresent && !stripINFO) || !needID3
 
 	// Build the new INFO items (changed keys re-rendered; everything else kept verbatim).
@@ -98,6 +101,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 				Pictures: edited.Pictures, PicturesChanged: picturesChanged,
 				Chapters: edited.Chapters, ChaptersChanged: chaptersChanged,
 				SyncedLyrics: edited.SyncedLyrics, SyncedLyricsChanged: syncedLyricsChanged,
+				Comments: edited.Comments, CommentsChanged: !slices.Equal(base.Comments, edited.Comments),
+				Lyrics: edited.Lyrics, LyricsChanged: !slices.Equal(base.Lyrics, edited.Lyrics),
 				Carried:             opts.Carried,
 				SyncedLyricsCleared: opts.SyncedLyricsCleared,
 				MediaDuration:       edited.Properties.Duration(),
@@ -523,15 +528,12 @@ func buildResult(edited *core.Media, base *doc, newInfo []infoItem, newID3 *id3.
 	if lay.hasID3 {
 		written.id3 = newID3
 	}
-	tags, pics, chapters, syncedLyrics, _, _, _ := project(written)
-	return &core.Media{
-		Format:       core.FormatWAV,
-		Properties:   edited.Properties.Clone(),
-		Tags:         tags,
-		Pictures:     pics,
-		Chapters:     chapters,
-		SyncedLyrics: syncedLyrics,
-		AudioStart:   lay.dataOff,
-		AudioEnd:     lay.dataOff + base.dataLen,
+	m := &core.Media{
+		Format:     core.FormatWAV,
+		Properties: edited.Properties.Clone(),
+		AudioStart: lay.dataOff,
+		AudioEnd:   lay.dataOff + base.dataLen,
 	}
+	project(written, m)
+	return m
 }

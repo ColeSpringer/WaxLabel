@@ -37,7 +37,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 // chapters included, copied verbatim, and any junk it keeps.
 func buildResult(edited *core.Media, base *doc, tp tail.TrailerPlan, audioStart, audioEnd int64) *core.Media {
 	proj := ape.Project(&ape.Tag{Items: tp.Items})
-	return &core.Media{
+	m := &core.Media{
 		Format:     core.FormatMusepack,
 		Properties: edited.Properties.Clone(),
 		Tags:       proj.Tags,
@@ -46,4 +46,6 @@ func buildResult(edited *core.Media, base *doc, tp tail.TrailerPlan, audioStart,
 		AudioStart: audioStart,
 		AudioEnd:   audioEnd,
 	}
+	core.SyncTextItems(m)
+	return m
 }

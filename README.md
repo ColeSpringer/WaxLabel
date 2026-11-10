@@ -100,14 +100,17 @@ waxlabel export-picture track.flac -o cover.jpg
 | `caps <file>` or `caps --format <name>` | What a file or format can store and edit. |
 | `keys` | Canonical tag vocabulary and cardinality. |
 | `copy <source> <dest>` | Overlay source metadata onto dest; report what carries, downgrades, or drops. `--strict` refuses a non-lossless transfer. |
-| `diff <a> <b>` | Compare canonical tags, pictures, chapters, and synced lyrics. |
+| `diff <a> <b>` | Compare canonical tags, pictures, chapters, and synced lyrics, and comment and lyrics descriptions and languages where both formats store them. |
 | `export-picture <file>` | Write one embedded picture to `-o` FILE. `--picture` selects by role or index. |
 
 Edits use `--set KEY=VALUE`, `--add KEY=VALUE`, `--clear KEY`, plus picture
 (`--add-cover`, `--add-picture`, `--remove-picture`), chapter
 (`--add-chapter`, `--clear-chapters`), synced-lyric
 (`--synced-lyrics-file`, `--add-synced-lyric`, `--synced-lyrics-lang`), and
-`--output-gain` (Ogg Opus header gain). Write shaping: `--preset`, `--legacy`,
+`--output-gain` (Ogg Opus header gain). `--comment-desc`, `--comment-lang`,
+`--lyrics-desc` and `--lyrics-lang` give the `COMMENT` or `LYRICS` values an
+invocation sets or adds a description and language; ID3 stores both, Matroska the
+language, and other formats drop them with a warning. Write shaping: `--preset`, `--legacy`,
 `--padding`. `--id3-multi null|repeat|slash` controls ID3v2.3 multi-value storage.
 See `waxlabel <command> --help`. `--legacy strip` (and `--preset minimal`) removes
 ID3v1/Lyrics3/APEv2/stray-ID3 unconditionally; when one holds the only copy of a value, the
@@ -178,26 +181,27 @@ report.
 Table below is generated from the same capability model as `waxlabel caps`.
 
 <!-- BEGIN caps (generated from codec Capabilities; see tests/capability_test.go) -->
-| Format | Pictures | Chapters | Synced Lyrics |
-| --- | --- | --- | --- |
-| AAC (ADTS) | read full, write full · APIC frame | read full, write full · ID3v2 CHAP/CTOC frames | read full, write full · ID3v2 SYLT frame |
-| AIFF | read full, write full · APIC (ID3 chunk) | read full, write full · ID3v2 CHAP/CTOC frames (ID3 chunk) | read full, write full · ID3v2 SYLT frame |
-| FLAC | read full, write full · FLAC PICTURE block | read full, write full · VorbisComment CHAPTERxxx | read full, write full · SYNCEDLYRICS comment (LRC) |
-| MP3 | read full, write full · APIC frame | read full, write full · ID3v2 CHAP/CTOC frames | read full, write full · ID3v2 SYLT frame |
-| MP4 | read full, write full · covr atom (JPEG/PNG/BMP) | read full, write full · Nero chpl and a QuickTime chapter text track | read none, write none |
-| Matroska | read full, write full · AttachedFile (image attachment) | read full, write full · Chapters > EditionEntry > ChapterAtom (default edition) | read none, write none |
-| Monkey's Audio | read full, write full · APEv2 Cover Art item | read none, write none | read none, write none |
-| Musepack | read full, write full · APEv2 Cover Art item | read full, write none · SV8 chapter packets | read none, write none |
-| Ogg FLAC | read full, write full · FLAC PICTURE block | read full, write full · VorbisComment CHAPTERxxx | read full, write full · SYNCEDLYRICS comment (LRC) |
-| Ogg Opus | read full, write full · METADATA_BLOCK_PICTURE | read full, write full · VorbisComment CHAPTERxxx | read full, write full · SYNCEDLYRICS comment (LRC) |
-| Ogg Vorbis | read full, write full · METADATA_BLOCK_PICTURE | read full, write full · VorbisComment CHAPTERxxx | read full, write full · SYNCEDLYRICS comment (LRC) |
-| WAV | read full, write full · APIC (id3 chunk) | read full, write full · ID3v2 CHAP/CTOC frames (id3 chunk) | read full, write full · ID3v2 SYLT frame |
-| WMA | read full, write none · WM/Picture descriptor | read full, write none · Marker Object | read none, write none |
-| WavPack | read full, write full · APEv2 Cover Art item | read none, write none | read none, write none |
+| Format | Pictures | Chapters | Synced Lyrics | Comment and Lyrics Qualifiers |
+| --- | --- | --- | --- | --- |
+| AAC (ADTS) | read full, write full · APIC frame | read full, write full · ID3v2 CHAP/CTOC frames | read full, write full · ID3v2 SYLT frame | description, language |
+| AIFF | read full, write full · APIC (ID3 chunk) | read full, write full · ID3v2 CHAP/CTOC frames (ID3 chunk) | read full, write full · ID3v2 SYLT frame | description, language |
+| FLAC | read full, write full · FLAC PICTURE block | read full, write full · VorbisComment CHAPTERxxx | read full, write full · SYNCEDLYRICS comment (LRC) | none |
+| MP3 | read full, write full · APIC frame | read full, write full · ID3v2 CHAP/CTOC frames | read full, write full · ID3v2 SYLT frame | description, language |
+| MP4 | read full, write full · covr atom (JPEG/PNG/BMP) | read full, write full · Nero chpl and a QuickTime chapter text track | read none, write none | none |
+| Matroska | read full, write full · AttachedFile (image attachment) | read full, write full · Chapters > EditionEntry > ChapterAtom (default edition) | read none, write none | language |
+| Monkey's Audio | read full, write full · APEv2 Cover Art item | read none, write none | read none, write none | none |
+| Musepack | read full, write full · APEv2 Cover Art item | read full, write none · SV8 chapter packets | read none, write none | none |
+| Ogg FLAC | read full, write full · FLAC PICTURE block | read full, write full · VorbisComment CHAPTERxxx | read full, write full · SYNCEDLYRICS comment (LRC) | none |
+| Ogg Opus | read full, write full · METADATA_BLOCK_PICTURE | read full, write full · VorbisComment CHAPTERxxx | read full, write full · SYNCEDLYRICS comment (LRC) | none |
+| Ogg Vorbis | read full, write full · METADATA_BLOCK_PICTURE | read full, write full · VorbisComment CHAPTERxxx | read full, write full · SYNCEDLYRICS comment (LRC) | none |
+| WAV | read full, write full · APIC (id3 chunk) | read full, write full · ID3v2 CHAP/CTOC frames (id3 chunk) | read full, write full · ID3v2 SYLT frame | description, language |
+| WMA | read full, write none · WM/Picture descriptor | read full, write none · Marker Object | read none, write none | none |
+| WavPack | read full, write full · APEv2 Cover Art item | read none, write none | read none, write none | none |
 <!-- END caps -->
 
 Some limits are intentional: MP4 covers drop the picture description, ID3 chapters
-store no per-chapter language, and Matroska writes random UIDs, so chapter and
+store no per-chapter language, ID3 stores a comment or lyric written without a
+language as `eng`, and Matroska writes random UIDs, so chapter and
 attachment rewrites are not byte-reproducible. Package docs describe them and writes
 warn about them.
 

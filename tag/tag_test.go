@@ -689,3 +689,12 @@ func TestMergeUnionDropsEmptyValues(t *testing.T) {
 		}
 	}
 }
+
+// TestTagPatchClears: a Clear of the key is found wherever it sits; a Set or Add is not one.
+func TestTagPatchClears(t *testing.T) {
+	var p TagPatch
+	p.Set(Title, "t").Clear(Comment).Add(Comment, "c")
+	if !p.Clears(Comment) || p.Clears(Title) || p.Clears(Lyrics) {
+		t.Errorf("Clears: COMMENT %v, TITLE %v, LYRICS %v; want true, false, false", p.Clears(Comment), p.Clears(Title), p.Clears(Lyrics))
+	}
+}

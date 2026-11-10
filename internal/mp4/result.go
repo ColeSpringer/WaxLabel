@@ -23,6 +23,7 @@ func buildResult(edited *core.Media, base *doc, newItems []item, lay layout, del
 		Chapters:   core.CloneChapters(base.chapters),
 	}
 	setEssence(nd, out)
+	core.SyncTextItems(out)
 	return out
 }
 

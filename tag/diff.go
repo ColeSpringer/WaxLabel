@@ -145,12 +145,16 @@ func (k ChangeKind) String() string {
 // lowercase "pictures"/"chapters" pseudo-keys a write plan emits). It carries the
 // count as a number, so a machine consumer need not parse the Old/New strings,
 // which exist for the text render. It is zero for an ordinary tag-key change.
+//
+// Quote is set for the synthetic "<KEY> description" and "<KEY> language" changes of a comment
+// or lyrics item: their values, which may be empty, render quoted.
 type Change struct {
 	Key   Key
 	Kind  ChangeKind
 	Old   []string
 	New   []string
 	Count int
+	Quote bool
 }
 
 // Diff reports the per-key delta from base to edited. Removed and changed keys
@@ -189,16 +193,29 @@ func Diff(base, edited TagSet) []Change {
 // no trailing newline. The plan/diff previews and the CLI share it.
 func (c Change) String() string {
 	key := SanitizeLine(string(c.Key))
+	join := joinChangeValues
+	if c.Quote {
+		join = joinQuotedValues
+	}
 	switch c.Kind {
 	case ChangeRemoved:
-		return "- " + key + ": " + joinChangeValues(c.Old)
+		return "- " + key + ": " + join(c.Old)
 	case ChangeAdded:
-		return "+ " + key + ": " + joinChangeValues(c.New)
+		return "+ " + key + ": " + join(c.New)
 	case ChangeChanged:
-		return "~ " + key + ": " + joinChangeValues(c.Old) + " -> " + joinChangeValues(c.New)
+		return "~ " + key + ": " + join(c.Old) + " -> " + join(c.New)
 	default:
 		return ""
 	}
+}
+
+// joinQuotedValues is joinChangeValues with each value in double quotes, so an empty one shows.
+func joinQuotedValues(vals []string) string {
+	out := make([]string, len(vals))
+	for i, v := range vals {
+		out[i] = `"` + SanitizeLine(ElideValue(v)) + `"`
+	}
+	return strings.Join(out, " | ")
 }
 
 // joinChangeValues renders a key's values for a change line: "(present, no value)"

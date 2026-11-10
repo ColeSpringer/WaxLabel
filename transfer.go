@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -35,9 +36,19 @@ func (t *Transfer) SetSyncedLyrics(sls ...SyncedLyrics) *Transfer {
 	return t
 }
 
-// source is shallow read-only media used for grading and writing.
-func (t *Transfer) source() *core.Media {
+// source is shallow read-only media used for grading and writing onto a destination of
+// capabilities dst. The language the source format's writer fills in for a comment or lyric
+// (ID3's eng) is no language where dst fills in the same one or stores none.
+func (t *Transfer) source(dst Capabilities) *core.Media {
 	m := *t.doc.media
+	if filler := t.doc.Capabilities().TextDefaultLanguage(); filler != "" {
+		if dst.TextDefaultLanguage() == filler || dst.Field(tag.Comment).TextLoss == core.TextLossDescriptionAndLanguage {
+			m.Comments = core.WithoutLanguage(m.Comments, filler)
+		}
+		if dst.TextDefaultLanguage() == filler || dst.Field(tag.Lyrics).TextLoss == core.TextLossDescriptionAndLanguage {
+			m.Lyrics = core.WithoutLanguage(m.Lyrics, filler)
+		}
+	}
 	if t.chaptersSet {
 		m.Chapters = t.chapters
 	} else {
@@ -59,8 +70,8 @@ func (t *Transfer) Plan(dst Format, opts ...WriteOption) (TransferReport, error)
 	if !ok {
 		return TransferReport{}, fmt.Errorf("%w: %s", waxerr.ErrUnsupportedFormat, dst)
 	}
-	m := t.source()
 	caps := codec.Capabilities(nil, resolveWriteOptions(opts))
+	m := t.source(caps)
 	return TransferReport{
 		Source: m.Format,
 		Dest:   dst,
@@ -75,8 +86,8 @@ func (t *Transfer) Prepare(dst *Document, opts ...WriteOption) (*Plan, TransferR
 	if t.doc.zero() || dst.zero() {
 		return nil, TransferReport{}, fmt.Errorf("%w: document is not initialized; use ParseFile/Parse", waxerr.ErrInvalidData)
 	}
-	m := t.source()
 	caps := dst.Capabilities(opts...)
+	m := t.source(caps)
 	items := core.ProjectTransfer(m, caps)
 	report := TransferReport{Source: m.Format, Dest: dst.media.Format, Items: items}
 
@@ -99,14 +110,25 @@ func (t *Transfer) Prepare(dst *Document, opts ...WriteOption) (*Plan, TransferR
 		}
 	}
 
+	srcCaps := t.doc.Capabilities()
 	for _, it := range items {
 		if it.Disposition == Dropped || it.Disposition == Excluded {
 			continue
 		}
 		switch it.Kind {
 		case core.TransferField:
-			if vals, ok := m.Tags.Get(it.Key); ok {
-				ed.Set(it.Key, vals...)
+			// A comment or lyric goes with the qualifiers the source's format holds for it.
+			switch it.Key {
+			case tag.Comment:
+				carried := core.CarryTextItems(m.Comments, dst.media.Comments, srcCaps.Field(it.Key).TextLoss)
+				ed.SetComments(core.TextItemsAs[Comment](carried)...)
+			case tag.Lyrics:
+				carried := core.CarryTextItems(m.Lyrics, dst.media.Lyrics, srcCaps.Field(it.Key).TextLoss)
+				ed.SetLyrics(core.TextItemsAs[Lyrics](carried)...)
+			default:
+				if vals, ok := m.Tags.Get(it.Key); ok {
+					ed.Set(it.Key, vals...)
+				}
 			}
 		case core.TransferChapter:
 			ed.SetChapters(core.CloneChapters(m.Chapters)...)

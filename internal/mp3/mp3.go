@@ -73,6 +73,7 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	// edit reuses the region's leftover, capped at the policy's Max.
 	return core.NewCapabilities(core.FormatMP3, false, fields, pictures, chapters, core.AccessPartial, perField).
 		WithSyncedLyrics(id3.SyncedLyricsCapability()).
+		WithTextQualifiers(core.TextLossNone, id3.DefaultLanguage).
 		WithFieldClassifier(id3.TransferClassifier)
 }
 

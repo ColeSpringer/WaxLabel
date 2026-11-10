@@ -176,11 +176,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 
 	media := &core.Media{Format: core.FormatMatroska, Native: d}
-	tags, families := project(d)
-	media.Tags = tags
-	media.Families = families
+	tags, families := project(d, media)
 	media.Pictures = pics
 	media.Chapters = chapters
+	media.Families = families
 	media.Warnings = mediaWarnings(tags, families)
 	media.Warnings = append(media.Warnings, invalidKeyWarnings(d)...)
 	media.Properties = core.Properties{Container: containerName(d.docType), Tracks: d.tracks}
@@ -540,6 +539,8 @@ func parseSimpleTag(src core.ReaderAtSized, st element, depth *bits.Depth, limit
 				return err
 			}
 			s.lang = lang
+		case idTagLangBCP47:
+			s.bcp47 = true
 		case idTagBinary:
 			s.binary = int(min(el.dataLen(), maxElement))
 		case idSimpleTag:
@@ -687,38 +688,63 @@ func targetTypeLevel(s string) uint64 {
 	}
 }
 
-// scopedContribution is one canonical value with the scope it was tagged at.
+// scopedContribution is one canonical value with the scope it was tagged at and the modeled
+// language of its SimpleTag ([tagLanguage]).
 type scopedContribution struct {
 	key   tag.Key
 	value string
 	scope core.Scope
+	lang  string
 }
 
-// project builds the authoritative TagSet and the scope-aware family view from
-// the parsed groups and the segment title. Only top-level SimpleTags project to
-// the canonical set; nested sub-tags and unmapped names stay in the native tree.
-func project(d *doc) (tag.TagSet, []core.FamilyValue) {
+// language is the modeled language of a SimpleTag: its TagLanguage, which a TagLanguageBCP47
+// beside it supersedes, leaving none the model holds.
+func (st simpleTag) language() string {
+	if st.bcp47 {
+		return ""
+	}
+	return tagLanguage(st.lang)
+}
+
+// tagLanguage is the modeled form of a TagLanguage, read up to its first NUL and in lowercase:
+// empty for none and for Matroska's "und".
+func tagLanguage(lang string) string {
+	lang, _, _ = strings.Cut(lang, "\x00")
+	if !meaningfulLang(lang) {
+		return ""
+	}
+	return core.LowerASCII(core.SanitizeUTF8(lang))
+}
+
+// project fills m's tags and its comment and lyrics items, and returns the tags with the
+// scope-aware family view, from the parsed groups and the segment title. Only top-level
+// SimpleTags project to the canonical set; nested sub-tags and unmapped names stay in the
+// native tree.
+func project(d *doc, m *core.Media) (tag.TagSet, []core.FamilyValue) {
 	// Matroska text is stored as raw bytes; a non-conformant file can hold invalid UTF-8
 	// in a TagString or the Info.Title.
 	var contribs []scopedContribution
 	if d.hasSegTitle {
-		contribs = append(contribs, scopedContribution{tag.Title, core.SanitizeUTF8(d.segTitle), core.ScopeAlbum})
+		contribs = append(contribs, scopedContribution{key: tag.Title, value: core.SanitizeUTF8(d.segTitle), scope: core.ScopeAlbum})
 	}
 	for _, g := range d.groups {
 		for _, st := range g.tags {
 			if !st.hasValue {
 				continue // a binary- or nested-only SimpleTag has no string value to project
 			}
-			contribs = append(contribs, projectTag(st.name, core.SanitizeUTF8(st.value), g.scope)...)
+			contribs = append(contribs, projectTag(st, g.scope)...)
 		}
 	}
-	return projectFlat(contribs), buildFamilies(contribs)
+	m.Tags, m.Comments, m.Lyrics = projectFlat(contribs)
+	core.SyncTextItems(m)
+	return m.Tags, buildFamilies(contribs)
 }
 
-// projectFlat builds the flat TagSet from scoped Matroska contributions. For each key
-// it picks a primary scope, preferring album scope when present, and emits that scope's
-// values verbatim and in order.
-func projectFlat(contribs []scopedContribution) tag.TagSet {
+// projectFlat builds the flat TagSet from scoped Matroska contributions, and the comment and
+// lyrics items of the COMMENT and LYRICS values it emits. For each key it picks a primary
+// scope, preferring album scope when present, and emits that scope's values verbatim and in
+// order.
+func projectFlat(contribs []scopedContribution) (ts tag.TagSet, comments, lyrics []core.TextItem) {
 	byKey := map[tag.Key][]scopedContribution{}
 	var keyOrder []tag.Key
 	for _, c := range contribs {
@@ -727,16 +753,24 @@ func projectFlat(contribs []scopedContribution) tag.TagSet {
 		}
 		byKey[c.key] = append(byKey[c.key], c)
 	}
-	ts := tag.NewTagSet()
+	ts = tag.NewTagSet()
 	for _, key := range keyOrder {
 		ck := byKey[key]
 		for _, e := range projectionOrder(key, ck) {
-			if e.emitted {
-				ts.Add(key, ck[e.index].value)
+			if !e.emitted {
+				continue
+			}
+			c := ck[e.index]
+			ts.Add(key, c.value)
+			switch key {
+			case tag.Comment:
+				comments = append(comments, core.TextItem{Text: c.value, Language: c.lang})
+			case tag.Lyrics:
+				lyrics = append(lyrics, core.TextItem{Text: c.value, Language: c.lang})
 			}
 		}
 	}
-	return ts
+	return ts, comments, lyrics
 }
 
 // contributionEmit is one contribution's fate in the flat projection: its index in
@@ -818,26 +852,28 @@ func unprojectableTagName(name string) bool {
 	return strings.TrimSpace(name) != "" && !mapping.MatroskaTechnicalName(name)
 }
 
-// projectTag maps one SimpleTag name/value to canonical contributions, splitting a
-// "n/total" track or disc number into its two canonical keys.
-func projectTag(name, value string, scope core.Scope) []scopedContribution {
-	key, ok := mapping.MatroskaTagKey(name)
+// projectTag maps one SimpleTag to canonical contributions, splitting a "n/total" track or disc
+// number into its two canonical keys.
+func projectTag(st simpleTag, scope core.Scope) []scopedContribution {
+	key, ok := mapping.MatroskaTagKey(st.name)
 	if !ok {
 		return nil
 	}
+	// Sanitized as the canonical TagSet holds it.
+	value, lang := core.SanitizeUTF8(st.value), st.language()
 	// The shared helper keeps the exact substrings ("04/09" -> "04"/"09", "0/12" ->
 	// "0"/"12") and leaves a malformed pair verbatim, so Matroska agrees with every
 	// other read path.
 	num, total, split := tag.NumberTotalSplit(key, value)
 	if !split {
-		return []scopedContribution{{key, value, scope}}
+		return []scopedContribution{{key, value, scope, lang}}
 	}
 	var out []scopedContribution
 	if num != "" {
-		out = append(out, scopedContribution{key, num, scope})
+		out = append(out, scopedContribution{key, num, scope, lang})
 	}
 	if total != "" {
-		out = append(out, scopedContribution{tag.TotalKey(key), total, scope})
+		out = append(out, scopedContribution{tag.TotalKey(key), total, scope, lang})
 	}
 	return out
 }

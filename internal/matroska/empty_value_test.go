@@ -38,7 +38,7 @@ func TestManagedTagWithoutTagStringStaysNative(t *testing.T) {
 			// project() must skip it: a doc with this single tag in an album group must
 			// yield no canonical ARTIST.
 			d := &doc{groups: []tagGroup{{scope: core.ScopeAlbum, tags: []simpleTag{st}}}}
-			if ts, _ := project(d); ts.Has(tag.Artist) {
+			if ts, _ := project(d, &core.Media{}); ts.Has(tag.Artist) {
 				t.Errorf("binary/nested-only ARTIST projected into the canonical set; want native-only")
 			}
 		})
@@ -50,7 +50,7 @@ func TestManagedTagWithoutTagStringStaysNative(t *testing.T) {
 // SimpleTag, and the parser reads it back as present-empty, not absent.
 func TestEmptySimpleTagRoundTrip(t *testing.T) {
 	const limit = int64(1 << 20)
-	b := simpleTagBytes("ARTIST", "") // writer output for a present-empty value
+	b := simpleTagBytes("ARTIST", "", "") // writer output for a present-empty value
 	src := core.BytesSource(b)
 	root, ok, _ := readElement(src, 0, src.Size(), limit)
 	if !ok || root.id != idSimpleTag {
@@ -63,7 +63,7 @@ func TestEmptySimpleTagRoundTrip(t *testing.T) {
 	if st.name != "ARTIST" || st.value != "" {
 		t.Fatalf("round-trip = name %q value %q, want ARTIST/empty", st.name, st.value)
 	}
-	got := projectTag(st.name, st.value, core.ScopeAlbum)
+	got := projectTag(st, core.ScopeAlbum)
 	if len(got) != 1 || got[0].key != tag.Artist || got[0].value != "" {
 		t.Fatalf("projectTag = %+v, want one Artist=\"\"", got)
 	}
@@ -77,7 +77,7 @@ func TestBuildAlbumGroupKeepsEmptyValue(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()
 	edited.Set(tag.Artist, "") // set ARTIST=
-	_, gb := buildAlbumGroup(nil, -1, base, edited, nil, nil, nil, computeEditDecisions(nil, -1, base, edited), true)
+	_, gb := buildAlbumGroup(nil, -1, base, edited, nil, nil, nil, computeEditDecisions(nil, -1, tagsOnly(base), tagsOnly(edited)), true)
 	if gb == nil {
 		t.Fatal("buildAlbumGroup dropped a present-empty ARTIST (set KEY= must not equal --clear KEY)")
 	}
@@ -92,7 +92,7 @@ func TestBuildAlbumGroupKeepsEmptyValue(t *testing.T) {
 	}
 	var got []scopedContribution
 	for _, st := range g.tags {
-		got = append(got, projectTag(st.name, st.value, core.ScopeAlbum)...)
+		got = append(got, projectTag(st, core.ScopeAlbum)...)
 	}
 	if len(got) != 1 || got[0].key != tag.Artist || got[0].value != "" {
 		t.Fatalf("projected %+v, want one Artist=\"\"", got)

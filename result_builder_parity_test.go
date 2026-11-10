@@ -50,6 +50,15 @@ var parityEdits = []parityEdit{
 	}},
 	{kind: "clear chapters", edit: clearChapters},
 	{kind: "add cover", edit: addCover(PicFrontCover)},
+	{kind: "comment", edit: func(_ *Document, e *Editor) {
+		e.Set(tag.Comment, "Parity comment", "Second comment").Set(tag.Lyrics, "Parity lyrics")
+	}},
+	{kind: "described comment", edit: func(_ *Document, e *Editor) {
+		e.SetComments(Comment{Text: "Described", Description: "Desc", Language: "fra"}, Comment{Text: "Plain"}, Comment{Text: "Also French", Language: "fra"})
+		e.SetLyrics(Lyrics{Text: "Words", Description: "Translation", Language: "deu"}, Lyrics{Text: "More words"})
+	}, then: []parityEdit{{kind: "requalified comment", edit: func(_ *Document, e *Editor) {
+		e.SetComments(Comment{Text: "Described", Language: "spa"}, Comment{Text: "Plain", Description: "Now described"})
+	}}}},
 }
 
 // parityInput is a file the matrix writes, with the edits only it runs.
@@ -182,8 +191,8 @@ func (r *parityRun) check(t *testing.T, key driftKey, format Format, plan *Plan,
 type surfaceDiff struct{ surface, result, written string }
 
 // parityDrift compares, in a fixed order, the surfaces production reads from a plan's result: the
-// tags, pictures, chapters, synced lyrics and output gain Plan.Changes diffs, and the essence ranges
-// the read-back verifies.
+// tags, pictures, chapters, synced lyrics, comment and lyrics items and output gain Plan.Changes
+// diffs, and the essence ranges the read-back verifies.
 func parityDrift(result, written *core.Media) []surfaceDiff {
 	var out []surfaceDiff
 	note := func(surface string, a, b any, equal bool) {
@@ -195,6 +204,8 @@ func parityDrift(result, written *core.Media) []surfaceDiff {
 	note("pictures", pictureLines(result.Pictures), pictureLines(written.Pictures), core.EqualPictures(result.Pictures, written.Pictures))
 	note("chapters", result.Chapters, written.Chapters, core.EqualChapters(result.Chapters, written.Chapters))
 	note("synced lyrics", result.SyncedLyrics, written.SyncedLyrics, core.EqualSyncedLyrics(result.SyncedLyrics, written.SyncedLyrics))
+	note("comments", result.Comments, written.Comments, slices.Equal(result.Comments, written.Comments))
+	note("lyrics", result.Lyrics, written.Lyrics, slices.Equal(result.Lyrics, written.Lyrics))
 	rg, wg := result.Properties.First().OutputGain, written.Properties.First().OutputGain
 	note("output gain", rg, wg, rg == wg)
 	re, we := result.EssenceRanges(), written.EssenceRanges()

@@ -176,12 +176,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		AudioEnd:   d.audioEnd,
 	}
 
-	tags, pics, chapters, syncedLyrics, families, numericGenre, projWs := project(d)
-	media.Tags = tags
-	media.Pictures = pics
-	media.Chapters = chapters
-	media.SyncedLyrics = syncedLyrics
-	media.Families = families
+	numericGenre, projWs := project(d, media)
 	warnings = append(warnings, projWs...)
 	warnings = append(warnings, mediaWarnings(d, numericGenre)...)
 
@@ -193,40 +188,40 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	return media, nil
 }
 
-// project derives the canonical view from a parsed or rewritten document: the ID3
-// chunk is authoritative when present, and the native text chunks fill in any
-// canonical key ID3 does not carry, so a native-only value (a "(c) " Copyright, say)
-// survives a rewrite.
-func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chapter, syncedLyrics []core.SyncedLyrics, families []core.FamilyValue, numericGenre bool, projWarnings []core.Warning) {
-	tags = tag.NewTagSet()
+// project fills m's canonical view from a parsed or rewritten document: the ID3 chunk is
+// authoritative when present, and the native text chunks fill in any canonical key ID3 does
+// not carry, so a native-only value (a "(c) " Copyright, say) survives a rewrite.
+func project(d *doc, m *core.Media) (numericGenre bool, projWarnings []core.Warning) {
+	m.Tags = tag.NewTagSet()
 	switch {
 	case d.id3 != nil:
 		proj := id3.Project(d.id3)
-		tags = proj.Tags
-		pics = proj.Pictures
+		m.Tags = proj.Tags
+		m.Pictures = proj.Pictures
 		// Chapters and synced lyrics live only in the embedded ID3 chunk (CHAP/CTOC, SYLT);
 		// AIFF's native text chunks have no chapter or synced-lyrics concept.
-		chapters = proj.Chapters
-		core.OpenPastDurationEnds(chapters, d.track.Duration)
-		syncedLyrics = proj.SyncedLyrics
-		projWarnings = proj.Warnings
-		families = proj.Families
-		numericGenre = proj.NumericGenre
+		m.Chapters = proj.Chapters
+		core.OpenPastDurationEnds(m.Chapters, d.track.Duration)
+		m.SyncedLyrics = proj.SyncedLyrics
+		m.Comments, m.Lyrics = proj.Comments, proj.Lyrics
+		m.Families = proj.Families
 		// ID3 wins on conflict; the native chunks fill keys ID3 lacks (precedence merge).
 		nativeSet := textTags(d.texts)
 		for _, k := range nativeSet.Keys() {
-			if tags.Has(k) {
+			if m.Tags.Has(k) {
 				continue
 			}
 			vs, _ := nativeSet.Get(k)
-			tags.Add(k, vs...)
+			m.Tags.Add(k, vs...)
 		}
-		families = append(families, textFamilies(tags, d.texts)...)
+		m.Families = append(m.Families, textFamilies(m.Tags, d.texts)...)
+		numericGenre, projWarnings = proj.NumericGenre, proj.Warnings
 	case len(d.texts) > 0:
-		tags = textTags(d.texts)
-		families = textFamilies(tags, d.texts)
+		m.Tags = textTags(d.texts)
+		m.Families = textFamilies(m.Tags, d.texts)
 	}
-	return tags, pics, chapters, syncedLyrics, families, numericGenre, projWarnings
+	core.SyncTextItems(m)
+	return numericGenre, projWarnings
 }
 
 // mediaWarnings returns the content-derived warnings for a parsed document: a

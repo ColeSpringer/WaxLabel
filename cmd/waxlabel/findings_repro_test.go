@@ -411,7 +411,7 @@ func TestConflictCountInTagHeader(t *testing.T) {
 	ts := tag.NewTagSet()
 	ts.Add(tag.Title, "a", "b") // single-valued key, two values
 	var buf bytes.Buffer
-	renderTags(&buf, ts)
+	renderTags(&buf, ts, tagNotes{})
 	if got := buf.String(); !strings.Contains(got, "1 in conflict") {
 		t.Errorf("tag header should report the conflict count:\n%s", got)
 	}

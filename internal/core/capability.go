@@ -1,6 +1,7 @@
 package core
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -181,7 +182,9 @@ type Capabilities struct {
 	GenericField    Capability             // default for canonical keys
 	perField        map[tag.Key]Capability // overrides
 	fieldClassifier FieldClassifier        // per-field transfer override; unexported for JSON
-	readOnlyReason  error                  // codec write refusal; unexported for JSON
+	// textDefaultLanguage: see [Capabilities.TextDefaultLanguage].
+	textDefaultLanguage string
+	readOnlyReason      error // codec write refusal; unexported for JSON
 }
 
 // FieldClassifier overrides transfer grading for one field (cardinality, reserved keys, siblings).
@@ -212,6 +215,28 @@ func (c Capabilities) WithOutputGain(level AccessLevel) Capabilities {
 	c.OutputGain = level
 	return c
 }
+
+// WithTextQualifiers sets what a COMMENT or LYRICS item loses in this format, on both keys' field
+// capabilities, and the language its writer gives an item that has none ("" when it leaves the
+// field out). A format that does not call it stores the text alone.
+func (c Capabilities) WithTextQualifiers(loss TextItemLoss, defaultLanguage string) Capabilities {
+	c.textDefaultLanguage = defaultLanguage
+	perField := maps.Clone(c.perField)
+	if perField == nil {
+		perField = map[tag.Key]Capability{}
+	}
+	for _, k := range []tag.Key{tag.Comment, tag.Lyrics} {
+		fc := c.Field(k)
+		fc.TextLoss = loss
+		perField[k] = fc
+	}
+	c.perField = perField
+	return c
+}
+
+// TextDefaultLanguage is the language this format's writer fills in for a comment or lyric given
+// none, so one read from it says little about the text; "" when the format has no such default.
+func (c Capabilities) TextDefaultLanguage() string { return c.textDefaultLanguage }
 
 // WithFieldClassifier attaches per-field transfer grading. Overrides Carried only.
 func (c Capabilities) WithFieldClassifier(fn FieldClassifier) Capabilities {

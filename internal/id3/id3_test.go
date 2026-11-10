@@ -1878,8 +1878,8 @@ func TestDecodeFrameDeunsyncBeforeStrip(t *testing.T) {
 	}
 }
 
-// TestRebuildPreservesCommentLanguage checks an edit recovers the COMM/USLT 3-byte
-// language the read path discards, rather than resetting to "eng". A new comment
+// TestRebuildPreservesCommentLanguage: a COMM or USLT whose text an edit replaces keeps its
+// language, the item's qualifiers following the value as the editor aligns them. A new comment
 // defaults to "eng", and a garbage 3-byte language round-trips verbatim.
 func TestRebuildPreservesCommentLanguage(t *testing.T) {
 	lang := func(body []byte) string {
@@ -1896,17 +1896,26 @@ func TestRebuildPreservesCommentLanguage(t *testing.T) {
 		}
 		return nil
 	}
+	// rebuild edits the comment and lyrics text of orig as Editor.Set does.
+	rebuild := func(orig []Frame, comment, lyrics string) []Frame {
+		proj := Project(&Tag{frames: orig})
+		edited := proj.Tags.Clone()
+		edited.Set(tag.Comment, comment)
+		if lyrics != "" {
+			edited.Set(tag.Lyrics, lyrics)
+		}
+		out, _ := RebuildFrames(orig, proj.Tags, edited, 4, StructuredEdit{
+			Comments: core.AlignTextItems(proj.Comments, edited, tag.Comment),
+			Lyrics:   core.AlignTextItems(proj.Lyrics, edited, tag.Lyrics),
+		}, WriteOpts{})
+		return out
+	}
 
 	// A COMM and a USLT carried in German; editing the value keeps the language.
-	orig := []Frame{
+	out := rebuild([]Frame{
 		{ID: "COMM", Body: encodeComment(4, "deu", "", []string{"Hallo"})},
 		{ID: "USLT", Body: encodeLangText(4, "deu", "", "Strophe")},
-	}
-	base := Project(&Tag{frames: orig}).Tags
-	edited := base.Clone()
-	edited.Set(tag.Comment, "Hallo Welt")
-	edited.Set(tag.Lyrics, "Neue Strophe")
-	out, _ := RebuildFrames(orig, base, edited, 4, StructuredEdit{}, WriteOpts{})
+	}, "Hallo Welt", "Neue Strophe")
 	if got := lang(find(out, "COMM")); got != "deu" {
 		t.Errorf("edited COMM language = %q, want deu", got)
 	}
@@ -1915,22 +1924,17 @@ func TestRebuildPreservesCommentLanguage(t *testing.T) {
 	}
 
 	// A brand-new comment (no original frame) defaults to eng.
-	fresh := tag.NewTagSet()
-	fresh.Set(tag.Comment, "Added")
-	outNew, _ := RebuildFrames(nil, tag.NewTagSet(), fresh, 4, StructuredEdit{}, WriteOpts{})
-	if got := lang(find(outNew, "COMM")); got != "eng" {
+	if got := lang(find(rebuild(nil, "Added", ""), "COMM")); got != "eng" {
 		t.Errorf("new COMM language = %q, want eng", got)
 	}
 
-	// A garbage (non-ASCII) 3-byte language round-trips verbatim, not normalized.
-	garbage := string([]byte{0x01, 0x02, 0x03})
-	origG := []Frame{{ID: "COMM", Body: encodeComment(4, garbage, "", []string{"x"})}}
-	baseG := Project(&Tag{frames: origG}).Tags
-	editedG := baseG.Clone()
-	editedG.Set(tag.Comment, "y")
-	outG, _ := RebuildFrames(origG, baseG, editedG, 4, StructuredEdit{}, WriteOpts{})
-	if got := lang(find(outG, "COMM")); got != garbage {
-		t.Errorf("edited COMM language = % x, want % x (garbage round-trips)", got, garbage)
+	// A garbage (non-ASCII) 3-byte language round-trips verbatim, not normalized, and so does
+	// the undefined marker.
+	for _, raw := range []string{string([]byte{0x01, 0x02, 0x03}), string([]byte{0xFF, 0xFE, 0xFD}), "XXX", "\x00\x00\x00"} {
+		out := rebuild([]Frame{{ID: "COMM", Body: encodeComment(4, raw, "", []string{"x"})}}, "y", "")
+		if got := lang(find(out, "COMM")); got != raw {
+			t.Errorf("edited COMM language = % x, want % x (round-trips)", got, raw)
+		}
 	}
 }
 
@@ -2161,6 +2165,105 @@ func TestFrameGroupAndStatusRoundTrip(t *testing.T) {
 		}
 		if note := FrameNote(tg.Frames()[1]); strings.Contains(note, "group 0x07") != c.group {
 			t.Errorf("%s: note %q, group noted want %v", c.name, note, c.group)
+		}
+	}
+}
+
+// TestCommentGroupsUnderV23Policies: comments of one description and language share a frame under
+// each v2.3 multi-value policy, and another description is a frame of its own.
+func TestCommentGroupsUnderV23Policies(t *testing.T) {
+	items := []core.TextItem{{Text: "a"}, {Text: "b", Description: "d"}, {Text: "c"}}
+	edited := tag.NewTagSet()
+	edited.Set(tag.Comment, core.TextsOf(items)...)
+	eng := func(text, desc string) core.TextItem {
+		return core.TextItem{Text: text, Description: desc, Language: "eng"}
+	}
+	cases := []struct {
+		pol    core.ID3MultiValuePolicy
+		frames int
+		multi  bool
+		want   []core.TextItem
+	}{
+		{core.ID3MultiNullSep, 2, true, []core.TextItem{eng("a", ""), eng("c", ""), eng("b", "d")}},
+		{core.ID3MultiRepeatFrame, 3, false, []core.TextItem{eng("a", ""), eng("c", ""), eng("b", "d")}},
+		{core.ID3MultiSlash, 2, false, []core.TextItem{eng("a / c", ""), eng("b", "d")}},
+	}
+	for _, c := range cases {
+		out, info := RebuildFrames(nil, tag.NewTagSet(), edited, 3, StructuredEdit{Comments: items}, WriteOpts{Multi: c.pol})
+		if len(out) != c.frames || info.UsedV23Multi != c.multi {
+			t.Errorf("policy %v: %d frames, v2.3 multi %v; want %d, %v", c.pol, len(out), info.UsedV23Multi, c.frames, c.multi)
+		}
+		if got := Project(&Tag{srcVersion: 3, writeVersion: 3, frames: out}).Comments; !slices.Equal(got, c.want) {
+			t.Errorf("policy %v: comments read back %+v, want %+v", c.pol, got, c.want)
+		}
+	}
+}
+
+// TestTextFramesTrailingEmpty: an empty comment that ends a frame of several texts is lost and
+// reported; one alone in its frame, or a lyric, which has a frame to itself, is stored.
+func TestTextFramesTrailingEmpty(t *testing.T) {
+	rebuild := func(comments, lyrics []core.TextItem) ([]Frame, RebuildInfo) {
+		edited := tag.NewTagSet()
+		edited.Set(tag.Comment, core.TextsOf(comments)...)
+		edited.Set(tag.Lyrics, core.TextsOf(lyrics)...)
+		return RebuildFrames(nil, tag.NewTagSet(), edited, 4, StructuredEdit{Comments: comments, Lyrics: lyrics}, WriteOpts{})
+	}
+	// The empty comment shares the described frame with "a": lost. LYRICS ends in an empty too,
+	// in a frame of its own.
+	_, info := rebuild([]core.TextItem{{Text: "a", Description: "d"}, {Text: "", Description: "d"}, {Text: "b"}},
+		[]core.TextItem{{Text: "l"}, {Text: ""}})
+	if !slices.Equal(info.DroppedTrailingValues, []tag.Key{tag.Comment}) {
+		t.Errorf("dropped trailing values = %v, want [COMMENT]", info.DroppedTrailingValues)
+	}
+	// The empty comment is the only text of its frame: stored, though it ends the value list.
+	out, info := rebuild([]core.TextItem{{Text: "a", Description: "d"}, {Text: ""}}, nil)
+	if len(info.DroppedTrailingValues) != 0 {
+		t.Errorf("dropped trailing values = %v, want none", info.DroppedTrailingValues)
+	}
+	want := []core.TextItem{{Text: "a", Description: "d", Language: "eng"}, {Text: "", Language: "eng"}}
+	if got := Project(&Tag{srcVersion: 4, writeVersion: 4, frames: out}).Comments; !slices.Equal(got, want) {
+		t.Errorf("comments read back %+v, want %+v", got, want)
+	}
+}
+
+// TestLegacyV2FamiliesQualifiersAreOpaque: a stray tag's comment or lyric with a description, or
+// a language other than the default, is content a strip cannot prove redundant.
+func TestLegacyV2FamiliesQualifiersAreOpaque(t *testing.T) {
+	auth := tag.NewTagSet()
+	auth.Set(tag.Comment, "c")
+	auth.Set(tag.Lyrics, "l")
+	cases := []struct {
+		name   string
+		frames []Frame
+		opaque bool
+	}{
+		{"default language", []Frame{{ID: "COMM", Body: encodeComment(4, "eng", "", []string{"c"})}, {ID: "USLT", Body: encodeLangText(4, "eng", "", "l")}}, false},
+		{"undefined language", []Frame{{ID: "COMM", Body: encodeComment(4, "XXX", "", []string{"c"})}}, false},
+		{"described comment", []Frame{{ID: "COMM", Body: encodeComment(4, "eng", "d", []string{"c"})}}, true},
+		{"translated lyric", []Frame{{ID: "USLT", Body: encodeLangText(4, "deu", "", "l")}}, true},
+	}
+	for _, c := range cases {
+		if _, opaque, _ := LegacyV2Families(auth, Render(4, c.frames, 0), bits.DefaultLimits.MaxElements); opaque != c.opaque {
+			t.Errorf("%s: opaque = %v, want %v", c.name, opaque, c.opaque)
+		}
+	}
+}
+
+// TestChangedCommentUnitFollowsThePolicy: when a comment edit renders the COMM unit again, a
+// frame of several texts is laid out as the multi-value policy asks, not kept NUL-separated.
+func TestChangedCommentUnitFollowsThePolicy(t *testing.T) {
+	orig := []Frame{
+		{ID: "COMM", Body: encodeComment(3, "eng", "", []string{"a", "b"})},
+		{ID: "COMM", Body: encodeComment(3, "eng", "d", []string{"x"})},
+	}
+	proj := Project(&Tag{srcVersion: 3, writeVersion: 3, frames: orig})
+	edited := proj.Tags.Clone()
+	edited.Set(tag.Comment, "a", "b", "y")
+	items := core.AlignTextItems(proj.Comments, edited, tag.Comment)
+	for pol, frames := range map[core.ID3MultiValuePolicy]int{core.ID3MultiNullSep: 2, core.ID3MultiRepeatFrame: 3, core.ID3MultiSlash: 2} {
+		out, info := RebuildFrames(orig, proj.Tags, edited, 3, StructuredEdit{Comments: items, CommentsChanged: true}, WriteOpts{Multi: pol})
+		if len(out) != frames || info.UsedV23Multi != (pol == core.ID3MultiNullSep) {
+			t.Errorf("policy %v: %d frames, v2.3 multi %v; want %d, %v", pol, len(out), info.UsedV23Multi, frames, pol == core.ID3MultiNullSep)
 		}
 	}
 }

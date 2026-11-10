@@ -37,8 +37,11 @@ type Editor struct {
 	syncedLyricsTouched bool
 	// After ClearSyncedLyrics: ID3 SYLT must not inherit dest language/descriptor.
 	syncedLyricsCleared bool
-	outputGain          int
-	outputGainTouched   bool
+	// Qualifiers from SetComments/SetLyrics; Prepare aligns them to the patched values.
+	comments, lyrics       []core.TextItem
+	commentsSet, lyricsSet bool
+	outputGain             int
+	outputGainTouched      bool
 	// Transfer carry: suppress authoring sanity warnings.
 	carried bool
 	// 1-based LRC lines dropped; Prepare warns WarnSyncedLyricsLineDropped.
@@ -49,8 +52,25 @@ type Editor struct {
 
 // Apply appends a patch (later ops win). Keys go through [ResolveAlias].
 func (e *Editor) Apply(p tag.TagPatch) *Editor {
-	e.patch.Append(p.MapKeys(ResolveAlias))
+	p = p.MapKeys(ResolveAlias)
+	for _, key := range []tag.Key{tag.Comment, tag.Lyrics} {
+		if p.Clears(key) {
+			e.forgetQualifiers(key)
+		}
+	}
+	e.patch.Append(p)
 	return e
+}
+
+// forgetQualifiers drops the descriptions and languages key's values would take, the file's own
+// and any set so far: a cleared comment or lyric hands none on to what is added after it.
+func (e *Editor) forgetQualifiers(key tag.Key) {
+	switch key {
+	case tag.Comment:
+		e.comments, e.commentsSet = nil, true
+	case tag.Lyrics:
+		e.lyrics, e.lyricsSet = nil, true
+	}
 }
 
 // Set replaces a key's values ([ResolveAlias]). No values -> absent at Prepare.
@@ -62,7 +82,9 @@ func (e *Editor) Set(key tag.Key, vals ...string) *Editor {
 
 // Clear removes a key ([ResolveAlias]).
 func (e *Editor) Clear(key tag.Key) *Editor {
-	e.patch.Clear(ResolveAlias(key))
+	key = ResolveAlias(key)
+	e.forgetQualifiers(key)
+	e.patch.Clear(key)
 	return e
 }
 
@@ -160,6 +182,22 @@ func normalizeSyncedLyrics(sls []SyncedLyrics) []core.SyncedLyrics {
 		out = append(out, sl)
 	}
 	return out
+}
+
+// SetComments replaces the COMMENT values with cs, each with its description and language. A
+// format that cannot store one drops it with a warning; ID3 stores a comment given no language
+// as eng, and keeps comments of one description and language together. As for the file's own
+// comments, a later Set or Add keeps both on a text that stays and hands a replaced text's on;
+// a Clear hands on none.
+func (e *Editor) SetComments(cs ...Comment) *Editor {
+	e.comments, e.commentsSet = core.TextItemsAs[core.TextItem](cs), true
+	return e.Set(tag.Comment, core.TextsOf(e.comments)...)
+}
+
+// SetLyrics replaces the LYRICS values with ls, as [Editor.SetComments].
+func (e *Editor) SetLyrics(ls ...Lyrics) *Editor {
+	e.lyrics, e.lyricsSet = core.TextItemsAs[core.TextItem](ls), true
+	return e.Set(tag.Lyrics, core.TextsOf(e.lyrics)...)
 }
 
 // NoteSyncedLyricsDropped records dropped LRC line numbers for Prepare warnings.
@@ -273,9 +311,18 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		Pictures:     e.base.Pictures,
 		Chapters:     e.base.Chapters,
 		SyncedLyrics: e.base.SyncedLyrics,
+		Comments:     e.base.Comments,
+		Lyrics:       e.base.Lyrics,
 		Native:       e.base.Native,
 		Identity:     e.base.Identity,
 	}
+	if e.commentsSet {
+		edited.Comments = e.comments
+	}
+	if e.lyricsSet {
+		edited.Lyrics = e.lyrics
+	}
+	core.SyncTextItems(edited)
 	if e.picsTouched {
 		edited.Pictures = e.pictures
 	}
@@ -556,6 +603,20 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 				core.SyncedLyricsMetadataDroppedMessage())
 		}
 	}
+	// Warn when the destination drops or alters a description or language this edit authored. A
+	// transfer grades the loss in its report. stored is what the plan leaves in the file.
+	stored := edited
+	if wp.Result != nil {
+		stored = wp.Result
+	}
+	if !e.carried {
+		if e.commentsSet {
+			wp.Report.Warnings = appendTextQualifierWarnings(wp.Report.Warnings, caps, tag.Comment, edited.Comments, stored.Comments)
+		}
+		if e.lyricsSet {
+			wp.Report.Warnings = appendTextQualifierWarnings(wp.Report.Warnings, caps, tag.Lyrics, edited.Lyrics, stored.Lyrics)
+		}
+	}
 	// LegacyStrip destroys legacy-only values; warn what goes. Against edited tags
 	// (setting a key the legacy held is not a loss). Outside !carried: user asked for
 	// strip. PlanLintFix never reaches this. WAV/AIFF reuse LegacyStrip differently.
@@ -650,7 +711,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		// codec's result: a format that collapses the value in its result (Matroska's
 		// Info.Title) would otherwise hide the loss. Diffing base->intent avoids
 		// re-flagging an untouched pre-existing multi.
-		wp.Report.Warnings = appendSingleValuedWarnings(wp.Report.Warnings, e.base.Tags, edited.Tags)
+		wp.Report.Warnings = appendSingleValuedWarnings(wp.Report.Warnings, e.base.Tags, edited.Tags, stored.Lyrics)
 		// The legacy-conflict check judges the plan's result tags (what the codec
 		// writes): a re-projected value such as GENRE=17 written as "Rock" must not read
 		// as a conflict when the written value still agrees.
@@ -662,11 +723,12 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		// The track/disc total-vs-slash conflicts computed at the number-pair split.
 		wp.Report.Warnings = append(wp.Report.Warnings, numberConflicts...)
 	}
-	return &Plan{doc: e.doc, plan: wp, opts: wo}, nil
+	return &Plan{doc: e.doc, plan: wp, opts: wo, commentsAuthored: e.commentsSet, lyricsAuthored: e.lyricsSet}, nil
 }
 
-// rejectInvalidValues refuses NUL or invalid UTF-8 in touched tag values, added
-// picture descriptions, and chapter titles/languages (C-string / round-trip safety).
+// rejectInvalidValues refuses NUL or invalid UTF-8 in touched tag values, authored comment and
+// lyrics qualifiers, added picture descriptions, and chapter titles/languages (C-string /
+// round-trip safety).
 func (e *Editor) rejectInvalidValues(editedTags tag.TagSet, keys []tag.Key) error {
 	for _, k := range keys {
 		vals, ok := editedTags.Get(k)
@@ -675,6 +737,25 @@ func (e *Editor) rejectInvalidValues(editedTags tag.TagSet, keys []tag.Key) erro
 		}
 		for _, v := range vals {
 			if err := checkWritableText(v, fmt.Sprintf("tag value for %q", k)); err != nil {
+				return err
+			}
+		}
+	}
+	for _, set := range []struct {
+		what  string
+		items []core.TextItem
+	}{{"comment", e.comments}, {"lyrics", e.lyrics}} {
+		for _, it := range set.items {
+			if err := checkWritableText(it.Description, set.what+" description"); err != nil {
+				return err
+			}
+			// A COMM under a machine description is kept, never read as COMMENT: the comment
+			// would vanish into a frame no edit reaches.
+			if set.what == "comment" && mapping.ID3TechnicalCommentDesc(it.Description) {
+				return fmt.Errorf("%w: comment description %q names machine data (iTunes normalization, ReplayGain), not a comment",
+					waxerr.ErrUnsupportedTag, it.Description)
+			}
+			if err := checkWritableText(it.Language, set.what+" language"); err != nil {
 				return err
 			}
 		}
@@ -765,15 +846,30 @@ func planResultTags(wp *core.WritePlan, edited *core.Media) tag.TagSet {
 	return edited.Tags
 }
 
+// appendTextQualifierWarnings warns value-reduced, keyed, when the items an edit authored hold a
+// description or language the destination's key capability drops, or one it stores in another
+// form (stored is what the plan leaves).
+func appendTextQualifierWarnings(ws []core.Warning, caps core.Capabilities, key tag.Key, authored, stored []core.TextItem) []core.Warning {
+	loss := caps.Field(key).TextLoss
+	if reason := core.TextItemLossReason(authored, loss); reason != "" {
+		return core.WarnKeyed(ws, core.WarnValueReduced, fmt.Sprintf("%s: %s", key, reason), key)
+	}
+	if qualifier, want, got, differs := core.QualifierStoredAs(authored, stored, loss); differs {
+		ws = core.WarnKeyed(ws, core.WarnValueReduced, fmt.Sprintf("%s: %s %q reads back as %q", key, qualifier, want, got), key)
+	}
+	return ws
+}
+
 // appendSingleValuedWarnings adds a WarnSingleValuedMulti for every known
 // single-valued key the edit changes into holding more than one value. It diffs
 // base against the edit intent, so a format that collapses the value in its result
 // (Matroska's Info.Title) is still flagged and an untouched pre-existing multi is
 // not. The shared [tag.Key.SingleValuedMulti] predicate keeps this, the linter, and
 // the CLI's --strict gate in agreement. Each warning carries the key (Warning.Keys).
-func appendSingleValuedWarnings(ws []core.Warning, base, intent tag.TagSet) []core.Warning {
+// storedLyrics is the lyrics items the plan leaves, for [core.SingleValuedMulti].
+func appendSingleValuedWarnings(ws []core.Warning, base, intent tag.TagSet, storedLyrics []core.TextItem) []core.Warning {
 	for _, c := range tag.Diff(base, intent) {
-		if c.Key.SingleValuedMulti(len(c.New)) {
+		if core.SingleValuedMulti(c.Key, len(c.New), storedLyrics) {
 			ws = core.WarnKeyed(ws, core.WarnSingleValuedMulti, fmt.Sprintf(
 				"%s is single-valued but is being given %d values; the typed projection reads only the first",
 				c.Key, len(c.New)), c.Key)

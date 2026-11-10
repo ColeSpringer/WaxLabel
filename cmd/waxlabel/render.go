@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -49,7 +50,7 @@ func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
 	if pad := doc.Padding(); pad > 0 {
 		fmt.Fprintf(w, "  padding: %s\n", wl.HumanBytes(pad))
 	}
-	renderTags(w, doc.Tags())
+	renderTags(w, doc.Tags(), tagNotesOf(doc))
 	// Legacy-only tags and opaque legacy content are separate notes; see --native for detail.
 	if lo := doc.LegacyOnlyKeys(); len(lo) > 0 {
 		fmt.Fprintf(w, "  note:    %s only in a legacy container; see --native\n", pluralUnit(len(lo), "tag"))
@@ -134,8 +135,8 @@ const keyColumn = 24
 
 // dupOrConflict labels duplicate vs conflicting values on a single-valued key (matches lint).
 // Marker includes leading two spaces for direct append.
-func dupOrConflict(k tag.Key, vals []string) (marker string, conflict bool) {
-	switch cardinalityState(k, vals) {
+func dupOrConflict(k tag.Key, vals []string, lyrics []core.TextItem) (marker string, conflict bool) {
+	switch cardinalityState(k, vals, lyrics) {
 	case "duplicate":
 		return "  (duplicate)", false
 	case "conflict":
@@ -144,9 +145,10 @@ func dupOrConflict(k tag.Key, vals []string) (marker string, conflict bool) {
 	return "", false
 }
 
-// cardinalityState classifies duplicate vs conflict on a single-valued key (shared by text and JSON).
-func cardinalityState(k tag.Key, vals []string) string {
-	if !k.SingleValuedMulti(len(vals)) {
+// cardinalityState classifies duplicate vs conflict on a single-valued key (shared by text and
+// JSON). lyrics is the file's lyrics items, for [core.SingleValuedMulti].
+func cardinalityState(k tag.Key, vals []string, lyrics []core.TextItem) string {
+	if !core.SingleValuedMulti(k, len(vals), lyrics) {
 		return ""
 	}
 	if tag.DistinctValues(vals) == 1 {
@@ -155,8 +157,43 @@ func cardinalityState(k tag.Key, vals []string) string {
 	return "conflict"
 }
 
+// tagNotes is what the comment and lyrics items add to a tag listing: a suffix per value naming
+// its language and description, as (eng, "My Desc"), for the keys that have any, and the lyrics
+// items, which decide whether several lyrics are a conflict.
+type tagNotes struct {
+	suffixes map[tag.Key][]string
+	lyrics   []core.TextItem
+}
+
+func tagNotesOf(doc *wl.Document) tagNotes {
+	notes := tagNotes{suffixes: map[tag.Key][]string{}, lyrics: core.TextItemsAs[core.TextItem](doc.Lyrics())}
+	add := func(key tag.Key, items []core.TextItem) {
+		suffixes := make([]string, len(items))
+		any := false
+		for i, it := range items {
+			var parts []string
+			if it.Language != "" {
+				parts = append(parts, tag.SanitizeLine(it.Language))
+			}
+			if it.Description != "" {
+				// %q escapes the description; SanitizeLine would escape it twice.
+				parts = append(parts, fmt.Sprintf("%q", tag.ElideValue(it.Description)))
+			}
+			if len(parts) > 0 {
+				suffixes[i], any = "  ("+strings.Join(parts, ", ")+")", true
+			}
+		}
+		if any {
+			notes.suffixes[key] = suffixes
+		}
+	}
+	add(tag.Comment, core.TextItemsAs[core.TextItem](doc.Comments()))
+	add(tag.Lyrics, notes.lyrics)
+	return notes
+}
+
 // renderTags prints tags: one value per line, key repeated for multi-valued fields.
-func renderTags(w io.Writer, ts tag.TagSet) {
+func renderTags(w io.Writer, ts tag.TagSet, notes tagNotes) {
 	if ts.Len() == 0 {
 		fmt.Fprintln(w, "  tags:    (none)")
 		return
@@ -172,7 +209,7 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 			continue
 		}
 		vals, _ := ts.Get(k)
-		if _, conflict := dupOrConflict(k, vals); conflict {
+		if _, conflict := dupOrConflict(k, vals, notes.lyrics); conflict {
 			conflicts++
 		}
 	}
@@ -192,8 +229,12 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 			fmt.Fprintf(w, "    %-*s  (present, no value)\n", width, ks)
 			continue
 		}
-		suffix, _ := dupOrConflict(k, vals)
-		for _, v := range vals {
+		marker, _ := dupOrConflict(k, vals, notes.lyrics)
+		for i, v := range vals {
+			suffix := marker
+			if q := notes.suffixes[k]; i < len(q) {
+				suffix = q[i] + marker
+			}
 			fmt.Fprintf(w, "    %-*s  ", width, ks)
 			if v == "" {
 				fmt.Fprintln(w, "(empty value)"+suffix)

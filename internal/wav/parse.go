@@ -238,12 +238,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		AudioEnd:   d.dataOff + d.dataLen,
 	}
 
-	tags, pics, chapters, syncedLyrics, families, numericGenre, projWs := project(d)
-	media.Tags = tags
-	media.Pictures = pics
-	media.Chapters = chapters
-	media.SyncedLyrics = syncedLyrics
-	media.Families = families
+	numericGenre, projWs := project(d, media)
 	warnings = append(warnings, projWs...)
 	warnings = append(warnings, mediaWarnings(d, numericGenre)...)
 
@@ -255,39 +250,39 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	return media, nil
 }
 
-// project derives the canonical view from a parsed or rewritten document: the id3
-// chunk is authoritative when present, and LIST/INFO fills in any canonical key id3
-// does not carry.
-func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chapter, syncedLyrics []core.SyncedLyrics, families []core.FamilyValue, numericGenre bool, projWarnings []core.Warning) {
-	tags = tag.NewTagSet()
+// project fills m's canonical view from a parsed or rewritten document: the id3 chunk is
+// authoritative when present, and LIST/INFO fills in any canonical key id3 does not carry.
+func project(d *doc, m *core.Media) (numericGenre bool, projWarnings []core.Warning) {
+	m.Tags = tag.NewTagSet()
 	switch {
 	case d.id3 != nil:
 		proj := id3.Project(d.id3)
-		tags = proj.Tags
-		pics = proj.Pictures
+		m.Tags = proj.Tags
+		m.Pictures = proj.Pictures
 		// Chapters and synced lyrics live only in the id3 chunk (CHAP/CTOC, SYLT). A native
 		// cue/adtl chapter list is preserved opaque but not projected (a known gap).
-		chapters = proj.Chapters
-		core.OpenPastDurationEnds(chapters, d.track.Duration)
-		syncedLyrics = proj.SyncedLyrics
-		projWarnings = proj.Warnings
-		families = proj.Families
-		numericGenre = proj.NumericGenre
+		m.Chapters = proj.Chapters
+		core.OpenPastDurationEnds(m.Chapters, d.track.Duration)
+		m.SyncedLyrics = proj.SyncedLyrics
+		m.Comments, m.Lyrics = proj.Comments, proj.Lyrics
+		m.Families = proj.Families
 		// id3 wins on conflict; INFO fills keys id3 lacks (precedence merge).
 		infoSet := infoTags(d.info)
 		for _, k := range infoSet.Keys() {
-			if tags.Has(k) {
+			if m.Tags.Has(k) {
 				continue
 			}
 			vs, _ := infoSet.Get(k)
-			tags.Add(k, vs...)
+			m.Tags.Add(k, vs...)
 		}
-		families = append(families, infoFamilies(tags, d.info)...)
+		m.Families = append(m.Families, infoFamilies(m.Tags, d.info)...)
+		numericGenre, projWarnings = proj.NumericGenre, proj.Warnings
 	case len(d.info) > 0:
-		tags = infoTags(d.info)
-		families = infoFamilies(tags, d.info)
+		m.Tags = infoTags(d.info)
+		m.Families = infoFamilies(m.Tags, d.info)
 	}
-	return tags, pics, chapters, syncedLyrics, families, numericGenre, projWarnings
+	core.SyncTextItems(m)
+	return numericGenre, projWarnings
 }
 
 // markDup flags the given chunk indices as redundant duplicate tag containers,

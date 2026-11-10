@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/mapping"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -43,6 +45,9 @@ type editFlags struct {
 	syncedLyricsLang  string   // ISO-639-2 language for the authored synced-lyrics set
 	clearSyncedLyrics bool     // remove all synced lyrics
 
+	// Description and language for the COMMENT and LYRICS values this invocation sets or adds.
+	commentDesc, commentLang, lyricsDesc, lyricsLang optString
+
 	stripEncoder bool // clear the ENCODER software stamp
 
 	preset string
@@ -66,6 +71,19 @@ type editFlags struct {
 	strict bool // promote selected write notes, including unknown-key and dropped-value notes, to errors
 }
 
+// optString is a string flag that records being given, so an empty value differs from unset.
+type optString struct {
+	value string
+	set   bool
+}
+
+func (o *optString) String() string { return o.value }
+func (o *optString) Type() string   { return "string" }
+func (o *optString) Set(s string) error {
+	o.value, o.set = s, true
+	return nil
+}
+
 // bind registers the edit and write-option flags on cmd.
 func (e *editFlags) bind(cmd *cobra.Command) {
 	f := cmd.Flags()
@@ -84,6 +102,10 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.addSyncedLyric, "add-synced-lyric", nil, "add synced lyric line TIMESTAMP=Text (e.g. 1:30=Verse; repeatable); combined lines replace any existing synced lyrics")
 	f.StringVar(&e.syncedLyricsLang, "synced-lyrics-lang", "", "a 3-letter language code (the ISO-639-2 shape, e.g. eng) for synced lyrics authored by --synced-lyrics-file or --add-synced-lyric; the shape is validated, not registry membership")
 	f.BoolVar(&e.clearSyncedLyrics, "clear-synced-lyrics", false, "remove all synced lyrics")
+	f.Var(&e.commentDesc, "comment-desc", "description for the COMMENT values this invocation sets or adds; an empty value clears it. ID3 (MP3/AAC/WAV/AIFF) stores it; other formats drop it with a warning (--strict then refuses)")
+	f.Var(&e.commentLang, "comment-lang", "a 3-letter language code (the ISO-639-2 shape, e.g. eng) for the COMMENT values this invocation sets or adds. ID3 and Matroska store it; other formats drop it with a warning. A value set without one keeps the language it had; a new ID3 comment gets eng")
+	f.Var(&e.lyricsDesc, "lyrics-desc", "description for the LYRICS values this invocation sets or adds, as --comment-desc")
+	f.Var(&e.lyricsLang, "lyrics-lang", "language code for the LYRICS values this invocation sets or adds, as --comment-lang")
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear ENCODER, the software stamp an encoder or transcoder leaves behind, wherever the format stores it (a WAV ISFT item and a FLAC/Ogg vendor string included)")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|minimal")
 	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip. strip removes ID3v1/Lyrics3/APEv2/stray-ID3 containers unconditionally, warning when one holds the only copy of a value (--strict then refuses)")
@@ -104,6 +126,8 @@ var nonEditFlags = map[string]bool{
 	"force": true, "picture-description": true, "strict": true,
 	// --synced-lyrics-lang only labels authored lyrics; alone it is not an edit.
 	"synced-lyrics-lang": true,
+	// The qualifier flags label values --set/--add name; alone they are a usage error.
+	"comment-desc": true, "comment-lang": true, "lyrics-desc": true, "lyrics-lang": true,
 }
 
 // editFlagsEmpty reports whether no edit was requested (only non-edit flags or none).
@@ -177,7 +201,7 @@ func refuseUnquotedValue(ef *editFlags, realOf func(string) string, args []strin
 // rejectEmptyScalarFlags rejects empty scalar flags (empty vs unset is ambiguous).
 // Uses Changed so set and plan share one check.
 func rejectEmptyScalarFlags(cmd *cobra.Command) error {
-	for _, name := range []string{"preset", "legacy", "id3-multi", "padding", "synced-lyrics-file"} {
+	for _, name := range []string{"preset", "legacy", "id3-multi", "padding", "synced-lyrics-file", "comment-lang", "lyrics-lang"} {
 		if cmd.Flags().Changed(name) {
 			if v, _ := cmd.Flags().GetString(name); v == "" {
 				return usagef("--%s cannot be empty", name)
@@ -411,6 +435,95 @@ func resolveRemovals(selectors []string, pics []wl.Picture) (targets map[int]boo
 	return targets, missedRoles, nil
 }
 
+// textQualifier is the description and language --comment-desc/--comment-lang, or the lyrics
+// pair, give the values of key the invocation sets or adds; a nil one was not given.
+type textQualifier struct {
+	key        tag.Key
+	desc, lang *string
+	sets, adds int // how many --set and --add name key
+}
+
+// textQualifiers validates the qualifier flags once per invocation: each needs a value of its
+// key to label, and a language is three letters, stored lowercase.
+func (e *editFlags) textQualifiers() ([]textQualifier, error) {
+	var out []textQualifier
+	for _, q := range []struct {
+		key        tag.Key
+		name       string
+		desc, lang *optString
+	}{
+		{tag.Comment, "comment", &e.commentDesc, &e.commentLang},
+		{tag.Lyrics, "lyrics", &e.lyricsDesc, &e.lyricsLang},
+	} {
+		tq := textQualifier{key: q.key}
+		count := func(assigns []string) (n int) {
+			for _, kv := range assigns {
+				if k, _, err := splitAssign(kv); err == nil && k == q.key {
+					n++
+				}
+			}
+			return n
+		}
+		tq.sets, tq.adds = count(e.set), count(e.add)
+		for _, f := range []struct {
+			flag string
+			opt  *optString
+		}{{"--" + q.name + "-desc", q.desc}, {"--" + q.name + "-lang", q.lang}} {
+			if f.opt.set && tq.sets+tq.adds == 0 {
+				return nil, usagef("%s needs --set %s= or --add %s=", f.flag, q.key, q.key)
+			}
+		}
+		if q.desc.set {
+			if err := checkArgText(q.desc.value, "--"+q.name+"-desc"); err != nil {
+				return nil, err
+			}
+			if q.key == tag.Comment && mapping.ID3TechnicalCommentDesc(q.desc.value) {
+				return nil, usagef("--comment-desc %q names machine data (iTunes normalization, ReplayGain), not a comment", q.desc.value)
+			}
+			tq.desc = &q.desc.value
+		}
+		if q.lang.set {
+			if !validLanguageCode(q.lang.value) {
+				return nil, usagef("--%s-lang %q must be 3 ASCII letters (e.g. eng)", q.name, q.lang.value)
+			}
+			lang := strings.ToLower(q.lang.value)
+			tq.lang = &lang
+		}
+		if tq.desc != nil || tq.lang != nil {
+			out = append(out, tq)
+		}
+	}
+	return out, nil
+}
+
+// apply sets on ed the items patch leaves doc's key with: each value the invocation named takes
+// q's description and language, and the rest keep their own. A --set replaces every value; with
+// none, the --add values are the last ones.
+func (q textQualifier) apply(ed *wl.Editor, doc *wl.Document, patch tag.TagPatch) {
+	items := core.TextItemsAs[core.TextItem](doc.Comments())
+	if q.key == tag.Lyrics {
+		items = core.TextItemsAs[core.TextItem](doc.Lyrics())
+	}
+	items = core.AlignTextItems(items, patch.Apply(doc.Tags()), q.key)
+	first := 0
+	if q.sets == 0 {
+		first = max(len(items)-q.adds, 0)
+	}
+	for i := first; i < len(items); i++ {
+		if q.desc != nil {
+			items[i].Description = *q.desc
+		}
+		if q.lang != nil {
+			items[i].Language = *q.lang
+		}
+	}
+	if q.key == tag.Lyrics {
+		ed.SetLyrics(core.TextItemsAs[wl.Lyrics](items)...)
+		return
+	}
+	ed.SetComments(core.TextItemsAs[wl.Comment](items)...)
+}
+
 // chapterAdds parses --add-chapter TIMESTAMP=Title once per invocation.
 func (e *editFlags) chapterAdds() ([]wl.Chapter, error) {
 	var chs []wl.Chapter
@@ -551,6 +664,7 @@ type compiledEdit struct {
 	// syncedLyricsDroppedLines: 1-based LRC line numbers dropped at compile time.
 	syncedLyricsDroppedLines []int
 	clearSyncedLyrics        bool
+	qualifiers               []textQualifier
 	unknownKeys              []tag.Key // non-canonical --set/--add keys, first-seen order
 	clearKeys                []tag.Key // non-canonical --clear keys, first-seen order
 	paddingFlag              bool      // --padding/--no-padding given
@@ -592,6 +706,10 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 	if err != nil {
 		return nil, err
 	}
+	qualifiers, err := e.textQualifiers()
+	if err != nil {
+		return nil, err
+	}
 	var outputGain int
 	if e.outputGain != "" {
 		if outputGain, err = parseOutputGainDB(e.outputGain); err != nil {
@@ -614,6 +732,7 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 		syncedLyrics:             syncedLyrics,
 		syncedLyricsDroppedLines: syncedLyricsDropped,
 		clearSyncedLyrics:        e.clearSyncedLyrics,
+		qualifiers:               qualifiers,
 		unknownKeys:              e.unknownAssignKeys(),
 		clearKeys:                e.unknownClearKeys(),
 		paddingFlag:              padFlag,
@@ -871,14 +990,13 @@ func noteMalformedValue(notes *cappedNotes, k tag.Key, v string) {
 //   - WarnNonConformingIcon: written in full; conformance only.
 //   - duplicate-tag-block-dropped IS escalated (write destroyed content).
 var strictEscalatingCodes = map[wl.WarningCode]bool{
-	wl.WarnValueDropped:              true,
-	wl.WarnValueCoerced:              true,
-	wl.WarnValueReduced:              true,
-	wl.WarnSingleValuedMulti:         true,
-	wl.WarnNumericGenre:              true, // ID3 numeric genre reads back as name
-	wl.WarnTagStructureDropped:       true,
-	wl.WarnPictureMetadataDropped:    true,
-	wl.WarnCommentDescriptionDropped: true,
+	wl.WarnValueDropped:           true,
+	wl.WarnValueCoerced:           true,
+	wl.WarnValueReduced:           true,
+	wl.WarnSingleValuedMulti:      true,
+	wl.WarnNumericGenre:           true, // ID3 numeric genre reads back as name
+	wl.WarnTagStructureDropped:    true,
+	wl.WarnPictureMetadataDropped: true,
 	// Chapter codes: !carried gate applies to editor codes only, not this whole map.
 	// copy --strict can escalate on carry (codec never sees the flag).
 	wl.WarnChapterEndsDropped:           true,
@@ -948,8 +1066,6 @@ func strictWarningReason(w wl.Warning) string {
 		return fmt.Sprintf("%s: single-valued but given multiple values", keys)
 	case wl.WarnTagStructureDropped:
 		return fmt.Sprintf("%s: %s", keys, w.Message)
-	case wl.WarnCommentDescriptionDropped:
-		return fmt.Sprintf("%s: the rewrite drops a description one of the file's comment frames carried", keys)
 	default:
 		return keys
 	}
@@ -1023,6 +1139,9 @@ func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string, 
 		return nil, nil, err
 	}
 	ed := doc.Edit().Apply(ce.patch)
+	for _, q := range ce.qualifiers {
+		q.apply(ed, doc, ce.patch)
+	}
 	if ce.rmPics {
 		ed.ClearPictures()
 	}

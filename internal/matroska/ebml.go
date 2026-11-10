@@ -54,6 +54,7 @@ const (
 	idTagString       = 0x4487
 	idTagBinary       = 0x4485
 	idTagLang         = 0x447A
+	idTagLangBCP47    = 0x447B
 	idAttachments     = 0x1941A469
 	idAttached        = 0x61A7
 	idFileName        = 0x466E

@@ -116,7 +116,7 @@ func TestRenderTagsEmptyValue(t *testing.T) {
 	ts := tag.NewTagSet()
 	ts.Set(tag.Title, "") // present, empty string value
 	var buf bytes.Buffer
-	renderTags(&buf, ts)
+	renderTags(&buf, ts, tagNotes{})
 	if !strings.Contains(buf.String(), "(empty value)") {
 		t.Errorf("renderTags should label an empty value; got:\n%s", buf.String())
 	}
@@ -127,7 +127,7 @@ func TestRenderTagsSanitizes(t *testing.T) {
 	ts := tag.NewTagSet()
 	ts.Set(tag.Title, "a\x1b[31mX\rY") // ANSI CSI + mid-line CR
 	var buf bytes.Buffer
-	renderTags(&buf, ts)
+	renderTags(&buf, ts, tagNotes{})
 	out := buf.String()
 	if strings.ContainsAny(out, "\x1b\r") {
 		t.Errorf("renderTags leaked a raw control byte:\n%q", out)
@@ -144,7 +144,7 @@ func TestRenderTagsDuplicateVsConflict(t *testing.T) {
 	conflict := tag.NewTagSet()
 	conflict.Set(tag.Encoder, "Lavf58", "Lavf59") // ENCODER is single-valued
 	var buf bytes.Buffer
-	renderTags(&buf, conflict)
+	renderTags(&buf, conflict, tagNotes{})
 	out := buf.String()
 	if got := strings.Count(out, "(conflict)"); got != 2 {
 		t.Errorf("expected both differing rows flagged (conflict); got %d in:\n%s", got, out)
@@ -157,7 +157,7 @@ func TestRenderTagsDuplicateVsConflict(t *testing.T) {
 	dup := tag.NewTagSet()
 	dup.Set(tag.Encoder, "Lavf58", "lavf58 ") // same value, case/space-insensitively
 	buf.Reset()
-	renderTags(&buf, dup)
+	renderTags(&buf, dup, tagNotes{})
 	out = buf.String()
 	if got := strings.Count(out, "(duplicate)"); got != 2 {
 		t.Errorf("expected both identical rows flagged (duplicate); got %d in:\n%s", got, out)
@@ -170,7 +170,7 @@ func TestRenderTagsDuplicateVsConflict(t *testing.T) {
 	multi := tag.NewTagSet()
 	multi.Set(tag.Artist, "A", "B") // ARTIST is multi-valued
 	buf.Reset()
-	renderTags(&buf, multi)
+	renderTags(&buf, multi, tagNotes{})
 	if got := buf.String(); strings.Contains(got, "(conflict)") || strings.Contains(got, "(duplicate)") {
 		t.Errorf("multi-valued key should not be flagged:\n%s", got)
 	}
@@ -181,7 +181,7 @@ func TestRenderTagsMultiLineAligns(t *testing.T) {
 	ts := tag.NewTagSet()
 	ts.Set(tag.Lyrics, "line one\nline two")
 	var buf bytes.Buffer
-	renderTags(&buf, ts)
+	renderTags(&buf, ts, tagNotes{})
 	out := buf.String()
 	if !strings.Contains(out, "line one") || !strings.Contains(out, "line two") {
 		t.Errorf("multi-line value not rendered:\n%s", out)
@@ -246,14 +246,14 @@ func TestRenderTagsKeyCountHeader(t *testing.T) {
 	two.Set(tag.Title, "T")
 	two.Set(tag.Artist, "A")
 	var buf bytes.Buffer
-	renderTags(&buf, two)
+	renderTags(&buf, two, tagNotes{})
 	if !strings.Contains(buf.String(), "tags (2 keys):") {
 		t.Errorf("want 'tags (2 keys):' header; got:\n%s", buf.String())
 	}
 	one := tag.NewTagSet()
 	one.Set(tag.Title, "T")
 	buf.Reset()
-	renderTags(&buf, one)
+	renderTags(&buf, one, tagNotes{})
 	if !strings.Contains(buf.String(), "tags (1 key):") {
 		t.Errorf("want 'tags (1 key):' header; got:\n%s", buf.String())
 	}
@@ -324,7 +324,7 @@ func TestRenderTagsEscapesNewlineOutsideProseKeys(t *testing.T) {
 	ts.Set(tag.Comment, "para one\npara two")
 	ts.Set(tag.Key("CUSTOM"), "a\nb")
 	var buf bytes.Buffer
-	renderTags(&buf, ts)
+	renderTags(&buf, ts, tagNotes{})
 	out := buf.String()
 	if !strings.Contains(out, `Real Title\x0a    ARTIST  Forged Artist`) {
 		t.Errorf("TITLE newline not escaped:\n%s", out)

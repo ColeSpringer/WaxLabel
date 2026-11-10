@@ -31,10 +31,16 @@ type StructuredEdit struct {
 	ChaptersChanged     bool
 	SyncedLyrics        []core.SyncedLyrics
 	SyncedLyricsChanged bool
+	// Comments and Lyrics qualify the edited COMMENT and LYRICS values, which stay
+	// authoritative ([core.AlignTextItems]). A change flag marks an edit of a description or
+	// language alone, which the tag sets do not show.
+	Comments        []core.TextItem
+	CommentsChanged bool
+	Lyrics          []core.TextItem
+	LyricsChanged   bool
 	// Carried marks the edit as a cross-format carry rather than an authored one. A carry
 	// skips the synced-lyrics language/descriptor fallback (a no-language set from FLAC/Ogg
-	// must read back with none) and does not keep the destination's COMM description,
-	// which labels text that is no longer there.
+	// must read back with none).
 	Carried bool
 	// SyncedLyricsCleared marks the synced-lyrics set as cleared before this edit authored
 	// a new one, so the language/descriptor fallback is skipped and an authored set with
@@ -105,11 +111,9 @@ type RebuildInfo struct {
 	// embedded NUL, which the NUL-terminated SYLT field would truncate. RebuildError turns
 	// it into a hard waxerr.ErrInvalidData rather than a warning.
 	SyncedLyricsInvalidNUL bool
-	// CommentDescriptionDropped is set when a Comment rewrite could not keep a managed COMM
-	// frame's description: several managed frames, several edited values, or a carry. The
-	// authored single-frame, single-value case keeps it; clearing Comment drops it with the
-	// value.
-	CommentDescriptionDropped bool
+	// DroppedLyrics counts the lyrics an edit gave a description and language another lyric
+	// already has: USLT holds one text and ID3 allows one frame per pair.
+	DroppedLyrics int
 	// SyncedLyricsLangUndefined is set when an authored synced-lyrics language normalizes
 	// to the ID3 "undefined" marker ("xxx"/"XXX"): it is stored but reads back with no
 	// language. A carried no-language set has an empty language and is not flagged.
@@ -148,48 +152,30 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 			dirty[rid] = true
 		}
 	}
+	if se.CommentsChanged {
+		dirty["COMM"] = true
+	}
+	if se.LyricsChanged {
+		dirty["USLT"] = true
+	}
 
-	// The read path drops the COMM/USLT 3-byte language and the COMM description, and
-	// uppercases a TXXX description into its key, so recover them from the original frames.
-	// Re-rendered comment and lyric frames keep their language, a single re-rendered comment
-	// keeps its description, and custom TXXX frames keep their description casing. Several
-	// COMM frames can be managed, so each recovery takes the first.
-	origLangs := map[string]string{}          // "COMM"/"USLT"/"SYLT" -> 3-byte language
-	var origSyltDesc string                   // first projecting lyrics SYLT's content descriptor (authored-set fallback)
+	// The read path uppercases a TXXX description into its key, so recover the casing from the
+	// original frames for the re-rendered ones.
+	var origSyltLang, origSyltDesc string // first projecting lyrics SYLT's language and descriptor (authored-set fallback)
+	var sawSyltLang bool
 	origTXXXDesc := map[string]string{}       // TXXX render token -> original description (verbatim casing)
 	var origInvolved []involvedPerson         // unmodelled well-formed TIPL/IPLS involvements, preserved on write
 	seenInvolved := map[involvedPerson]bool{} // dedup across repeated or multiple involved-people frames
-	var managedComments int                   // managed COMM frames, which a Comment edit merges into one
-	var firstCommentDesc string               // first managed COMM's description, kept when the merge is unambiguous
-	var anyCommentDesc bool                   // any managed COMM carries a description
 	for _, f := range orig {
 		switch f.ID {
-		case "COMM", "USLT":
-			rid, managed := frameRenderID(f)
-			if !managed {
-				break
-			}
-			// First wins, matching the SYLT branch below.
-			if _, seen := origLangs[rid]; !seen && len(f.Body) >= 4 {
-				origLangs[rid] = string(f.Body[1:4])
-			}
-			if f.ID == "COMM" {
-				managedComments++
-				if desc, _, ok := decodeCommentFrame(f.Body); ok && desc != "" {
-					anyCommentDesc = true
-					if managedComments == 1 {
-						firstCommentDesc = desc
-					}
-				}
-			}
 		case "SYLT":
 			// Recover the first lyrics SYLT's language and descriptor as fallbacks for a
 			// re-rendered set whose modeled value is unset, so a line-only edit keeps them. Only
 			// a projecting lyrics frame qualifies: a chord or trivia SYLT must not donate its
-			// metadata. Both come from the same first projecting SYLT via the origLangs guard.
-			if _, seen := origLangs["SYLT"]; !seen && syltProjectsLyrics(f.Body) {
+			// metadata. Both come from the same first projecting SYLT.
+			if !sawSyltLang && syltProjectsLyrics(f.Body) {
 				if l, ok := syltFrameLanguage(f.Body); ok {
-					origLangs["SYLT"] = l
+					origSyltLang, sawSyltLang = l, true
 				}
 				if d, ok := syltFrameDescriptor(f.Body); ok {
 					origSyltDesc = d
@@ -227,28 +213,25 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	emitted := map[string]bool{}
 	firstAPIC := -1
 
-	// A Comment edit merges every managed COMM into one frame, which can keep only one
-	// description. Keep it when the merge is unambiguous (one source frame, one edited
-	// value); otherwise flatten and let the caller warn. A cleared Comment is not a
-	// description drop: the description goes with the value. A carry never keeps it: the
-	// description labels the destination's comment, not a value that arrived from another
-	// file.
-	keepCommentDesc := ""
-	editedComments, _ := edited.Get(tag.Comment)
-	if managedComments == 1 && len(editedComments) == 1 && !se.Carried {
-		keepCommentDesc = firstCommentDesc
-	}
-	if dirty["COMM"] && anyCommentDesc && len(editedComments) > 0 && keepCommentDesc == "" {
-		info.CommentDescriptionDropped = true
-	}
-
 	// Render each changed unit once, ahead of the loop that places it where its first frame was:
 	// the values the units hold also tell which other frames they leave redundant.
 	rids := slices.Sorted(maps.Keys(dirty))
 	units := make(map[string]renderedUnit, len(rids))
 	var unitFrames []Frame
+	var commentTrailingEmpty bool
 	for _, rid := range rids {
-		frames, v23multi := renderUnit(rid, edited, version, opts, origLangs, origTXXXDesc, origInvolved, keepCommentDesc)
+		var frames []Frame
+		var v23multi bool
+		switch rid {
+		case "COMM":
+			u := textFrames(rid, orig, core.AlignTextItems(se.Comments, edited, tag.Comment), version, opts.Multi)
+			frames, v23multi, commentTrailingEmpty = u.frames, u.v23multi, u.trailingEmpty
+		case "USLT":
+			u := textFrames(rid, orig, core.AlignTextItems(se.Lyrics, edited, tag.Lyrics), version, opts.Multi)
+			frames, info.DroppedLyrics = u.frames, u.dropped
+		default:
+			frames, v23multi = renderUnit(rid, edited, version, opts, origTXXXDesc, origInvolved)
+		}
 		units[rid] = renderedUnit{frames, v23multi}
 		unitFrames = append(unitFrames, frames...)
 	}
@@ -376,7 +359,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	// significant. A set with an empty language or descriptor falls back to the first
 	// original SYLT's, so an authored line-only edit keeps them.
 	if se.SyncedLyricsChanged && len(se.SyncedLyrics) > 0 {
-		fallbackLang := origLangs["SYLT"]
+		fallbackLang := origSyltLang
 		fallbackDesc := origSyltDesc
 		// A carry and a clear-then-author both suppress the fallback, so the set reads back
 		// with no language or descriptor instead of inheriting the destination's.
@@ -389,10 +372,10 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		info.SyncedLyricsOverflow = overflow
 		info.SyncedLyricsInvalidNUL = invalidNUL
 		// An authored language that normalizes to the ID3 "undefined" marker ("xxx"/"XXX")
-		// is stored but reads back empty, so flag it. syltLanguage is the read-side
+		// is stored but reads back empty, so flag it. frameLanguage is the read-side
 		// normalizer, so this fires exactly when a fresh parse reports no language.
 		for _, sl := range se.SyncedLyrics {
-			if sl.Language != "" && syltLanguage(sl.Language) == "" {
+			if sl.Language != "" && frameLanguage(sl.Language) == "" {
 				info.SyncedLyricsLangUndefined = true
 				break
 			}
@@ -402,7 +385,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	info.DroppedDates, info.ReducedDates, info.CoercedDates = detectDateFates(changed, edited, version)
 	info.NumericGenres = detectNumericGenres(changed, edited)
 	info.DroppedTotals = detectDroppedTotals(changed, edited)
-	info.DroppedTrailingValues = detectDroppedTrailingValues(changed, edited, version, opts.Multi)
+	info.DroppedTrailingValues = detectDroppedTrailingValues(changed, edited, version, opts.Multi, commentTrailingEmpty)
 	info.DroppedEmptyValues = detectDroppedEmptyValues(changed, edited, produced, version, info)
 	info.DroppedInvolvedEmpties = detectDroppedInvolvedEmpties(changed, edited)
 	return out, info
@@ -494,8 +477,8 @@ func RenderFrontTag(srcTag *Tag, version byte, newFrames []Frame, info RebuildIn
 
 // frameRenderID returns a frame's render token and whether the frame is managed
 // (modelled by the canonical projection, so re-rendered when its field changes).
-// Unmanaged frames (URLs, POPM, PRIV, machine-described comments, described lyrics,
-// non-MusicBrainz UFIDs, opaque frames) are always preserved verbatim.
+// Unmanaged frames (URLs, POPM, PRIV, machine-described comments, non-MusicBrainz UFIDs,
+// opaque frames) are always preserved verbatim.
 func frameRenderID(f Frame) (string, bool) {
 	if f.Opaque {
 		return "", false
@@ -515,26 +498,14 @@ func frameRenderID(f Frame) (string, bool) {
 			return "", false
 		}
 		return "UFID", true
-	case "COMM":
-		// Managed exactly when projected (project.go), through the same predicate: a
-		// machine-described COMM (iTunNORM, ReplayGain) is neither read as COMMENT nor
-		// touched on write; every other COMM is both. Projecting without managing would make
-		// an edit preserve the described frame and append a fresh COMM, so a re-parse would
-		// read two comments. The flat Comment model has no per-comment language, so editing
-		// Comment merges several managed COMM frames into one; renderUnit keeps the
-		// single-frame case's description and language, and the caller warns when the
-		// collapse is ambiguous.
-		desc, _, ok := decodeCommentFrame(f.Body)
-		if !ok || mapping.ID3TechnicalCommentDesc(desc) {
+	case "COMM", "USLT":
+		// Managed exactly when projected, through the same predicate: a machine-described
+		// COMM (iTunNORM, ReplayGain) is neither read as COMMENT nor touched on write. A
+		// changed unit re-renders one frame per item ([textFrames]).
+		if _, _, _, ok := textFrameItems(f); !ok {
 			return "", false
 		}
-		return "COMM", true
-	case "USLT":
-		desc, _, ok := decodeLangText(f.Body)
-		if !ok || desc != "" {
-			return "", false
-		}
-		return "USLT", true
+		return f.ID, true
 	case "TCON", "TRCK", "TPOS":
 		return f.ID, true
 	case "MVIN", "MVNM":
@@ -582,18 +553,14 @@ func frameKeys(f Frame) []tag.Key {
 			return nil
 		}
 		return []tag.Key{tag.MBRecordingID}
-	case "COMM":
-		desc, _, ok := decodeCommentFrame(f.Body)
-		if !ok || mapping.ID3TechnicalCommentDesc(desc) {
+	case "COMM", "USLT":
+		if _, _, _, ok := textFrameItems(f); !ok {
 			return nil
+		}
+		if f.ID == "USLT" {
+			return []tag.Key{tag.Lyrics}
 		}
 		return []tag.Key{tag.Comment}
-	case "USLT":
-		desc, _, ok := decodeLangText(f.Body)
-		if !ok || desc != "" {
-			return nil
-		}
-		return []tag.Key{tag.Lyrics}
 	case "TCON":
 		return []tag.Key{tag.Genre}
 	case "TRCK":
@@ -752,7 +719,7 @@ func CustomFrameIDFate(key tag.Key, version byte) (stored tag.Key, viaTXXX bool)
 // renderUnit renders the frame(s) for a render token from the edited tag set,
 // returning an empty slice when the underlying field is now absent (the frame is
 // dropped). It also reports whether a v2.3 NUL-separated multi-value was emitted.
-func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, origLangs, origTXXXDesc map[string]string, origInvolved []involvedPerson, commentDesc string) ([]Frame, bool) {
+func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, origTXXXDesc map[string]string, origInvolved []involvedPerson) ([]Frame, bool) {
 	switch {
 	case strings.HasPrefix(token, "TXXX\x00"):
 		key := txxxKeyForToken(token[len("TXXX\x00"):])
@@ -785,22 +752,6 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, o
 			return nil, false
 		}
 		return []Frame{{ID: "UFID", Body: encodeUFID(musicBrainzOwner, id)}}, false
-	case token == "COMM":
-		vals, ok := edited.Get(tag.Comment)
-		if !ok || len(vals) == 0 {
-			return nil, false
-		}
-		// commentDesc is non-empty only for the unambiguous single-frame, single-value
-		// merge; the caller warns for every other shape.
-		lang := unitLang(origLangs, "COMM")
-		return renderByPolicy(version, "COMM", vals, opts.Multi,
-			func(v []string) []byte { return encodeComment(version, lang, commentDesc, v) })
-	case token == "USLT":
-		text, ok := edited.First(tag.Lyrics)
-		if !ok {
-			return nil, false
-		}
-		return []Frame{{ID: "USLT", Body: encodeLangText(version, unitLang(origLangs, "USLT"), "", text)}}, false
 	case token == "TCON":
 		return genreFrames(version, edited, opts)
 	case token == "TRCK":
@@ -872,15 +823,152 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, o
 	}
 }
 
-// unitLang returns the 3-byte language for a managed COMM/USLT frame: the
-// original frame's language recovered in RebuildFrames, or "eng" for a newly
-// added comment or lyric with no original frame. A garbage 3-byte language
-// round-trips verbatim because langBytes neither normalizes nor rejects it.
-func unitLang(origLangs map[string]string, token string) string {
-	if l, ok := origLangs[token]; ok {
-		return l
+// DefaultLanguage is the language a comment or lyric written without one gets, the one players
+// look for. As every ID3 writer fills it in, it says little about the text.
+const DefaultLanguage = "eng"
+
+// beyondDefault reports whether it holds what only a COMM or USLT frame keeps: a description, or
+// a language other than the default one.
+func beyondDefault(it core.TextItem) bool {
+	return it.Description != "" || it.Language != "" && it.Language != DefaultLanguage
+}
+
+// NeedsTextFrames reports whether m's comments or lyrics hold a description or language, which a
+// container keeping them natively too (WAV, AIFF) must write to ID3.
+func NeedsTextFrames(m *core.Media) bool {
+	need := func(it core.TextItem) bool { return it.Description != "" || it.Language != "" }
+	return slices.ContainsFunc(m.Comments, need) || slices.ContainsFunc(m.Lyrics, need)
+}
+
+// textFrameKey is what tells one COMM or USLT frame from another: its description and the three
+// language bytes it holds.
+type textFrameKey struct{ desc, lang string }
+
+// textUnit is the COMM or USLT frames rendered for a key's items, and what the rendering lost.
+type textUnit struct {
+	frames []Frame
+	// v23multi: a frame holds a v2.3 NUL-separated multi-value.
+	v23multi bool
+	// trailingEmpty: a COMM's last of several texts is empty, which a NUL-separated frame loses.
+	trailingEmpty bool
+	// dropped counts the lyrics given a description and language another lyric already has.
+	dropped int
+}
+
+// textFrames renders items as COMM frames (id), one per description and written language holding
+// that pair's texts under the multi-value policy, or as USLT frames, one per pair: the frame has
+// no multi-value form, so a second lyric under a pair is dropped unless orig already holds it. A
+// frame of orig with exactly a rendered frame's content is kept as it is.
+func textFrames(id string, orig []Frame, items []core.TextItem, version byte, pol core.ID3MultiValuePolicy) textUnit {
+	// An item is written under the language bytes of the orig frame it reads from, so an undefined
+	// or oddly cased field survives; one with no language takes the default. same queues the orig
+	// frames by content.
+	rawLang := map[textFrameKey]string{}
+	same := map[string][]Frame{}
+	for _, f := range orig {
+		if desc, lang, texts, ok := textFrameItems(f); ok && f.ID == id {
+			raw := string(f.Body[1:4])
+			if _, seen := rawLang[textFrameKey{desc, lang}]; !seen {
+				rawLang[textFrameKey{desc, lang}] = raw
+			}
+			c := frameContent(textFrameKey{desc, raw}, texts)
+			same[c] = append(same[c], f)
+		}
 	}
-	return "eng"
+	written := func(it core.TextItem) textFrameKey {
+		lang, ok := rawLang[textFrameKey{it.Description, it.Language}]
+		switch {
+		case ok:
+		case it.Language == "":
+			lang = DefaultLanguage
+		default:
+			lang = string(frameLangBytes(it.Language))
+		}
+		return textFrameKey{it.Description, lang}
+	}
+	// take returns the next orig frame holding exactly texts under k.
+	take := func(k textFrameKey, texts []string) (Frame, bool) {
+		c := frameContent(k, texts)
+		q := same[c]
+		if len(q) == 0 {
+			return Frame{}, false
+		}
+		same[c] = q[1:]
+		return q[0].Clone(), true
+	}
+
+	var u textUnit
+	if id == "USLT" {
+		keys := make([]textFrameKey, len(items))
+		kept := make([]*Frame, len(items))
+		has := map[textFrameKey]bool{}
+		for i, it := range items {
+			keys[i] = written(it)
+			if f, ok := take(keys[i], []string{it.Text}); ok {
+				kept[i], has[keys[i]] = &f, true
+			}
+		}
+		for i, it := range items {
+			switch k := keys[i]; {
+			case kept[i] != nil:
+				u.frames = append(u.frames, *kept[i])
+			case has[k]:
+				u.dropped++
+			default:
+				has[k] = true
+				u.frames = append(u.frames, Frame{ID: id, Body: encodeLangText(version, k.lang, k.desc, it.Text)})
+			}
+		}
+		return u
+	}
+
+	type group struct {
+		key   textFrameKey
+		texts []string
+	}
+	var groups []group
+	at := map[textFrameKey]int{}
+	for _, it := range items {
+		k := written(it)
+		if i, ok := at[k]; ok {
+			groups[i].texts = append(groups[i].texts, it.Text)
+			continue
+		}
+		at[k] = len(groups)
+		groups = append(groups, group{k, []string{it.Text}})
+	}
+	nulSeparated := version >= 4 || pol == core.ID3MultiNullSep
+	for _, g := range groups {
+		// A frame of several texts is kept only in the layout the policy writes.
+		if len(g.texts) == 1 || nulSeparated {
+			if f, ok := take(g.key, g.texts); ok {
+				u.frames = append(u.frames, f)
+				u.v23multi = u.v23multi || version == 3 && len(g.texts) > 1
+				continue
+			}
+		}
+		rendered, multi := renderByPolicy(version, id, g.texts, pol,
+			func(v []string) []byte { return encodeComment(version, g.key.lang, g.key.desc, v) })
+		u.frames = append(u.frames, rendered...)
+		u.v23multi = u.v23multi || multi
+		u.trailingEmpty = u.trailingEmpty || nulSeparated && len(g.texts) > 1 && g.texts[len(g.texts)-1] == ""
+	}
+	return u
+}
+
+// frameContent is a map key for a COMM or USLT frame's content: the three language bytes, the
+// description, which holds no NUL, and each text behind its length.
+func frameContent(k textFrameKey, texts []string) string {
+	var b strings.Builder
+	b.WriteString(k.lang)
+	b.WriteString(k.desc)
+	for _, t := range texts {
+		b.WriteByte(0)
+		b.WriteString(strconv.Itoa(len(t)))
+		b.WriteByte(':')
+		b.WriteString(t)
+	}
+	return b.String()
 }
 
 // txxxKeyForToken resolves a TXXX render token (an uppercased description) back
@@ -1059,15 +1147,23 @@ func detectDroppedTotals(changed map[tag.Key]bool, edited tag.TagSet) []tag.Key 
 // v2.3 under ID3MultiNullSep write NUL-separated; repeat-frame keeps the empty as its own
 // frame and slash-join collapses the whole value, so neither warns. Involved-people roles
 // are excluded: detectDroppedInvolvedEmpties covers them (WRITER is a TXXX key and stays
-// here). Sorted for deterministic warning order.
-func detectDroppedTrailingValues(changed map[tag.Key]bool, edited tag.TagSet, version byte, pol core.ID3MultiValuePolicy) []tag.Key {
-	if version < 4 && pol != core.ID3MultiNullSep {
-		return nil // repeat-frame preserves the empty; slash-join collapses the whole multi-value
-	}
+// here). So are COMMENT, whose frames hold the texts of one description and language each
+// (commentTrailingEmpty is [textFrames]' verdict), and LYRICS, one frame per text. Sorted for
+// deterministic warning order.
+func detectDroppedTrailingValues(changed map[tag.Key]bool, edited tag.TagSet, version byte, pol core.ID3MultiValuePolicy, commentTrailingEmpty bool) []tag.Key {
 	var dropped []tag.Key
+	if commentTrailingEmpty {
+		dropped = append(dropped, tag.Comment)
+	}
+	if version < 4 && pol != core.ID3MultiNullSep {
+		return dropped // repeat-frame preserves the empty; slash-join collapses the whole multi-value
+	}
 	for k := range changed {
 		if _, isInvolvedRole := mapping.ID3InvolvedFunction(k); isInvolvedRole {
 			continue // handled by detectDroppedInvolvedEmpties (all positions, all versions/policies)
+		}
+		if k == tag.Comment || k == tag.Lyrics {
+			continue
 		}
 		vals, ok := edited.Get(k)
 		if !ok || len(vals) <= 1 {
@@ -1467,14 +1563,13 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 		ws = core.Warn(ws, core.WarnSyncedLyricsTimestampClamped,
 			"a synced-lyric timestamp exceeded the SYLT frame's 32-bit millisecond field (~49.7 days) and was clamped")
 	}
+	if info.DroppedLyrics > 0 {
+		ws = core.WarnKeyed(ws, core.WarnValueDropped, fmt.Sprintf(
+			"LYRICS: ID3 holds one lyric per description and language; %d lyric(s) given a pair already in use were dropped", info.DroppedLyrics), tag.Lyrics)
+	}
 	if info.SyncedLyricsLangUndefined {
 		ws = core.Warn(ws, core.WarnSyncedLyricsMetadataDropped,
 			"the synced-lyrics language \"xxx\" is the ID3 \"undefined\" marker, so it is stored but reads back with no language")
-	}
-	if info.CommentDescriptionDropped {
-		ws = core.WarnKeyed(ws, core.WarnCommentDescriptionDropped,
-			"a description one of this file's comment frames carried could not be kept when the comment was rewritten; the comment text is written in full",
-			tag.Comment)
 	}
 	return ws
 }

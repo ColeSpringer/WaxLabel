@@ -460,16 +460,19 @@ func DupLosses(dups []LeadingDup, before, after *core.Media, frames ...[]Frame) 
 }
 
 // DupDigest is what grading a duplicate tag a rewrite drops needs, taken as the tag is read so a
-// file of large duplicate tags holds hashes rather than their bodies: its values and chapters,
-// the hashes of its pictures and synced lyric sets, the IDs and hashes of the frames the canonical
-// view does not carry, and how many of its bytes the frame walk could not read. A tag that does not
-// parse, or is ignored whole, digests as unreadable. A digest is never modified, so copies share it.
+// file of large duplicate tags holds hashes rather than their bodies: its values, its comment and
+// lyrics items and its chapters, the hashes of its pictures and synced lyric sets, the IDs and
+// hashes of the frames the canonical view does not carry, and how many of its bytes the frame walk
+// could not read. A tag that does not parse, or is ignored whole, digests as unreadable. A digest
+// is never modified, so copies share it.
 type DupDigest struct {
 	readable bool
 	tags     tag.TagSet
+	comments []core.TextItem
+	lyrics   []core.TextItem
 	chapters []core.Chapter
 	pictures []uint64
-	lyrics   []uint64
+	synced   []uint64
 	frames   []frameDigest
 	unread   int64
 }
@@ -486,12 +489,12 @@ func digest(t *Tag) DupDigest {
 		return DupDigest{}
 	}
 	p := Project(t)
-	d := DupDigest{readable: true, tags: p.Tags, chapters: p.Chapters}
+	d := DupDigest{readable: true, tags: p.Tags, comments: p.Comments, lyrics: p.Lyrics, chapters: p.Chapters}
 	for _, pic := range p.Pictures {
 		d.pictures = append(d.pictures, core.PictureHash(pic))
 	}
 	for _, l := range p.SyncedLyrics {
-		d.lyrics = append(d.lyrics, lyricsHash(l))
+		d.synced = append(d.synced, lyricsHash(l))
 	}
 	for _, f := range t.uncarried() {
 		d.frames = append(d.frames, frameDigest{id: f.ID, hash: frameHash(f)})
@@ -511,8 +514,10 @@ type DupGrader struct {
 	frameSets     [][]Frame
 
 	indexed                  bool
-	frames, pictures, lyrics core.HashSet
+	frames, pictures, synced core.HashSet
 	chapters                 map[core.Chapter]bool
+	// comments and lyrics hold each item of the media, and its text alone under a bare item.
+	comments, lyrics map[core.TextItem]bool
 }
 
 // NewDupGrader grades against before and after and the frame lists frames.
@@ -526,7 +531,8 @@ func (g *DupGrader) index() {
 		return
 	}
 	g.indexed = true
-	g.frames, g.lyrics, g.chapters = core.HashSet{}, core.HashSet{}, map[core.Chapter]bool{}
+	g.frames, g.synced, g.chapters = core.HashSet{}, core.HashSet{}, map[core.Chapter]bool{}
+	g.comments, g.lyrics = map[core.TextItem]bool{}, map[core.TextItem]bool{}
 	for _, fs := range g.frameSets {
 		for _, f := range fs {
 			g.frames.Add(frameHash(f))
@@ -538,7 +544,13 @@ func (g *DupGrader) index() {
 			g.chapters[c] = true
 		}
 		for _, l := range m.SyncedLyrics {
-			g.lyrics.Add(lyricsHash(l))
+			g.synced.Add(lyricsHash(l))
+		}
+		for _, it := range m.Comments {
+			g.comments[plainLanguage(it)], g.comments[core.TextItem{Text: it.Text}] = true, true
+		}
+		for _, it := range m.Lyrics {
+			g.lyrics[plainLanguage(it)], g.lyrics[core.TextItem{Text: it.Text}] = true, true
 		}
 	}
 }
@@ -546,7 +558,8 @@ func (g *DupGrader) index() {
 // Loss says what dropping a duplicate tag, digested as d, loses. An unreadable one loses all it
 // holds, counted as one of unreadable, its kind. Else it loses its values, graded by
 // [core.AppendDuplicateBlockDropped], the pictures, chapters and synced lyric sets the file holds
-// nowhere else, the frames the canonical view does not carry that the kept tag holds neither as
+// nowhere else, the description and language of a comment or lyric whose text the file holds
+// under others, the frames the canonical view does not carry that the kept tag holds neither as
 // parsed nor as written, and the bytes its frame walk could not read. Its chapters are compared as
 // a read gives them, a last one starting past the end opened up ([core.OpenPastDurationEnds]).
 func (g *DupGrader) Loss(d DupDigest, unreadable string) core.DuplicateContent {
@@ -565,12 +578,24 @@ func (g *DupGrader) Loss(d DupDigest, unreadable string) core.DuplicateContent {
 			c.Chapters++
 		}
 	}
-	for _, h := range d.lyrics {
-		if !g.lyrics.Has(h) {
+	for _, h := range d.synced {
+		if !g.synced.Has(h) {
 			c.SyncedLyrics++
 		}
 	}
 	var other core.Tally
+	for _, q := range []struct {
+		kind  string
+		items []core.TextItem
+		held  map[core.TextItem]bool
+	}{{"comment", d.comments, g.comments}, {"lyrics", d.lyrics, g.lyrics}} {
+		for _, it := range q.items {
+			// A text the file does not hold at all is a lost value, graded with the tags.
+			if !q.held[plainLanguage(it)] && q.held[core.TextItem{Text: it.Text}] {
+				other.Add(q.kind+" description or language", 1)
+			}
+		}
+	}
 	for _, f := range d.frames {
 		if !g.frames.Has(f.hash) {
 			other.Add(fmt.Sprintf("%q frame(s)", f.id), 1)
@@ -581,6 +606,15 @@ func (g *DupGrader) Loss(d DupDigest, unreadable string) core.DuplicateContent {
 	}
 	c.Other = other.Counts()
 	return c
+}
+
+// plainLanguage returns it with the default language cleared: every ID3 writer fills that one
+// in, so losing it against an undefined one loses nothing.
+func plainLanguage(it core.TextItem) core.TextItem {
+	if it.Language == DefaultLanguage {
+		it.Language = ""
+	}
+	return it
 }
 
 // frameHash hashes a frame's ID and body.

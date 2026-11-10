@@ -143,6 +143,19 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 				disp, reason = d, r
 			}
 		}
+		// A stored comment or lyric still loses the description or language dst has no field for.
+		if disp == Carried {
+			var qualified []TextItem
+			switch k {
+			case tag.Comment:
+				qualified = src.Comments
+			case tag.Lyrics:
+				qualified = src.Lyrics
+			}
+			if r := TextItemLossReason(qualified, dst.Field(k).TextLoss); r != "" {
+				disp, reason = Lossy, r
+			}
+		}
 		items = append(items, TransferItem{
 			Kind: TransferField, Key: k, Count: len(vals),
 			Disposition: disp, Reason: reason,

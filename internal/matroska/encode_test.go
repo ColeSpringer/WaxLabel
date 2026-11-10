@@ -229,7 +229,7 @@ func preserveDecisions(d *doc, keys ...tag.Key) *editDecisions {
 	for _, k := range keys {
 		edited.Set(k, "new")
 	}
-	return computeEditDecisions(d.groups, albumGroupIndex(d.groups), base, edited)
+	return computeEditDecisions(d.groups, albumGroupIndex(d.groups), tagsOnly(base), tagsOnly(edited))
 }
 
 // TestCheckPreservable: an edit is refused when an element the writer must copy
@@ -361,7 +361,7 @@ func TestBuildAlbumGroupEmitsTargets(t *testing.T) {
 	edited := tag.NewTagSet()
 	edited.Set(tag.Artist, "X")
 
-	out, rendered := buildAlbumGroup(nil, -1, base, edited, nil, nil, nil, computeEditDecisions(nil, -1, base, edited), false)
+	out, rendered := buildAlbumGroup(nil, -1, base, edited, nil, nil, nil, computeEditDecisions(nil, -1, tagsOnly(base), tagsOnly(edited)), false)
 
 	// White-box: the synthesized album group records an empty, album-scope Targets.
 	if out.targetsRaw == nil {
@@ -396,7 +396,7 @@ func TestKeepInPlaceGroupWithoutRaw(t *testing.T) {
 	}}
 	base := tagSet(keyVals{tag.Encoder, []string{"album-enc", "track-enc"}})
 	edited := tagSet(keyVals{tag.Encoder, []string{"track-enc"}})
-	ed := computeEditDecisions(d.groups, 0, base, edited)
+	ed := computeEditDecisions(d.groups, 0, tagsOnly(base), tagsOnly(edited))
 	if ed.dropped(1, 0) {
 		t.Fatal("setup: the track value should be kept in place")
 	}

@@ -115,6 +115,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		proj = id3.Project(d.id3)
 		media.Tags, media.Pictures, media.Chapters = proj.Tags, proj.Pictures, proj.Chapters
 		media.SyncedLyrics, media.Families = proj.SyncedLyrics, proj.Families
+		media.Comments, media.Lyrics = proj.Comments, proj.Lyrics
 	}
 	ws, audioBytes := d.layout.Project(media, d.firstFrameOff, "after the MPEG stream")
 	warnings = append(warnings, ws...)
@@ -182,6 +183,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if err := core.SetIdentity(src, media); err != nil {
 		return nil, err
 	}
+	core.SyncTextItems(media)
 	return media, nil
 }
 

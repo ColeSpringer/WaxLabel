@@ -9,6 +9,7 @@ import (
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/tag"
 )
 
 // Every registered codec answers a file-agnostic capability query (m == nil, as PlanTransfer makes)
@@ -35,17 +36,22 @@ const (
 )
 
 // renderCapabilityBlock renders the per-format picture/chapter/synced-lyrics capability
-// table from the public CapabilitiesFor query. Formats are sorted by name so the block is
+// table, with the comment and lyrics qualifiers each format stores, from the public
+// CapabilitiesFor query. Formats are sorted by name so the block is
 // stable regardless of codec registration order.
 func renderCapabilityBlock() string {
 	formats := wl.Formats()
 	sort.Slice(formats, func(i, j int) bool { return formats[i].String() < formats[j].String() })
 	var b strings.Builder
-	b.WriteString("| Format | Pictures | Chapters | Synced Lyrics |\n")
-	b.WriteString("| --- | --- | --- | --- |\n")
+	b.WriteString("| Format | Pictures | Chapters | Synced Lyrics | Comment and Lyrics Qualifiers |\n")
+	b.WriteString("| --- | --- | --- | --- | --- |\n")
 	for _, f := range formats {
 		caps := wl.CapabilitiesFor(f)
-		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", f, capCell(caps.Pictures), capCell(caps.Chapters), capCell(caps.SyncedLyrics))
+		qualifiers := "none"
+		if kept := caps.Field(tag.Comment).TextLoss.Kept(); len(kept) > 0 {
+			qualifiers = strings.Join(kept, ", ")
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n", f, capCell(caps.Pictures), capCell(caps.Chapters), capCell(caps.SyncedLyrics), qualifiers)
 	}
 	return b.String()
 }

@@ -102,6 +102,30 @@ func (d *Document) SyncedLyrics() []SyncedLyrics {
 	return core.CloneSyncedLyrics(d.media.SyncedLyrics)
 }
 
+// Comment is one COMMENT value with the description and language its format stores for it.
+// Language is the format's own code (ISO 639-2 in ID3 and Matroska), empty when unset.
+type Comment struct{ Text, Description, Language string }
+
+// Lyrics is one LYRICS value with its description and language, as [Comment].
+type Lyrics struct{ Text, Description, Language string }
+
+// Comments returns the COMMENT values with their qualifiers, one per value of
+// Get([tag.Comment]) in the same order.
+func (d *Document) Comments() []Comment {
+	if d.zero() {
+		return nil
+	}
+	return core.TextItemsAs[Comment](d.media.Comments)
+}
+
+// Lyrics returns the LYRICS values with their qualifiers, as [Document.Comments].
+func (d *Document) Lyrics() []Lyrics {
+	if d.zero() {
+		return nil
+	}
+	return core.TextItemsAs[Lyrics](d.media.Lyrics)
+}
+
 // Families returns which family supplied each canonical value and whether it won.
 func (d *Document) Families() []FamilyValue {
 	if d.zero() {

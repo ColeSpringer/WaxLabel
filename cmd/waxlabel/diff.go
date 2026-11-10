@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/spf13/cobra"
 )
@@ -32,7 +34,11 @@ func newDiffCmd() *cobra.Command {
 			"atoms canonicalize the value; between two text formats the literal strings\n" +
 			"are compared. A slash inside a *total* field (TRACKTOTAL=1/2) is out of\n" +
 			"spec: FLAC/Ogg keep it as literal text while MP3/M4A drop it, so two such\n" +
-			"files can differ on that field by design.",
+			"files can differ on that field by design.\n\n" +
+			"A comment's or lyric's description and language are compared where both\n" +
+			"formats store them (both in ID3, the language in Matroska). A language one\n" +
+			"file leaves unset is not a difference: ID3 fills in eng for a comment\n" +
+			"written without one.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -97,9 +103,28 @@ func newDiffCmd() *cobra.Command {
 	return cmd
 }
 
+// itemsDiff is one key's comment or lyrics items on both sides and the description and
+// language changes between them.
+type itemsDiff struct {
+	a, b    []jsonTextItem
+	changes []tag.Change
+}
+
+// diffItems compares the key's items under loss, what the two formats both keep. A language
+// either side leaves unset is not compared.
+func diffItems[T ~struct{ Text, Description, Language string }](key tag.Key, a, b []T, loss wl.TextItemLoss) itemsDiff {
+	return itemsDiff{
+		a:       jsonTextItems(a),
+		b:       jsonTextItems(b),
+		changes: core.TextItemChanges(key, core.TextItemsAs[core.TextItem](a), core.TextItemsAs[core.TextItem](b), loss, true),
+	}
+}
+
 // diffResult is the canonical delta a→b. Tags use tag.Change; pictures/chapters have count deltas.
 type diffResult struct {
 	tags         []tag.Change
+	comments     itemsDiff
+	lyrics       itemsDiff
 	picsA, picsB int
 	picsDiffer   bool
 	chapsA       int
@@ -115,7 +140,8 @@ type diffResult struct {
 
 // identical reports whether the two files carry the same canonical metadata.
 func (d diffResult) identical() bool {
-	return len(d.tags) == 0 && !d.picsDiffer && !d.chapsDiffer && !d.syncedDiffer && !d.gainDiffer
+	return len(d.tags) == 0 && len(d.comments.changes) == 0 && len(d.lyrics.changes) == 0 &&
+		!d.picsDiffer && !d.chapsDiffer && !d.syncedDiffer && !d.gainDiffer
 }
 
 // computeDiff returns the delta from a to b (a=left/old, b=right/new).
@@ -123,8 +149,12 @@ func computeDiff(a, b *wl.Document) diffResult {
 	pa, pb := a.Pictures(), b.Pictures()
 	ca, cb := a.Chapters(), b.Chapters()
 	sa, sb := a.SyncedLyrics(), b.SyncedLyrics()
+	capsA, capsB := a.Capabilities(), b.Capabilities()
+	loss := func(key tag.Key) wl.TextItemLoss { return capsA.Field(key).TextLoss.Both(capsB.Field(key).TextLoss) }
 	return diffResult{
 		tags:       numericAwareTagDiff(a.Tags(), b.Tags(), a.Format(), b.Format()),
+		comments:   diffItems(tag.Comment, a.Comments(), b.Comments(), loss(tag.Comment)),
+		lyrics:     diffItems(tag.Lyrics, a.Lyrics(), b.Lyrics(), loss(tag.Lyrics)),
 		picsA:      len(pa),
 		picsB:      len(pb),
 		picsDiffer: !wl.EqualPictures(pa, pb),
@@ -171,7 +201,7 @@ func renderDiff(w io.Writer, a, b string, d diffResult) {
 		return
 	}
 	fmt.Fprintf(w, "%s -> %s\n", na, nb)
-	for _, t := range d.tags {
+	for _, t := range slices.Concat(d.tags, d.comments.changes, d.lyrics.changes) {
 		renderChangeLine(w, "  ", t)
 	}
 	renderCountDelta(w, "pictures", d.picsDiffer, d.picsA, d.picsB)
@@ -211,6 +241,9 @@ type jsonDiff struct {
 	Pictures      jsonDiffCount `json:"pictures"`
 	Chapters      jsonDiffCount `json:"chapters"`
 	SyncedLyrics  jsonDiffCount `json:"syncedLyrics"`
+	// Comments and Lyrics: both files' items; changed when a description or language differs.
+	Comments jsonDiffItems `json:"comments"`
+	Lyrics   jsonDiffItems `json:"lyrics"`
 	// Omitted unless gain differs; most formats have none.
 	OutputGain *jsonDiffValue `json:"outputGain,omitempty"`
 }
@@ -226,6 +259,14 @@ type jsonDiffTag struct {
 	Change string   `json:"change"`
 	A      []string `json:"a,omitempty"`
 	B      []string `json:"b,omitempty"`
+}
+
+// jsonDiffItems is a key's comment or lyrics items in both files. A text change shows under
+// tags; changed marks a description or language difference.
+type jsonDiffItems struct {
+	A       []jsonTextItem `json:"a"`
+	B       []jsonTextItem `json:"b"`
+	Changed bool           `json:"changed"`
 }
 
 // jsonDiffCount is a set's before/after count plus changed; disambiguates equal-count content change from no-op.
@@ -245,6 +286,8 @@ func toJSONDiff(a, b string, d diffResult) jsonDiff {
 		Pictures:      jsonDiffCount{A: d.picsA, B: d.picsB, Changed: d.picsDiffer},
 		Chapters:      jsonDiffCount{A: d.chapsA, B: d.chapsB, Changed: d.chapsDiffer},
 		SyncedLyrics:  jsonDiffCount{A: d.syncedA, B: d.syncedB, Changed: d.syncedDiffer},
+		Comments:      jsonDiffItems{A: d.comments.a, B: d.comments.b, Changed: len(d.comments.changes) > 0},
+		Lyrics:        jsonDiffItems{A: d.lyrics.a, B: d.lyrics.b, Changed: len(d.lyrics.changes) > 0},
 	}
 	if d.gainDiffer {
 		jd.OutputGain = &jsonDiffValue{A: wl.OutputGainDB(d.gainA), B: wl.OutputGainDB(d.gainB)}

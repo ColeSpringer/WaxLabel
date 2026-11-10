@@ -23,6 +23,9 @@ func tagSet(kvs ...keyVals) tag.TagSet {
 	return ts
 }
 
+// tagsOnly is a media holding ts and no comment or lyrics languages.
+func tagsOnly(ts tag.TagSet) *core.Media { return &core.Media{Tags: ts} }
+
 // simple builds a parsed SimpleTag carrying a string value, the shape the value
 // survival pass reasons about. raw stands in for the captured bytes so the decisions
 // can be driven without a real parse.
@@ -174,7 +177,7 @@ func TestComputeEditDecisionsValueSurvival(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			ed := computeEditDecisions(c.groups, albumGroupIndex(c.groups), tagSet(c.base...), tagSet(c.edited...))
+			ed := computeEditDecisions(c.groups, albumGroupIndex(c.groups), tagsOnly(tagSet(c.base...)), tagsOnly(tagSet(c.edited...)))
 			var gotDrops [][2]int
 			for gi, g := range c.groups {
 				for ti := range g.tags {

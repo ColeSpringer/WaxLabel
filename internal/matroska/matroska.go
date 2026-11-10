@@ -91,6 +91,7 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		},
 	}
 	return core.NewCapabilities(core.FormatMatroska, false, fields, pictures, chapters, core.AccessNone, nil).
+		WithTextQualifiers(core.TextLossDescription, "").
 		WithFieldClassifier(TransferClassifier)
 }
 

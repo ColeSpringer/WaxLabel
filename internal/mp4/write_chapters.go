@@ -371,6 +371,7 @@ func buildChapterResult(edited *core.Media, base *doc, items []item, reg udtaReg
 		Chapters: chapterResultView(base, edited.Chapters),
 	}
 	setEssence(nd, out)
+	core.SyncTextItems(out)
 	return out
 }
 

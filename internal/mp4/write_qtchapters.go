@@ -224,6 +224,7 @@ func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan) *core.Media 
 		out.Chapters, _ = mergeChapters(p.chplChapters, true, qt, true, qtSaturated)
 	}
 	setEssence(nd, out)
+	core.SyncTextItems(out)
 	return out
 }
 

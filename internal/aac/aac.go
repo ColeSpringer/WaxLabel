@@ -87,6 +87,7 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	// Front-tag padding reuses the region (ReuseOrTarget), same as MP3.
 	return core.NewCapabilities(core.FormatAAC, false, fields, pictures, chapters, core.AccessPartial, perField).
 		WithSyncedLyrics(id3.SyncedLyricsCapability()).
+		WithTextQualifiers(core.TextLossNone, id3.DefaultLanguage).
 		WithFieldClassifier(id3.TransferClassifier)
 }
 
