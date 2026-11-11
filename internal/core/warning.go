@@ -14,7 +14,7 @@ type WarningCode uint8
 
 const (
 	WarnUnknown WarningCode = iota
-	// WarnStrayLeadingID3: ID3v2 before a FLAC, WavPack, Monkey's Audio or Musepack marker.
+	// WarnStrayLeadingID3: ID3v2 before a FLAC, Ogg, WavPack, Monkey's Audio or Musepack stream.
 	// Preserved by default. Read path.
 	WarnStrayLeadingID3
 	// WarnTrailingID3v1: trailing 128-byte ID3v1. Preserved. Read path.

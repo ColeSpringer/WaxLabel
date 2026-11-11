@@ -52,18 +52,6 @@ func essenceOf(t *testing.T, data []byte) wl.AudioDigest {
 	return d
 }
 
-// An Ogg file whose first page begins a Skeleton stream is detected as Ogg and refused as unsupported,
-// naming that layout: the Skeleton and the streams multiplexed with it are not read.
-func TestOggSkeletonFirstRefused(t *testing.T) {
-	fishead := slices.Concat([]byte("fishead\x00"), testfile.LE16(3), testfile.LE16(0), make([]byte, 52))
-	data := slices.Concat(testfile.OggPage(2, 0, 7, 0, fishead), readFixture(t, sampleOgg))
-	_, err := wl.Parse(context.Background(), wl.BytesSource(data))
-	if !errors.Is(err, waxerr.ErrUnsupportedFormat) || !strings.Contains(err.Error(), "Skeleton") ||
-		strings.Contains(err.Error(), "unrecognized Ogg codec") {
-		t.Errorf("err = %v, want unsupported format naming the Skeleton stream", err)
-	}
-}
-
 func TestOggParse(t *testing.T) {
 	cases := []struct {
 		path    string
@@ -292,6 +280,23 @@ func TestOggChainedReadBestEffortWriteRefused(t *testing.T) {
 	}
 	if _, err := doc.Edit().Set(tag.Title, "nope").Prepare(); !errors.Is(err, waxerr.ErrChainedStream) {
 		t.Errorf("writing a chained stream should fail with ErrChainedStream, got %v", err)
+	}
+	// Only the first link is read, so there is no digest of the file's audio to give.
+	if _, err := doc.HashAudioEssence(context.Background(), wl.WithHashSource(wl.BytesSource(chained))); !errors.Is(err, waxerr.ErrChainedStream) {
+		t.Errorf("hashing a chained stream's essence: err = %v, want ErrChainedStream", err)
+	}
+	if _, err := doc.HashFile(context.Background(), wl.WithHashSource(wl.BytesSource(chained))); err != nil {
+		t.Errorf("the whole-file digest of a chained stream: %v", err)
+	}
+	// The refusal needs no source: it comes before the bytes are asked for.
+	if _, err := doc.HashAudioEssence(context.Background()); !errors.Is(err, waxerr.ErrChainedStream) {
+		t.Errorf("hashing a chained stream's essence with no source: err = %v, want ErrChainedStream", err)
+	}
+	if caps := doc.Capabilities(); !caps.ReadOnly || !errors.Is(caps.ReadOnlyReason(), waxerr.ErrChainedStream) {
+		t.Errorf("capabilities: read-only %v, reason %v; want read-only as a chained stream", caps.ReadOnly, caps.ReadOnlyReason())
+	}
+	if caps := mustParseFile(t, sampleOgg).Capabilities(); caps.ReadOnly || caps.ReadOnlyReason() != nil {
+		t.Errorf("a single stream reports read-only (%v)", caps.ReadOnlyReason())
 	}
 }
 

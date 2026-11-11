@@ -111,6 +111,16 @@ func ScanLegacy(src core.ReaderAtSized, size, floor, limit int64, maxElements in
 	return scan(src, size, floor, limit, maxElements, end, true)
 }
 
+// Peeled returns where the tags [Scan] peels off the end of src begin, size when there are none,
+// placing each APE tag by its footer with no item read. A stream whose units are checksummed asks
+// it before it walks them, to tell a unit running past that offset from one cut short that a tag
+// only seems to complete.
+func Peeled(src core.ReaderAtSized, size, floor, limit int64) (int64, error) {
+	s := &scanner{src: src, floor: floor, limit: limit, steps: maxRegions, footersOnly: true}
+	_, b, err := s.peel(size)
+	return b, err
+}
+
 func scan(src core.ReaderAtSized, size, floor, limit int64, maxElements int, end AudioEnd, legacy bool) (Layout, error) {
 	s := &scanner{src: src, floor: floor, limit: limit, maxElements: maxElements, steps: maxRegions}
 	rs, b, err := s.peel(size)
@@ -345,6 +355,7 @@ type scanner struct {
 	maxElements int
 	steps       int // tags still to take
 	misplaced   Region
+	footersOnly bool // an APE tag is placed by its footer, its items unread
 }
 
 // peel takes tags off the end of the file, size bytes long, and returns them nearest the end
@@ -544,6 +555,9 @@ func (s *scanner) apeTag(pos int64) (Region, bool, error) {
 	if start < s.floor {
 		s.misplaced = Region{Kind: KindAPEv2, Off: start, Len: pos - start}
 		return Region{}, false, nil
+	}
+	if s.footersOnly {
+		return Region{Kind: KindAPEv2, Off: start, Len: pos - start}, true, nil
 	}
 	t, ok, err := ape.ParseAt(s.src, pos, s.limit, s.maxElements)
 	if err != nil || !ok {

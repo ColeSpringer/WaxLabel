@@ -115,6 +115,12 @@ type PaddingReporter interface {
 	PaddingBytes() int64
 }
 
+// EssenceRefuser is a native document that may hold part of the file's audio alone (optional):
+// RefuseEssence says why a digest of its essence would not stand for the file, or nil.
+type EssenceRefuser interface {
+	RefuseEssence() error
+}
+
 // Media is the neutral parse result: canonical projection plus native base for rewrites.
 type Media struct {
 	Format       Format

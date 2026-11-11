@@ -21,7 +21,7 @@ import (
 // preserves the padding can be told from one that drops it.
 func parseOpusStreamWithGain(t *testing.T, gain int, comments ...string) *core.Media {
 	t.Helper()
-	base, err := parse(context.Background(), core.BytesSource(buildOpusStreamWithGain(t, gain, comments...)), core.DefaultParseOptions())
+	base, err := parse(context.Background(), Codec{}, core.BytesSource(buildOpusStreamWithGain(t, gain, comments...)), core.DefaultParseOptions())
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -31,6 +31,13 @@ func parseOpusStreamWithGain(t *testing.T, gain int, comments ...string) *core.M
 // buildOpusStreamWithGain renders the stream bytes parseOpusStreamWithGain parses.
 func buildOpusStreamWithGain(t *testing.T, gain int, comments ...string) []byte {
 	t.Helper()
+	return buildOpusStreamAt(t, 0, 1, gain, comments...)
+}
+
+// buildOpusStreamAt renders that stream with its pages numbered from seq0 and audioPages audio
+// pages, one packet of 960 samples each.
+func buildOpusStreamAt(t *testing.T, seq0 uint32, audioPages, gain int, comments ...string) []byte {
+	t.Helper()
 	const serial = 0x4F4747
 	head := []byte{'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 2, 0, 0, 0x80, 0xBB, 0, 0, 0, 0, 0}
 	head[16], head[17] = byte(gain), byte(gain>>8)
@@ -39,11 +46,14 @@ func buildOpusStreamWithGain(t *testing.T, gain int, comments ...string) []byte 
 		t.Fatalf("comment packet is %d bytes; keep test covers small enough for single-segment lacing", len(tags))
 	}
 	audio := []byte("AUDIOPKT!!")
-	return slices.Concat(
-		buildPage(flagBOS, 0, serial, 0, []byte{byte(len(head))}, head),
-		buildPage(0, 0, serial, 1, []byte{byte(len(tags))}, tags),
-		buildPage(0, 960, serial, 2, []byte{byte(len(audio))}, audio),
+	out := slices.Concat(
+		buildPage(flagBOS, 0, serial, seq0, []byte{byte(len(head))}, head),
+		buildPage(0, 0, serial, seq0+1, []byte{byte(len(tags))}, tags),
 	)
+	for i := range audioPages {
+		out = append(out, buildPage(0, uint64(960*(i+1)), serial, seq0+2+uint32(i), []byte{byte(len(audio))}, audio)...)
+	}
+	return out
 }
 
 // TestParseOpusOutputGain: the OpusHead's signed Q7.8 output gain reads into the track. A
@@ -121,7 +131,7 @@ func TestOggCapabilitiesOutputGain(t *testing.T) {
 func planOpusGain(t *testing.T, gain int, mutate func(*core.Media)) ([]byte, *core.Media, *core.WritePlan) {
 	t.Helper()
 	src := buildOpusStreamWithGain(t, 0)
-	base, err := parse(context.Background(), core.BytesSource(src), core.DefaultParseOptions())
+	base, err := parse(context.Background(), Codec{}, core.BytesSource(src), core.DefaultParseOptions())
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -202,7 +212,7 @@ func TestPlanOpusOutputGainRewritesBOSPageOnly(t *testing.T) {
 		t.Errorf("page 0 CRC = %08x, want %08x", got, want)
 	}
 
-	reparsed, err := parse(context.Background(), core.BytesSource(out), core.DefaultParseOptions())
+	reparsed, err := parse(context.Background(), Codec{}, core.BytesSource(out), core.DefaultParseOptions())
 	if err != nil {
 		t.Fatalf("re-parse: %v", err)
 	}
@@ -236,7 +246,7 @@ func TestPlanOpusOutputGainRewritesBOSPageOnly(t *testing.T) {
 func TestPlanOpusOutputGainWithTagEdit(t *testing.T) {
 	src, _, plan := planOpusGain(t, -896, func(m *core.Media) { m.Tags.Set("TITLE", "New") })
 	out := renderPlan(t, src, plan)
-	reparsed, err := parse(context.Background(), core.BytesSource(out), core.DefaultParseOptions())
+	reparsed, err := parse(context.Background(), Codec{}, core.BytesSource(out), core.DefaultParseOptions())
 	if err != nil {
 		t.Fatalf("re-parse: %v", err)
 	}
@@ -268,7 +278,7 @@ func TestPlanOpusOutputGainShortHeadRefused(t *testing.T) {
 		buildPage(0, 0, serial, 1, []byte{byte(len(tags))}, tags),
 		buildPage(0, 960, serial, 2, []byte{byte(len(audio))}, audio),
 	)
-	base, err := parse(context.Background(), core.BytesSource(src), core.DefaultParseOptions())
+	base, err := parse(context.Background(), Codec{}, core.BytesSource(src), core.DefaultParseOptions())
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -287,7 +297,7 @@ func TestPlanVorbisIgnoresOutputGain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base, err := parse(context.Background(), core.BytesSource(src), core.DefaultParseOptions())
+	base, err := parse(context.Background(), Codec{}, core.BytesSource(src), core.DefaultParseOptions())
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -310,7 +320,7 @@ func TestPlanVorbisIgnoresOutputGain(t *testing.T) {
 // gain edit leaves the essence digest inputs identical.
 func TestPlanOpusOutputGainKeepsEssenceConfig(t *testing.T) {
 	src, base, plan := planOpusGain(t, -896, nil)
-	written, err := parse(context.Background(), core.BytesSource(renderPlan(t, src, plan)), core.DefaultParseOptions())
+	written, err := parse(context.Background(), Codec{}, core.BytesSource(renderPlan(t, src, plan)), core.DefaultParseOptions())
 	if err != nil {
 		t.Fatalf("re-parse: %v", err)
 	}

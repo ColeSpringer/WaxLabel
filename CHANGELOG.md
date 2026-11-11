@@ -233,6 +233,39 @@ All notable changes to this project are documented here.
   ID3 chunk's, which `dump` now shows) prints `(preserved)` in a plan, without the hint to
   `--padding`.
 - `--add-cover` puts the new front cover where the old one stood instead of last.
+- An Ogg rewrite numbers its pages on from the first page's sequence number instead of from 0,
+  so a stream that does not start at 0 no longer gets a break in its numbering from a tag edit,
+  a cover or an `--output-gain` edit. A header page no packet ends on is written with granule
+  position -1, not 0.
+- An Ogg file that ends inside its last page is read up to the last whole page and reported
+  (`truncated-audio`) instead of refused as `invalid-data`; a rewrite keeps the cut page's
+  bytes. Bytes between two pages no longer end the read: it goes on at the next page within
+  64 KiB whose checksum holds, so the duration and the essence count the pages behind them.
+  They are reported (`page-gap`) and a rewrite keeps them between pages, renumbering around
+  them; those among the header pages go behind the first page, and more than 64 KiB of them
+  makes the file read-only (`unsupported-alignment`). An Ogg stream behind bytes that are no
+  tag, pages of another stream among them, is identified and read too, where 1.8.0 could not
+  identify the file, when its first page begins within 64 KiB and its checksum holds; the
+  bytes are reported (`leading-bytes`) and kept.
+- An Ogg stream of more than about half a million pages is no longer refused. What the page
+  walk keeps, 48 bytes a page (it was 72 and the page's lacing values), is bounded by
+  `Limits.MaxAllocBytes`, and the refusal names that limit. So is what a rewrite takes to
+  renumber the pages, 88 bytes each: over the limit it is refused as `ErrSizeTooLarge`.
+- Ogg durations count from the granule position the stream starts at, read from the packets
+  of its first audio page in all three mappings: a stream cut from a longer one with its
+  timestamps kept no longer reports the original's length, and the bitrate follows. An Ogg
+  FLAC whose `STREAMINFO` declares more than a page beyond what its pages hold, cut at
+  either end, is reported (`truncated-audio`) and takes its duration from the pages.
+- Ogg files behind an ID3v2 tag (with a gap or chained tags, as for FLAC), ahead of ID3v1,
+  Lyrics3 or APE tags, or beside a Skeleton stream are read. The tags are legacy
+  (`stray-leading-id3`, `trailing-id3v1`, `trailing-lyrics3`, `legacy-ape`): out of the essence,
+  kept by an edit and removed by `--legacy strip`, the ID3 and APE values shown in the family
+  view, where 1.8.0 refused a leading tag and read trailing ones as junk. A file whose streams
+  begin together is `multiplexed-stream` where it read as `chained-stream`, or was refused when
+  the Skeleton came first; like a chained file it refuses writes, and `caps` reports both, and a
+  stream whose audio shares a page with its headers, as read-only.
+- `copy`, `dump` and `caps` name the Ogg mapping (`Ogg Vorbis`, `Ogg Opus`, `Ogg FLAC`)
+  where they printed `Ogg`.
 
 ### Changed
 
@@ -285,6 +318,14 @@ All notable changes to this project are documented here.
   AIFF gains an ID3 chunk when a comment or lyric has a description or language to store. A
   stray or duplicate ID3v2 tag whose comment or lyric has a description, or a language other
   than `eng`, counts as content a strip keeps and a drop reports.
+- `HashAudioEssence`, and so `verify`, refuses a chained Ogg file (`unsupported-stream`, exit
+  3): only its first link is read, so the digest stood for part of the audio. The Ogg extents
+  keep their names; a file with junk between its pages hashes the pages behind the junk too,
+  and a second stream within 64 KiB of junk behind the first makes the file chained, where
+  it read as trailing bytes. A page that would begin another stream, or belongs to one that
+  never began, counts only if its checksum holds; bytes shaped like one are junk. A file
+  with more junk between its pages than a read crosses (256 runs, or 64 forged pages) is
+  read up to there, and has no digest and takes no write (`invalid-data`).
 
 ### Added
 
@@ -313,6 +354,10 @@ All notable changes to this project are documented here.
   `lyrics`.
 - `Editor.ReplacePictures(match, p)` puts a picture in place of the ones a predicate selects,
   keeping the order of the rest.
+- `verify` lists what reading a file warned about under its digests, as `dump` does (not with
+  `--quiet`), and its JSON gains `warnings`; a chained file it refuses has that warning on
+  stderr ahead of the error. `caps` says why a file of a format it writes is read-only, and
+  its JSON gains `readOnlyReason`.
 
 ## [1.8.0]
 

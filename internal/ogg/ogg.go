@@ -28,8 +28,8 @@ func init() {
 
 func (c Codec) Format() core.Format { return c.format }
 
-// SkipsLeadingID3 is false: streams start with OggS.
-func (Codec) SkipsLeadingID3() bool { return false }
+// SkipsLeadingID3 is true: an Ogg stream is read behind a stray leading ID3v2 tag.
+func (Codec) SkipsLeadingID3() bool { return true }
 
 // Extensions: .ogg and .oga for Vorbis/FLAC. RFC 5334 prefers .oga for non-Vorbis,
 // but flac long wrote Ogg FLAC as .ogg; claiming only .oga would false-flag those.
@@ -83,13 +83,26 @@ func bosPacket(b []byte, off int) (pkt []byte, next int, ok bool) {
 	return b[body:min(body+pktLen, len(b))], body + bodyLen, true
 }
 
+// Resync finds the first BOS page in window whose checksum holds and that begins this codec's
+// stream as Sniff reads it ([core.Resyncer]).
+func (c Codec) Resync(window []byte) (int, bool) {
+	w, _ := newWalker(core.BytesSource(window), int64(len(window)), 0)
+	p, ok, _ := w.seek(0, 0, func(p rawPage) (bool, error) {
+		return p.flags&flagBOS != 0 && c.Sniff(window[p.off:]), nil
+	})
+	return int(p.off), ok
+}
+
+// ChecksummedSync: Resync takes a page only when its checksum holds ([core.StartResyncer]).
+func (Codec) ChecksummedSync() {}
+
 func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
-	return parse(ctx, src, opts)
+	return parse(ctx, c, src, opts)
 }
 
 // Capabilities: Vorbis comments; art is METADATA_BLOCK_PICTURE or FLAC PICTURE;
-// chapters are CHAPTERxxx (start+title).
-func (c Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
+// chapters are CHAPTERxxx (start+title). A file Plan refuses to rewrite is read-only.
+func (c Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "Vorbis comment", Fidelity: "lossless",
@@ -111,10 +124,17 @@ func (c Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabili
 		Constraints:    []string{"CHAPTERxxx stores start and title only (no end time, language, or flags)"},
 		ChapterLoss:    core.ChapterLossStartTitleOnly,
 	}
+	var refusal error
+	if m != nil {
+		if d, ok := m.Native.(*doc); ok && d != nil {
+			refusal = d.refuseWrite()
+		}
+	}
 	// Comment padding round-tripped as-is; no padding control.
-	caps := core.NewCapabilities(c.format, false, fields, pictures, chapters, core.AccessNone, nil).
+	caps := core.NewCapabilities(c.format, refusal != nil, fields, pictures, chapters, core.AccessNone, nil).
 		WithSyncedLyrics(vorbis.SyncedLyricsCapability()).
-		WithFieldClassifier(vorbis.TransferClassifier)
+		WithFieldClassifier(vorbis.TransferClassifier).
+		WithReadOnlyReason(refusal)
 	if c.format == core.FormatOggOpus {
 		caps = caps.WithOutputGain(core.AccessFull)
 	}

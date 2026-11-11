@@ -173,3 +173,59 @@ func TestCopyStrictEscalatesLegacyStripDrop(t *testing.T) {
 		t.Error("copy --strict refused but wrote anyway")
 	}
 }
+
+// TestSetLegacyStripOgg: an Ogg file's stray ID3 tags are stripped by --legacy strip, which names
+// them and what only they held; a tag edit alone keeps them, and --strict refuses the loss.
+func TestSetLegacyStripOgg(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"sample.ogg", "sample.opus", "sample.oga"} {
+		clean, err := os.ReadFile(td(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		lead := testfile.ID3v2(3, testfile.TextFrame(3, "TCOM", "Legacy Composer"))
+		data := slices.Concat(lead, clean, id3v1Block("", "", "legacy comment", 255))
+		write := func() string {
+			path := filepath.Join(t.TempDir(), name)
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}
+
+		path := write()
+		out, _, code := runCLI(t, "dump", path)
+		if code != 0 || !strings.Contains(out, "[stray-leading-id3]") || !strings.Contains(out, "[trailing-id3v1]") {
+			t.Errorf("%s: dump exit %d:\n%s", name, code, out)
+		}
+		if out, _, code = runCLI(t, "set", path, "--set", "TITLE=Kept"); code != 0 ||
+			!strings.Contains(out, "leading ID3v2 preservation") || !strings.Contains(out, "trailing ID3v1 preservation") {
+			t.Errorf("%s: set exit %d:\n%s", name, code, out)
+		}
+		if got, _ := os.ReadFile(path); !bytes.HasPrefix(got, lead) || !bytes.HasSuffix(got, data[len(data)-128:]) {
+			t.Errorf("%s: a tag edit did not keep the legacy tags", name)
+		}
+
+		path = write()
+		out, _, code = runCLI(t, "set", path, "--legacy", "strip")
+		if code != 0 {
+			t.Fatalf("%s: set --legacy strip exit = %d:\n%s", name, code, out)
+		}
+		for _, want := range []string{"leading ID3v2 strip", "trailing ID3v1 strip", "legacy-strip-dropped", "COMPOSER", "COMMENT"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s: the plan does not say %q:\n%s", name, want, out)
+			}
+		}
+		if got, _ := os.ReadFile(path); !bytes.Equal(got, clean) {
+			t.Errorf("%s: the stripped file is not the stream alone", name)
+		}
+
+		path = write()
+		if _, errOut, code := runCLI(t, "set", path, "--legacy", "strip", "--strict"); code != 2 {
+			t.Errorf("%s: --strict exit = %d, want 2:\n%s", name, code, errOut)
+		}
+		if got, _ := os.ReadFile(path); !bytes.Equal(got, data) {
+			t.Errorf("%s: --strict refused but the file changed", name)
+		}
+	}
+}

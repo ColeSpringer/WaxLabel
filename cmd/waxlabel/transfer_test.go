@@ -300,6 +300,39 @@ func TestCopyHeaderDistinguishesWebM(t *testing.T) {
 	}
 }
 
+// TestFormatLabelKeepsTheSpecificName: a container name stands in for the format only when it
+// says more than the format's own name. "Ogg" says less than "Ogg Vorbis", so the three Ogg
+// mappings keep their names in the copy header, dump and caps; WMA is still labelled ASF.
+func TestFormatLabelKeepsTheSpecificName(t *testing.T) {
+	t.Parallel()
+	for src, label := range map[string]string{
+		"sample.ogg": "Ogg Vorbis", "sample.opus": "Ogg Opus", "sample.oga": "Ogg FLAC", "sample.wma": "ASF",
+	} {
+		out, _, code := runCLI(t, "copy", td(src), copyFixture(t, notagsFLAC), "--dry-run")
+		if code != 0 || !strings.Contains(out, "transfer "+label+" -> FLAC\n") {
+			t.Errorf("copy %s -> flac exit %d, want the header to read 'transfer %s -> FLAC':\n%s", src, code, label, out)
+		}
+		for _, cmd := range []string{"dump", "caps"} {
+			if out, _, _ := runCLI(t, cmd, td(src)); !lineWithFields(out, "format:", label) {
+				t.Errorf("%s %s does not print 'format: %s':\n%s", cmd, src, label, out)
+			}
+		}
+	}
+	if out, _, _ := runCLI(t, "copy", sampleFLAC, copyFixture(t, td("notags.opus")), "--dry-run"); !strings.Contains(out, "transfer FLAC -> Ogg Opus\n") {
+		t.Errorf("an Ogg destination is not named:\n%s", out)
+	}
+}
+
+// lineWithFields reports whether out has a line that reads label then value, whatever the spacing.
+func lineWithFields(out, label, value string) bool {
+	for line := range strings.Lines(out) {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), label); ok && strings.TrimSpace(rest) == value {
+			return true
+		}
+	}
+	return false
+}
+
 // TestDiffExitCodes: diff-style exits (0 identical, 1 differs).
 func TestDiffExitCodes(t *testing.T) {
 	t.Parallel()

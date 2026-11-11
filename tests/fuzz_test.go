@@ -132,6 +132,23 @@ func FuzzParse(f *testing.F) {
 	f.Add(slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "x")), []byte{1, 2, 3}, wvBlock(1|wvRate44k|wvFinal, 4410, make([]byte, 16))))
 	f.Add(slices.Concat(testfile.ID3v2(4), testfile.ID3v2(4, testfile.TextFrame(4, "TALB", "y")), testfile.TaggedFLAC("x")))
 	f.Add(slices.Concat(testfile.OggPage(2, 0, 7, 0, []byte("fishead\x00\x03\x00")), testfile.OggPage(2, 0, 1, 0, []byte("\x01vorbis\x00"))))
+	// Ogg behind a leading tag and a gap, ahead of an ID3v1 tag, with junk between its pages, cut
+	// inside its last page (alone and ahead of a tag), and beside a Skeleton stream.
+	{
+		ogg, err := os.ReadFile(sampleOgg)
+		if err != nil {
+			f.Fatal(err)
+		}
+		pages := oggPages(ogg)
+		last := pages[len(pages)-1]
+		v1 := testfile.ID3v1("T", "A", "", "", "", 255)
+		f.Add(slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "x")), []byte{1, 2, 3}, ogg, v1))
+		f.Add(slices.Concat(ogg[:last.off], []byte("0123456789"), ogg[last.off:]))
+		f.Add(slices.Concat([]byte("stray bytes"), ogg)) // no tag ahead of the stream
+		f.Add(ogg[:len(ogg)-100])
+		f.Add(slices.Concat(ogg[:len(ogg)-100], v1))
+		f.Add(slices.Concat(testfile.OggPage(2, 0, 7, 0, []byte("fishead\x00\x03\x00")), ogg, testfile.OggPage(4, 0, 7, 1, nil)))
+	}
 	// Streams joined past the ID3 tags a file opens with, and a truncated MP3 with a tag after its last
 	// whole frame.
 	f.Add(slices.Concat(adtsStream(2, 2, 16), testfile.ID3v2(4), adtsStream(2, 2, 16), testfile.ID3v1("t", "", "", "", "", 255), adtsStream(2, 2, 16)))

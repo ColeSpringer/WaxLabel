@@ -60,13 +60,19 @@ func Operations(l Layout, strip bool) []string {
 // how many bytes the essence covers, the figure an average bitrate counts.
 func (l Layout) Project(m *core.Media, start int64, subject string) ([]core.Warning, int64) {
 	audioLen := l.SetEssence(m, start)
+	return l.ProjectLegacy(m, subject), audioLen
+}
+
+// ProjectLegacy is [Layout.Project] without the essence, for a stream that places its own: the
+// family view, the opaque flag and the warnings.
+func (l Layout) ProjectLegacy(m *core.Media, subject string) []core.Warning {
 	m.Families = append(m.Families, Families(m.Tags, l)...)
 	m.LegacyOpaqueContent = l.Opaque()
 	ws := Warnings(l, subject)
 	if l.Tag() != nil {
 		ws = core.Warn(ws, core.WarnLegacyAPE, "APEv2 tag present; preserved")
 	}
-	return ws, audioLen
+	return ws
 }
 
 // Entries lists the regions of l for the native view in file order, every tag in it legacy, and the

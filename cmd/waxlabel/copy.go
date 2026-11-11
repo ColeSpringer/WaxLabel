@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
@@ -203,8 +204,9 @@ func renderTransfer(w io.Writer, src, dst string, r wl.TransferReport, srcLabel,
 // transferFormatLabel labels one transfer side. Matroska family shows container (WebM vs MKA).
 // JSON sourceFormat/destFormat stay bare Format (WebM is container, not format identity).
 func transferFormatLabel(f wl.Format, container string) string {
-	// Show container when it differs from codec family (WebM/Matroska, WAV/RF64, AIFF/AIFC).
-	if container != "" && container != f.String() {
+	// Show the container when it says what the format name does not (WebM/Matroska, WAV/RF64,
+	// AIFF/AIFC, ASF), not when the format name already opens with it (Ogg Vorbis).
+	if container != "" && !strings.HasPrefix(f.String(), container) {
 		return container
 	}
 	return f.String()

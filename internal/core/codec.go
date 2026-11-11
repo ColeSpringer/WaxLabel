@@ -178,6 +178,13 @@ type Resyncer interface {
 	Resync(window []byte) (off int, ok bool)
 }
 
+// StartResyncer marks a [Resyncer] whose sync a checksum confirms. Detection trusts it at the
+// start of a file too, behind bytes no codec knows, where a sync by shape alone would be a guess.
+type StartResyncer interface {
+	Resyncer
+	ChecksummedSync()
+}
+
 // Codec registry (init registration; not user-extensible).
 var registry []Codec
 
@@ -211,9 +218,10 @@ func Detect(header []byte) (Codec, bool) {
 // to [MaxLeadingTags] chained ones, each sized by leadingLen from its header) the inner format wins
 // when its codec skips leading ID3: sniffed where the tags end or, when nothing sniffs there, the
 // nearest stream a [Resyncer] confirms within [ResyncWindow] of that end. Another inner format is
-// unsupported, and no inner stream keeps the outer codec. A window read that fails inside src is an
-// error, classified as [bits.FillWithin] classifies it; ok is false with no error when no format
-// matches.
+// unsupported, and no inner stream keeps the outer codec. When no codec knows the first bytes, a
+// [StartResyncer] may still confirm its stream within [ResyncWindow] of the start. A window read
+// that fails inside src is an error, classified as [bits.FillWithin] classifies it; ok is false
+// with no error when no format matches.
 func DetectLeading(src ReaderAtSized, leadingLen func(header []byte) (int64, bool)) (Codec, bool, error) {
 	header, err := readWindow(src, 0, SniffWindow)
 	if err != nil {
@@ -221,7 +229,14 @@ func DetectLeading(src ReaderAtSized, leadingLen func(header []byte) (int64, boo
 	}
 	outer, ok := Detect(header)
 	if !ok {
-		return nil, false, nil
+		var checksummed []Codec
+		for _, c := range registry {
+			if _, ok := c.(StartResyncer); ok {
+				checksummed = append(checksummed, c)
+			}
+		}
+		c, _, ok, err := resync(src, 0, checksummed)
+		return c, ok, err
 	}
 	end, inner, err := leadingChain(src, leadingLen, header)
 	switch {

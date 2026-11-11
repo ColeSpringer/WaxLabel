@@ -31,7 +31,7 @@ func TestStripEncoderNeutralizesOpusVendor(t *testing.T) {
 	page2 := buildPage(0, 960, serial, 2, []byte{byte(len(audio))}, audio)
 	stream := append(append(append([]byte{}, page0...), page1...), page2...)
 
-	base, err := parse(context.Background(), core.BytesSource(stream), core.DefaultParseOptions())
+	base, err := parse(context.Background(), Codec{}, core.BytesSource(stream), core.DefaultParseOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestStripEncoderNeutralizesOpusVendor(t *testing.T) {
 	if plan.NoOp {
 		t.Fatal("--strip-encoder on a transcoded-but-otherwise-clean Opus must not be a no-op")
 	}
-	written, err := parse(context.Background(), core.BytesSource(renderPlan(t, stream, plan)), core.DefaultParseOptions())
+	written, err := parse(context.Background(), Codec{}, core.BytesSource(renderPlan(t, stream, plan)), core.DefaultParseOptions())
 	if err != nil {
 		t.Fatalf("re-parse: %v", err)
 	}

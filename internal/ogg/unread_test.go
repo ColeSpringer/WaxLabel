@@ -17,7 +17,7 @@ import (
 func TestPlanRemovesUnreadOwnedCommentsFromACommentPacket(t *testing.T) {
 	const chapter, lyrics, picture = "CHAPTER001=bogus", "SYNCEDLYRICS=words", "METADATA_BLOCK_PICTURE=bad~"
 	src := buildOpusStreamWithGain(t, 0, chapter, lyrics, picture)
-	base, err := parse(context.Background(), core.BytesSource(src), core.DefaultParseOptions())
+	base, err := parse(context.Background(), Codec{}, core.BytesSource(src), core.DefaultParseOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestPlanRemovesUnreadOwnedCommentsFromACommentPacket(t *testing.T) {
 				t.Errorf("%s: %q gone = %v", name, cm, gone)
 			}
 		}
-		re, err := parse(context.Background(), core.BytesSource(out), core.DefaultParseOptions())
+		re, err := parse(context.Background(), Codec{}, core.BytesSource(out), core.DefaultParseOptions())
 		if err != nil || re.Properties.First().OutputGain != tc.gain {
 			t.Errorf("%s: the output reads with gain %d, err %v; want %d", name, re.Properties.First().OutputGain, err, tc.gain)
 		}

@@ -99,12 +99,14 @@ type jsonCaps struct {
 	Format        string       `json:"format,omitempty"`
 	// Subformat: container subtype ("WebM", "AIFC"). Format: codec family.
 	// Same subtype signal dump exposes via properties.container.
-	Subformat    string      `json:"subformat,omitempty"`
-	ReadOnly     bool        `json:"readOnly,omitempty"`
-	Fields       *jsonCapDim `json:"fields,omitempty"`
-	Pictures     *jsonCapDim `json:"pictures,omitempty"`
-	Chapters     *jsonCapDim `json:"chapters,omitempty"`
-	SyncedLyrics *jsonCapDim `json:"syncedLyrics,omitempty"`
+	Subformat string `json:"subformat,omitempty"`
+	ReadOnly  bool   `json:"readOnly,omitempty"`
+	// ReadOnlyReason: why this file cannot be written, of a format that can be.
+	ReadOnlyReason string      `json:"readOnlyReason,omitempty"`
+	Fields         *jsonCapDim `json:"fields,omitempty"`
+	Pictures       *jsonCapDim `json:"pictures,omitempty"`
+	Chapters       *jsonCapDim `json:"chapters,omitempty"`
+	SyncedLyrics   *jsonCapDim `json:"syncedLyrics,omitempty"`
 	// Qualifiers: which of "description" and "language" a COMMENT or LYRICS value keeps.
 	Qualifiers []string `json:"qualifiers"`
 	// Padding: "none", "partial" (an edit that fits reuses the existing region), or "full".
@@ -158,6 +160,9 @@ func buildCaps(file, container string, caps wl.Capabilities) jsonCaps {
 	}
 	// Read-only: skip key loop (per-field levels still describe format; empty keys[]).
 	if jc.ReadOnly {
+		if err := caps.ReadOnlyReason(); err != nil && caps.Format.Writable() {
+			jc.ReadOnlyReason = perFileReason(err)
+		}
 		return jc
 	}
 	for _, k := range tag.KnownKeys() {
@@ -207,9 +212,12 @@ func renderCaps(w io.Writer, jc jsonCaps) {
 	fmt.Fprintf(w, "  %-*s %s\n", capLabelWidth, "format:", format)
 	if jc.ReadOnly {
 		// Per-file read-only (e.g. fragmented MP4): clarify dimension rows describe format.
-		if jc.File != "" {
+		switch {
+		case jc.ReadOnlyReason != "":
+			fmt.Fprintf(w, "  (read-only: %s; the levels below describe the format)\n", tag.SanitizeLine(jc.ReadOnlyReason))
+		case jc.File != "":
 			fmt.Fprintln(w, "  (read-only: this file cannot be written; the levels below describe the format)")
-		} else {
+		default:
 			fmt.Fprintln(w, "  (read-only: this format cannot be written)")
 		}
 	}

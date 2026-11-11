@@ -86,7 +86,7 @@ func TestPlanWritesBackCoverParsedUnderRaisedLimit(t *testing.T) {
 
 // TestPlanRejectsCoversJointlyExceedingLimit pins the whole-packet cap: two covers that
 // each fit under the limit but whose comment packet jointly exceeds it are rejected,
-// since reassembleHeaders would refuse to re-parse the file at the same limit. A
+// since the parser would refuse to read the file back at the same limit. A
 // one-cover control at the same limit succeeds.
 func TestPlanRejectsCoversJointlyExceedingLimit(t *testing.T) {
 	cover := smallCover()
@@ -178,14 +178,14 @@ func TestPlanKeepsCommentCountReadUnderRaisedLimit(t *testing.T) {
 	n := bits.DefaultLimits.MaxElements + 1
 	head := []byte{'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 2, 0, 0, 0x80, 0xBB, 0, 0, 0, 0, 0}
 	tags := opusTagsPacket("libopus 1.4", append([]string{"TITLE=Song"}, slices.Repeat([]string{"C=v"}, n-1)...)...)
-	page0, _ := paginateBOS(serial, head)
+	page0, _ := paginateBOS(serial, 0, head)
 	tagPages, pages := paginate(serial, 1, [][]byte{tags})
 	audio := []byte("AUDIOPKT!!")
 	stream := slices.Concat(page0, tagPages, buildPage(0, 960, serial, uint32(1+pages), []byte{byte(len(audio))}, audio))
 
 	opts := core.DefaultParseOptions()
 	opts.Limits.MaxElements = 2 * n
-	base, err := parse(context.Background(), core.BytesSource(stream), opts)
+	base, err := parse(context.Background(), Codec{}, core.BytesSource(stream), opts)
 	if err != nil {
 		t.Fatal(err)
 	}

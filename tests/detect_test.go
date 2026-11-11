@@ -128,14 +128,15 @@ func TestContentDetectionCoversFixtures(t *testing.T) {
 	}
 }
 
-// The parsers that read past a leading ID3v2 tag are MP3, FLAC, raw AAC, WavPack, Monkey's Audio
-// and Musepack. Other inner signatures past ID3 are reported unsupported.
+// The parsers that read past a leading ID3v2 tag are MP3, FLAC, raw AAC, WavPack, Monkey's Audio,
+// Musepack and the three Ogg mappings. Other inner signatures past ID3 are reported unsupported.
 func TestSkipsLeadingID3Set(t *testing.T) {
 	want := map[core.Format]bool{
 		core.FormatMP3: true, core.FormatFLAC: true, core.FormatAAC: true,
 		core.FormatWavPack: true, core.FormatMonkeysAudio: true, core.FormatMusepack: true,
+		core.FormatOggVorbis: true, core.FormatOggOpus: true, core.FormatOggFLAC: true,
 		core.FormatMP4: false, core.FormatMatroska: false, core.FormatWAV: false,
-		core.FormatAIFF: false, core.FormatOggVorbis: false, core.FormatOggOpus: false,
+		core.FormatAIFF: false,
 	}
 	for f, w := range want {
 		c, ok := core.ForFormat(f)
@@ -177,7 +178,8 @@ func TestDetectsPastLeadingTagsAndGaps(t *testing.T) {
 		{"a second tag past the resync window", slices.Concat(lead, big, flac), core.FormatFLAC},
 		{"a second tag past the resync window, then a gap", slices.Concat(lead, big, gap, flac), core.FormatFLAC},
 		{"a second tag running past the end", slices.Concat(lead, past, flac), core.FormatMP3},
-		{"two tags then Ogg", slices.Concat(tags(2), readFixture(t, sampleOgg)), core.FormatUnknown},
+		{"two tags then Ogg", slices.Concat(tags(2), readFixture(t, sampleOgg)), core.FormatOggVorbis},
+		{"two tags then MP4", slices.Concat(tags(2), readFixture(t, sampleMP4)), core.FormatUnknown},
 
 		{"gap then FLAC", slices.Concat(lead, gap, flac), core.FormatFLAC},
 		{"gap then ADTS", slices.Concat(lead, gap, adts), core.FormatAAC},
@@ -185,6 +187,10 @@ func TestDetectsPastLeadingTagsAndGaps(t *testing.T) {
 		{"gap then Monkey's Audio", slices.Concat(lead, gap, readFixture(t, sampleAPE)), core.FormatMonkeysAudio},
 		{"gap then Musepack SV8", slices.Concat(lead, gap, readFixture(t, chaptersMPC)), core.FormatMusepack},
 		{"gap then Musepack SV7", slices.Concat(lead, gap, mpcSV7(100, 0)), core.FormatMusepack},
+		{"gap then Ogg Vorbis", slices.Concat(lead, gap, readFixture(t, sampleOgg)), core.FormatOggVorbis},
+		{"gap then Ogg Opus", slices.Concat(lead, gap, readFixture(t, sampleOpus)), core.FormatOggOpus},
+		{"gap then Ogg FLAC", slices.Concat(lead, gap, readFixture(t, sampleOggFLAC)), core.FormatOggFLAC},
+		{"gap then an Ogg page with a broken checksum", slices.Concat(lead, gap, brokenChecksum(readFixture(t, sampleOgg)), adts), core.FormatAAC},
 		{"gap then nothing confirmed", slices.Concat(lead, gap, []byte("plain text, not audio")), core.FormatMP3},
 
 		{"FLAC nearer than ADTS", slices.Concat(lead, gap, []byte("fLaC\x00\x00\x00\x22"), adts), core.FormatFLAC},
@@ -209,6 +215,43 @@ func TestDetectsPastLeadingTagsAndGaps(t *testing.T) {
 			}
 		})
 	}
+}
+
+// With no tag ahead of them, bytes no codec knows are skipped only for a stream whose first unit
+// carries a checksum, an Ogg page: within the resync window, and only when the checksum holds.
+// Another stream behind such bytes stays unidentified.
+func TestDetectsOggBehindBytesWithNoTag(t *testing.T) {
+	junk := func(n int) []byte { return bytes.Repeat([]byte{0xA5}, n) }
+	ogg := readFixture(t, sampleOgg)
+	firstPage := oggPages(ogg)[0].len
+	for _, c := range []struct {
+		name string
+		data []byte
+		want core.Format
+	}{
+		{"Ogg Vorbis", slices.Concat(junk(10), ogg), core.FormatOggVorbis},
+		{"Ogg Opus", slices.Concat(junk(10), readFixture(t, sampleOpus)), core.FormatOggOpus},
+		{"Ogg FLAC", slices.Concat(junk(10), readFixture(t, sampleOggFLAC)), core.FormatOggFLAC},
+		{"a first page ending at the window", slices.Concat(junk(core.ResyncWindow-firstPage), ogg), core.FormatOggVorbis},
+		{"a first page crossing the window", slices.Concat(junk(core.ResyncWindow-firstPage+1), ogg), core.FormatUnknown},
+		{"a first page with a broken checksum", slices.Concat(junk(10), brokenChecksum(ogg)), core.FormatUnknown},
+		{"FLAC", slices.Concat(junk(10), readFixture(t, sampleFLAC)), core.FormatUnknown},
+		{"MPEG frames", slices.Concat(junk(10), mp3VBRStream(2, 2)), core.FormatUnknown},
+		{"nothing", junk(1000), core.FormatUnknown},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := detect(t, c.data); got != c.want {
+				t.Errorf("detected %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// brokenChecksum returns a copy of an Ogg stream whose first page no longer matches its checksum.
+func brokenChecksum(stream []byte) []byte {
+	out := slices.Clone(stream)
+	out[22] ^= 0xFF
+	return out
 }
 
 // An Ogg stream is recognized by its codec signature opening the packet that begins the stream on its

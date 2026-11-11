@@ -36,6 +36,12 @@ func OggFLAC(blocks ...[]byte) []byte {
 	return append(out, OggPage(0, 4096, serial, uint32(len(blocks)+1), []byte("AUDIO-FRAME-BYTES"))...)
 }
 
+// OggSealPage rewrites the checksum of page, one whole Ogg page, after its header changed.
+func OggSealPage(page []byte) {
+	clear(page[22:26])
+	binary.LittleEndian.PutUint32(page[22:], oggCRC(page))
+}
+
 // oggCRC is CRC-32 with polynomial 0x04c11db7, no reflection, zero init and no final XOR.
 func oggCRC(b []byte) uint32 {
 	var crc uint32

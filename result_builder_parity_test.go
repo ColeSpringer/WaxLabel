@@ -439,7 +439,26 @@ func parityInputs(t *testing.T) []parityInput {
 	}
 	stripThenArtist := strip
 	stripThenArtist.name, stripThenArtist.then = "strip, then artist", []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"))}
+	// Ogg streams with bytes between their pages, among the header pages and the audio pages.
+	gapped := func(name string) []byte {
+		ogg := fixture[name]
+		second, last := bytes.Index(ogg[4:], []byte("OggS"))+4, bytes.LastIndex(ogg, []byte("OggS"))
+		return slices.Concat(ogg[:second], gap, ogg[second:last], tailJunk, ogg[last:])
+	}
+	oga := fixture["sample.oga"]
+	// The first audio page's checksum fails: it reads only as the page that follows a header page.
+	damaged := gapped("sample.oga")
+	damaged[bytes.LastIndex(oga, []byte("OggS"))+len(gap)-1] ^= 0x01
 	return append(inputs,
+		// Ogg behind a leading tag and bytes, ahead of junk and stacked tags; with bytes between its
+		// pages, renumbered around them; and ending inside its last page ahead of a tag.
+		parityInput{name: "legacy-tags.ogg", data: slices.Concat(v2Title, gap, fixture["sample.ogg"], tailJunk, v1a, v1b),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), strip), stripThenArtist, longTitle(70000)}},
+		parityInput{name: "gapped.ogg", data: gapped("sample.ogg"), edits: []parityEdit{longTitle(70000)}},
+		parityInput{name: "gapped.opus", data: gapped("sample.opus"), edits: []parityEdit{longTitle(70000)}},
+		parityInput{name: "gapped-damaged.oga", data: damaged, edits: []parityEdit{longTitle(70000)}},
+		parityInput{name: "cut-page.oga", data: slices.Concat(oga[:len(oga)-100], v1a),
+			edits: []parityEdit{longTitle(70000), tags("artist", setTag(tag.Artist, "New Artist"), strip)}},
 		parityInput{name: "stray-tags-two-vc.flac", data: slices.Concat(
 			testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Stray Title")),
 			testfile.FLAC(testfile.CommentBlock("test", "TITLE=x"), testfile.CommentBlock("test", "ALBUM=y"),

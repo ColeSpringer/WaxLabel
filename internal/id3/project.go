@@ -384,7 +384,7 @@ func LegacyV1Families(auth tag.TagSet, raw []byte) []core.FamilyValue {
 // whole ([carried]), or bytes it could not read. unread is
 // how many those are, for the native view: all of a tag that does not parse or is ignored
 // whole ([Tag.Ignored]), which reports opaque with no entries. The stray leading tag of FLAC,
-// WavPack, Monkey's Audio and Musepack takes this path.
+// Ogg, WavPack, Monkey's Audio and Musepack takes this path.
 func LegacyV2Families(auth tag.TagSet, raw []byte, maxElements int) (fams []core.FamilyValue, opaque bool, unread int64) {
 	if len(raw) == 0 {
 		return nil, false, 0

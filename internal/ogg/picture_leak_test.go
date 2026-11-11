@@ -31,7 +31,7 @@ func TestParseHidesMalformedPictureComment(t *testing.T) {
 	page2 := buildPage(0, 960, serial, 2, []byte{byte(len(audio))}, audio)
 	stream := append(append(append([]byte{}, page0...), page1...), page2...)
 
-	media, err := parse(context.Background(), core.BytesSource(stream), core.DefaultParseOptions())
+	media, err := parse(context.Background(), Codec{}, core.BytesSource(stream), core.DefaultParseOptions())
 	if err != nil {
 		t.Fatal(err)
 	}

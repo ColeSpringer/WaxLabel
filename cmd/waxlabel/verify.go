@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
+	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/waxerr"
 	"github.com/spf13/cobra"
 )
 
@@ -26,7 +29,8 @@ func newVerifyCmd() *cobra.Command {
 			"container-scoped: the same audio remuxed into another container (FLAC in\n" +
 			".flac vs .oga) hashes differently. It carries a versioned extent name, so it\n" +
 			"stays interpretable across library-wide refinements. With --whole-file, also\n" +
-			"compute the whole-file identity. With --recursive, directory arguments are\n" +
+			"compute the whole-file identity. Warnings from reading a file are listed under\n" +
+			"its digests. With --recursive, directory arguments are\n" +
 			"walked for audio files. With --quiet, print one tab-separated\n" +
 			"\"essence<TAB>path\" line per file (essence, whole-file, then path under\n" +
 			"--whole-file) for piping into sort/uniq to find duplicates. A single \"-\"\n" +
@@ -48,9 +52,19 @@ func newVerifyCmd() *cobra.Command {
 			// quiet is text-only; --json has a fixed shape. Quiet is one TSV line per
 			// file, so drop the inter-record blank (noSeparator) for sort/uniq pipes.
 			quiet = quiet && !jsonMode(cmd)
+			errOut, asJSON := cmd.ErrOrStderr(), jsonMode(cmd)
 			return perFile(cmd, paths,
 				guardPathErrors(pathErrors, func(ctx context.Context, path string) (jsonVerify, error) {
-					return computeVerify(ctx, realOf(path), path, whole)
+					v, err := computeVerify(ctx, realOf(path), path, whole)
+					// A chained file parsed but has no digest: its read warning says why.
+					if errors.Is(err, waxerr.ErrChainedStream) && !asJSON {
+						for _, w := range v.read {
+							if w.Code == wl.WarnChainedStream {
+								fmt.Fprintf(errOut, "waxlabel: %s: %s\n", displayName(path), w)
+							}
+						}
+					}
+					return v, err
 				}),
 				func(path string, v jsonVerify) any { return v },
 				func(w io.Writer, path string, v jsonVerify) {
@@ -78,11 +92,13 @@ func computeVerify(ctx context.Context, realPath, displayPath string, whole bool
 	if err != nil {
 		return jsonVerify{File: jsonFileName(displayPath)}, err
 	}
+	read := doc.Warnings()
+	v := jsonVerify{SchemaVersion: schemaVersion, File: jsonFileName(displayPath), Warnings: toJSONWarnings(read), read: read}
 	essence, err := doc.HashAudioEssence(ctx)
 	if err != nil {
-		return jsonVerify{File: jsonFileName(displayPath)}, err
+		return v, err
 	}
-	v := jsonVerify{SchemaVersion: schemaVersion, File: jsonFileName(displayPath), Essence: essence.String()}
+	v.Essence = essence.String()
 	if whole {
 		fileSum, err := doc.HashFile(ctx)
 		if err != nil {
@@ -99,6 +115,7 @@ func renderVerify(w io.Writer, v jsonVerify, whole bool) {
 	if whole {
 		fmt.Fprintf(w, "  whole-file: %s\n", v.WholeFile)
 	}
+	renderWarnings(w, v.read)
 }
 
 // renderVerifyQuiet writes one TSV line: "essence\tpath", or
@@ -116,9 +133,13 @@ func renderVerifyQuiet(w io.Writer, v jsonVerify, whole bool) {
 // jsonVerify is one file's machine-readable identity. Failures use jsonErrorEntry;
 // Error is kept so a mixed array decodes into this type.
 type jsonVerify struct {
-	SchemaVersion int          `json:"schemaVersion"`
-	File          string       `json:"file"`
-	Essence       string       `json:"essence,omitempty"`
-	WholeFile     string       `json:"wholeFile,omitempty"`
-	Error         *jsonErrBody `json:"error,omitempty"`
+	SchemaVersion int    `json:"schemaVersion"`
+	File          string `json:"file"`
+	Essence       string `json:"essence,omitempty"`
+	WholeFile     string `json:"wholeFile,omitempty"`
+	// Warnings: what the parse warned about, as dump lists it.
+	Warnings []jsonWarning `json:"warnings"`
+	Error    *jsonErrBody  `json:"error,omitempty"`
+
+	read []wl.Warning // Warnings as parsed, for the text form
 }

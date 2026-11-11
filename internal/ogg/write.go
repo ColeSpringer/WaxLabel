@@ -10,13 +10,15 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/tail"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // Plan builds the rewrite. Comment header rebuilt; id/setup and audio payloads
-// verbatim. BOS copied; comment/setup re-paginated. If header page count changes,
-// audio pages are renumbered (seq+CRC) without re-reading bodies.
+// verbatim. BOS copied; comment/setup re-paginated, numbered on from the BOS page. Audio
+// pages that no longer follow the header pages' numbers are renumbered (seq+CRC) without
+// re-reading bodies. Then the tail, its legacy tags unless stripped.
 func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -44,30 +46,29 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// picture, chapter, or lyric comparison sees it.
 	gain := edited.Properties.First().OutputGain
 	gainChanged := d.kind == kindOpus && gain != base.Properties.First().OutputGain
+	stripLegacy := opts.Legacy == core.LegacyStrip
+	legacyChange := stripLegacy && (len(d.leadingID3) > 0 || d.layout.HasTags())
+	// headerChanged: the comment header is rebuilt. Chapters/synced-lyrics-only edits count.
+	headerChanged := tagsChanged || picturesChanged || chaptersChanged || syncedLyricsChanged || vendorChanged || unreadRemoved
 
 	report := core.WriteReport{Format: d.format, BytesBefore: edited.Identity.Size}
 
 	// NoOp: full copy for SaveAsFile/WriteTo; SaveBack skips. Before chained/alignment
-	// guards. Chapters/synced-lyrics-only edits must defeat this gate too.
-	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !vendorChanged && !gainChanged && !unreadRemoved {
+	// guards.
+	if !headerChanged && !gainChanged && !legacyChange {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
-	// A rewrite is refused for stream shapes that cannot be edited safely.
-	if d.chained {
-		return nil, fmt.Errorf("%w: refusing to rewrite a chained or multiplexed Ogg stream", waxerr.ErrChainedStream)
-	}
-	if !d.clean {
-		return nil, fmt.Errorf("%w: Ogg header and audio are not cleanly page-aligned; cannot rewrite safely", waxerr.ErrUnalignedStream)
+	if err := d.refuseWrite(); err != nil {
+		return nil, err
 	}
 	if gainChanged && len(d.idPacket) < 18 {
 		return nil, fmt.Errorf("%w: OpusHead is %d bytes; it holds no output gain to patch", waxerr.ErrInvalidData, len(d.idPacket))
 	}
 
-	// Gain-only: rebuild page 0; copy everything after original page 0 (comment/audio
-	// byte-identical; no header re-pagination).
-	if gainChanged && !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !vendorChanged && !unreadRemoved {
-		return gainOnlyPlan(edited, d, gain, report), nil
+	// A gain or legacy-tag change alone: no header re-pagination.
+	if !headerChanged {
+		return d.keptHeaderPlan(edited, gain, gainChanged, stripLegacy, report), nil
 	}
 
 	// Rebuild comments: tags, owned chapters/synced lyrics, then picture comments.
@@ -121,8 +122,7 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// Build header-tail packets once so the size guard matches re-pagination output.
 	// Page 0 usually copied; FLAC rebuilds it when header-packet count changes.
 	var flacDupContent []core.DuplicateContent
-	page0 := bits.Copy(0, d.page0Len)
-	page0Len := d.page0Len
+	page0 := bits.Copy(d.streamStart, d.page0Len)
 	var tailPackets [][]byte
 	if d.kind == kindFLAC {
 		newBlocks, dupDropped := rebuildFLACBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged || vendorChanged, picturesChanged, !unread.DropBlocks)
@@ -140,8 +140,8 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 		// Rebuild page 0 whenever the id packet bytes change, not just the block count, so a
 		// wrong or zero declared count is corrected too.
 		if p := flacIDWithCount(d.idPacket, len(newBlocks)); !bytes.Equal(p, d.idPacket) {
-			p0, _ := paginateBOS(d.serial, p)
-			page0, page0Len = bits.Lit(p0), int64(len(p0))
+			p0, _ := paginateBOS(d.serial, d.page0Seq, p)
+			page0 = bits.Lit(p0)
 		}
 	} else {
 		commentPacket := d.buildCommentPacket(newVendor, full)
@@ -150,8 +150,8 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 			tailPackets = append(tailPackets, d.setupPacket)
 		}
 		if gainChanged {
-			p0, _ := paginateBOS(d.serial, opusHeadWithGain(d.idPacket, gain))
-			page0, page0Len = bits.Lit(p0), int64(len(p0))
+			p0, _ := paginateBOS(d.serial, d.page0Seq, opusHeadWithGain(d.idPacket, gain))
+			page0 = bits.Lit(p0)
 			report.Operations = append(report.Operations, "OpusHead output gain rewrite")
 		}
 	}
@@ -173,44 +173,52 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	}
 
 	// Re-paginate the header tail (everything after the BOS id page).
-	tailBytes, tailPages := paginate(d.serial, 1, tailPackets)
-	newHeaderPages := 1 + tailPages
-	delta := newHeaderPages - d.headerPages
+	tailBytes, tailPages := paginate(d.serial, d.page0Seq+1, tailPackets)
 
-	newAudioStart := page0Len + int64(len(tailBytes))
-	shift := newAudioStart - d.audioStart
+	// What sat between the header pages goes ahead of the new ones as one run, which a reader
+	// crosses to a page this write builds; the first audio page still follows a header page.
+	segs := append(d.leadingSegments(stripLegacy, &report), page0)
+	for _, g := range d.headerGaps {
+		segs = append(segs, bits.Copy(g.off, g.len))
+	}
+	segs = append(segs, bits.Lit(tailBytes))
+	shift := bits.OutputLen(segs) - d.audioStart
 
-	segs := []bits.Segment{page0, bits.Lit(tailBytes)}
-
+	// The first audio page follows the last header page; the pages after it keep their steps.
+	var delta uint32
+	if len(d.audioPages) > 0 {
+		delta = d.page0Seq + 1 + uint32(tailPages) - d.audioPages[0].seq
+	}
+	// The audio runs to the tail: past the last page when the file ends inside one.
 	if delta == 0 {
-		// Header page count unchanged: audio page sequence numbers are unaffected,
-		// so the whole audio region copies verbatim.
-		segs = append(segs, bits.Copy(d.audioStart, d.audioEnd-d.audioStart))
+		segs = append(segs, bits.Copy(d.audioStart, d.layout.Start-d.audioStart))
 	} else {
-		// Page count changed: rebase seq and patch CRC in place (bodies unchanged).
-		// One backing slice for all 8-byte patches.
+		if need := int64(len(d.audioPages)) * renumberPerPage; need > limit {
+			return nil, fmt.Errorf("%w: renumbering %d Ogg audio pages takes %d bytes, over Limits.MaxAllocBytes (%d); raise the write allocation limit",
+				waxerr.ErrSizeTooLarge, len(d.audioPages), need, limit)
+		}
+		// Rebase seq and patch CRC in place, from one slice of 8-byte patches. Between two the
+		// source copies as one run: a page's lacing and body, then the next page's 18 bytes.
 		patches := make([]byte, 8*len(d.audioPages))
+		segs = slices.Grow(segs, 1+2*len(d.audioPages))
+		segs = append(segs, bits.Copy(d.audioStart, d.audioPages[0].off+18-d.audioStart))
 		for i, ap := range d.audioPages {
-			newSeq := ap.seq + uint32(delta)
+			newSeq := ap.seq + delta
 			newCRC := patchCRC(ap.crc, ap.seq, newSeq, ap.total)
 			p8 := patches[i*8 : i*8+8 : i*8+8]
 			binary.LittleEndian.PutUint32(p8[0:4], newSeq)
 			binary.LittleEndian.PutUint32(p8[4:8], newCRC)
-			segs = append(segs,
-				bits.Copy(ap.off, 18),             // "OggS" .. serial number
-				bits.Lit(p8),                      // sequence number + CRC
-				bits.Copy(ap.off+26, ap.total-26), // segment table + body
-			)
+			next := d.layout.Start
+			if i+1 < len(d.audioPages) {
+				next = d.audioPages[i+1].off + 18
+			}
+			segs = append(segs, bits.Lit(p8), bits.Copy(ap.off+26, next-(ap.off+26)))
 		}
 		report.Operations = append(report.Operations, fmt.Sprintf("renumbered %d audio pages", len(d.audioPages)))
 	}
 
-	if d.trailingLen > 0 {
-		segs = append(segs, bits.Copy(d.audioEnd, d.trailingLen))
-	}
-
-	newSize := bits.OutputLen(segs)
-	report.BytesAfter = newSize
+	segs = d.appendTail(segs, stripLegacy, &report)
+	report.BytesAfter = bits.OutputLen(segs)
 	report.PaddingAfter = int64(len(d.commentPad))
 
 	// Clamp warnings before DowngradeNoOp; clamp keeps result != base.
@@ -221,10 +229,9 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// Only the first Vorbis comment block survives; warn when an extra held content the
 	// written set does not, matching native FLAC.
 	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "Vorbis comment block", base.Tags, result.Tags, flacDupContent)
-	// Downgrade catches rebuild drops (e.g. empty strings). Vendor/gain are structural
-	// so a combined drop is not collapsed to a no-op that keeps the old gain, and so are
-	// the unread comments and unreadable blocks an edit removes, which no projection shows.
-	if np := core.DowngradeNoOp(d.format, edited.Identity.Size, base, result, len(vorbis.DiffKeys(base.Tags, result.Tags)) == 0, vendorChanged || gainChanged || unreadRemoved, report.Warnings); np != nil {
+	// Downgrade catches rebuild drops (e.g. empty strings). Structural, so never collapsed to
+	// a no-op: vendor, gain, a legacy strip, and what an edit removes unread.
+	if np := core.DowngradeNoOp(d.format, edited.Identity.Size, base, result, len(vorbis.DiffKeys(base.Tags, result.Tags)) == 0, vendorChanged || gainChanged || unreadRemoved || legacyChange, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{
@@ -233,6 +240,32 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 		Report:   report,
 		Result:   result,
 	}, nil
+}
+
+// refuseWrite is why d cannot be rewritten: a stream shape that cannot be edited safely. Plan
+// refuses with it and the capabilities report it.
+func (d *doc) refuseWrite() error {
+	switch {
+	case d.chained:
+		return fmt.Errorf("%w: refusing to rewrite an Ogg file of chained streams", waxerr.ErrChainedStream)
+	case d.multiplexed:
+		return fmt.Errorf("%w: refusing to rewrite an Ogg file of multiplexed streams", waxerr.ErrChainedStream)
+	case !d.clean:
+		return fmt.Errorf("%w: Ogg header and audio are not cleanly page-aligned; cannot rewrite safely", waxerr.ErrUnalignedStream)
+	case d.gaveUp:
+		// A rewrite would renumber the pages that were read and not the ones behind them.
+		return fmt.Errorf("%w: too much junk between Ogg pages: the read stops at offset %d, so the file cannot be rewritten safely", waxerr.ErrInvalidData, d.pagesEnd)
+	}
+	// A header rewrite writes the junk from among the header pages as one run.
+	var between int64
+	for _, g := range d.headerGaps {
+		between += g.len
+	}
+	if between > core.ResyncWindow {
+		return fmt.Errorf("%w: %d bytes lie between the Ogg header pages, more than the %d a reader skips to the next page; cannot rewrite safely",
+			waxerr.ErrUnalignedStream, between, core.ResyncWindow)
+	}
+	return nil
 }
 
 // writeAllocLimit: per-header-packet ceiling, floored at the largest existing header
@@ -245,20 +278,47 @@ func (d *doc) writeAllocLimit(opts core.WriteOptions) int64 {
 	return max(limit, d.origMaxHeaderPacket())
 }
 
-// gainOnlyPlan: rebuild page 0 for OpusHead gain; copy the rest verbatim.
-func gainOnlyPlan(edited *core.Media, d *doc, gain int, report core.WriteReport) *core.WritePlan {
-	p0, _ := paginateBOS(d.serial, opusHeadWithGain(d.idPacket, gain))
-	segs := []bits.Segment{bits.Lit(p0), bits.Copy(d.page0Len, d.audioEnd-d.page0Len)}
-	if d.trailingLen > 0 {
-		segs = append(segs, bits.Copy(d.audioEnd, d.trailingLen))
+// keptHeaderPlan plans a write that leaves the comment header alone: page 0 rebuilt for a new
+// OpusHead gain, every page after it copied verbatim, and the legacy tags kept or stripped.
+func (d *doc) keptHeaderPlan(edited *core.Media, gain int, gainChanged, strip bool, report core.WriteReport) *core.WritePlan {
+	var page0 []bits.Segment
+	rest := d.streamStart
+	if gainChanged {
+		p0, _ := paginateBOS(d.serial, d.page0Seq, opusHeadWithGain(d.idPacket, gain))
+		page0, rest = []bits.Segment{bits.Lit(p0)}, d.streamStart+d.page0Len
+		report.Operations = append(report.Operations, "OpusHead output gain rewrite")
 	}
+	segs := append(d.leadingSegments(strip, &report), page0...)
+	segs = append(segs, bits.Copy(rest, d.layout.Start-rest))
+	shift := bits.OutputLen(segs) - d.layout.Start
+	segs = d.appendTail(segs, strip, &report)
 
-	report.Operations = append(report.Operations, "OpusHead output gain rewrite")
 	report.BytesAfter = bits.OutputLen(segs)
 	report.PaddingAfter = int64(len(d.commentPad))
 
-	result := buildResult(edited, d, d.comments, int64(len(p0))-d.page0Len)
+	result := buildResult(edited, d, d.comments, shift)
 	return &core.WritePlan{Segments: segs, Report: report, Result: result}
+}
+
+// leadingSegments copies what precedes the first page, and names what becomes of a leading
+// ID3v2 tag: a strip takes it and the bytes behind it.
+func (d *doc) leadingSegments(strip bool, report *core.WriteReport) []bits.Segment {
+	switch {
+	case d.streamStart == 0:
+		return nil
+	case len(d.leadingID3) > 0 && strip:
+		report.Operations = append(report.Operations, core.LeadingStripOp(int64(len(d.leadingID3)), d.streamStart))
+		return nil
+	case len(d.leadingID3) > 0:
+		report.Operations = append(report.Operations, "leading ID3v2 preservation")
+	}
+	return []bits.Segment{bits.Copy(0, d.streamStart)}
+}
+
+// appendTail adds what follows the stream: the junk always, the legacy tags unless strip.
+func (d *doc) appendTail(segs []bits.Segment, strip bool, report *core.WriteReport) []bits.Segment {
+	report.Operations = append(report.Operations, tail.Operations(d.layout, strip)...)
+	return append(segs, tail.Segments(d.layout, strip)...)
 }
 
 // buildCommentPacket: signature + comment body + Vorbis framing bit or Opus padding.

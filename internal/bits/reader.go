@@ -16,7 +16,9 @@ import (
 // Limits bounds resource use when parsing untrusted input. Passed to WithLimits, a zero field takes
 // that field's default.
 type Limits struct {
-	// MaxAllocBytes caps one length-prefixed allocation; above it: waxerr.ErrSizeTooLarge.
+	// MaxAllocBytes caps one length-prefixed allocation; above it: waxerr.ErrSizeTooLarge. It
+	// also caps what an Ogg parse keeps for its audio pages (48 bytes each) and what a rewrite
+	// takes to renumber them (88 each).
 	MaxAllocBytes int64
 	// MaxDepth caps nested-container recursion (EBML, MP4 atoms).
 	MaxDepth int
@@ -25,7 +27,7 @@ type Limits struct {
 	// count; minimum-size elements could otherwise OOM. It also caps the header walks across
 	// a WavPack or Musepack SV8 stream: past it the walk to the stream's end leaves that end
 	// unknown, and the walk to the Musepack chapters reads none. Other audio loops (Ogg
-	// pages, clusters) are not capped.
+	// pages, clusters) are not capped by it.
 	MaxElements int
 }
 

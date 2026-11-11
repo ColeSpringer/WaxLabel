@@ -307,6 +307,13 @@ var frameRateTable = [12]int{0, 88200, 176400, 192000, 8000, 16000, 22050, 24000
 // Sample-size codes → bits. 0 = STREAMINFO; 3 reserved.
 var frameSampleSizeTable = [8]int{0, 8, 12, -1, 16, 20, 24, 32}
 
+// FrameSamples returns the block size of the frame whose header opens head, validated against
+// STREAMINFO as the tail walk validates one. The Ogg mapping measures its packets with it.
+func FrameSamples(head []byte, si core.AudioTrack) (int, bool) {
+	h, ok := decodeFrameHeader(head, si)
+	return h.block, ok
+}
+
 // decodeFrameHeader validates sync, reserved fields, coded number, CRC-8, and
 // agreement with STREAMINFO rate/channels/depth.
 func decodeFrameHeader(b []byte, si core.AudioTrack) (frameHeader, bool) {

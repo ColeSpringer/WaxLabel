@@ -54,10 +54,20 @@ func WithHashSource(src ReaderAtSized) HashOption {
 // HashAudioEssence hashes encoded audio packets plus decoder-critical config
 // (sample rate, channels, bit depth, FLAC block-size bounds). Independent of
 // tags. Container-scoped: the same FLAC frames in .flac and .oga differ.
-// Distinct from [Document.HashFile] and from a decoded-PCM hash.
+// Distinct from [Document.HashFile] and from a decoded-PCM hash. A file read in
+// part is refused, as its digest would stand for part of its audio: a chained
+// Ogg file ([ErrChainedStream], only its first link is read), or one too damaged
+// to read to its end.
 func (d *Document) HashAudioEssence(ctx context.Context, opts ...HashOption) (AudioDigest, error) {
 	if err := checkContext(ctx); err != nil {
 		return AudioDigest{}, err
+	}
+	if !d.zero() {
+		if r, ok := d.media.Native.(core.EssenceRefuser); ok {
+			if err := r.RefuseEssence(); err != nil {
+				return AudioDigest{}, err
+			}
+		}
 	}
 	var ho hashOptions
 	for _, fn := range opts {
