@@ -13,6 +13,7 @@ import (
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
+	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -882,6 +883,13 @@ func didYouMean(k tag.Key) string {
 	return ""
 }
 
+// ownedClearFlags names the flag that clears what [vorbis.OwnedByName] says a name holds.
+var ownedClearFlags = map[string]string{
+	"chapters":      "--clear-chapters",
+	"synced lyrics": "--clear-synced-lyrics",
+	"pictures":      "--remove-pictures",
+}
+
 // notifyClearKeys notes non-canonical --clear keys. Never escalated under --strict.
 // Suppressed under --json.
 func notifyClearKeys(errOut io.Writer, ce *compiledEdit, asJSON bool) {
@@ -891,6 +899,11 @@ func notifyClearKeys(errOut io.Writer, ce *compiledEdit, asJSON bool) {
 	notes := &cappedNotes{w: errOut, noun: "unknown key(s)"}
 	defer notes.done()
 	for _, k := range ce.clearKeys {
+		if owned := vorbis.OwnedByName(k); owned != "" {
+			notes.printf("note: %s is not a known key; FLAC and Ogg store %s under such names, where clearing it removes only a comment that is not read (use %s for the %s), and elsewhere it clears a custom field of that name\n",
+				k, owned, ownedClearFlags[owned], owned)
+			continue
+		}
 		notes.printf("note: %s is not a known key (clearing affects only a custom field of that exact name)%s\n", k, didYouMean(k))
 	}
 }
@@ -1138,7 +1151,7 @@ func keyList(keys []tag.Key) string {
 }
 
 // prepare parses realPath (errors use origPath display name), applies compiledEdit, returns plan.
-// Removals before adds. --add-cover replaces front cover (clears existing front covers first).
+// Removals before adds. --add-cover replaces the front cover where it stands.
 func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string, extra ...wl.WriteOption) (*wl.Document, *wl.Plan, error) {
 	doc, err := parseInput(ctx, realPath, origPath)
 	if err != nil {
@@ -1165,11 +1178,14 @@ func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string, 
 		// Unmatched role: per-file warning (--strict fails).
 		ed.NotePictureSelectorMiss(missedRoles...)
 	}
-	// --add-cover CLI policy: clear existing front covers before add.
+	// --add-cover CLI policy: the cover, first of the added pictures, takes the place of the
+	// front covers the file has.
+	adds := ce.addPics
 	if ce.replaceFront {
-		ed.RemovePictures(func(p wl.Picture) bool { return p.Type == wl.PicFrontCover })
+		ed.ReplacePictures(func(p wl.Picture) bool { return p.Type == wl.PicFrontCover }, adds[0])
+		adds = adds[1:]
 	}
-	for _, p := range ce.addPics {
+	for _, p := range adds {
 		ed.AddPicture(p)
 	}
 	// --clear-chapters before --add-chapter keeps only added chapters.
@@ -1187,6 +1203,10 @@ func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string, 
 			if !dup {
 				merged = append(merged, add)
 			}
+		}
+		// The clear is explicit, so it also takes chapter comments the file held unread.
+		if ce.clearChapters {
+			ed.ClearChapters()
 		}
 		ed.SetChapters(merged...)
 	} else if ce.clearChapters {

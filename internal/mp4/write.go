@@ -477,12 +477,11 @@ func checkItemSizes(items []item, limit int64) error {
 		if body <= limit {
 			continue
 		}
+		got, max := bits.SizeOverLimit(body, limit)
 		if it.name == atomName("covr") {
-			return fmt.Errorf("%w: cover art is %s (max %s)",
-				waxerr.ErrPictureTooLarge, bits.HumanBytes(body), bits.HumanBytes(limit))
+			return fmt.Errorf("%w: cover art is %s, max %s", waxerr.ErrPictureTooLarge, got, max)
 		}
-		return fmt.Errorf("%w: ilst item %q is %s (max %s)",
-			waxerr.ErrSizeTooLarge, string(it.name[:]), bits.HumanBytes(body), bits.HumanBytes(limit))
+		return fmt.Errorf("%w: ilst item %q is %s, max %s", waxerr.ErrSizeTooLarge, string(it.name[:]), got, max)
 	}
 	return nil
 }

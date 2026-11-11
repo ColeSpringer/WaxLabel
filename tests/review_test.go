@@ -24,26 +24,35 @@ func flacWithTwoVC() []byte {
 }
 
 // large existing padding region is reused exactly by splitting it across multiple legal FLAC
-// padding blocks.
+// padding blocks, under a policy with no Max. The default policy's Max caps what it keeps of the
+// region; neither is the padding-clamped case, which is about a requested size.
 func TestFLACReuseLargePaddingNoSpuriousClamp(t *testing.T) {
 	data := testfile.FLAC(testfile.CommentBlock("test", "TITLE=x"),
 		testfile.FLACBlock(1, make([]byte, 10<<20)), testfile.FLACBlock(1, make([]byte, 10<<20))) // two ~10 MiB PADDING blocks
 
-	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "y").Prepare()
-	if err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-	for _, w := range plan.Report().Warnings {
-		if w.Code == wl.WarnPaddingClamped {
-			t.Errorf("an in-place edit of a large-padding FLAC must not warn padding-clamped; got %v", plan.Report().Warnings)
+	for name, tc := range map[string]struct {
+		opts    []wl.WriteOption
+		wantLen int
+	}{
+		"no Max":      {[]wl.WriteOption{wl.WithPadding(wl.PaddingPolicy{Target: 8192, ReuseInPlace: true})}, len(data)},
+		"the default": {nil, len(data) - (20<<20 + 4) + 1<<20},
+	} {
+		plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "y").Prepare(tc.opts...)
+		if err != nil {
+			t.Fatalf("%s: prepare: %v", name, err)
 		}
-	}
-	out := applyToBytes(t, data, plan)
-	if len(out) != len(data) {
-		t.Errorf("reuse-in-place must preserve the region size (audio offset stable): out=%d bytes, in=%d", len(out), len(data))
-	}
-	if got := mustParseBytes(t, out).Fields().Title; got != "y" {
-		t.Errorf("title after edit = %q, want y", got)
+		for _, w := range plan.Report().Warnings {
+			if w.Code == wl.WarnPaddingClamped {
+				t.Errorf("%s: an in-place edit of a large-padding FLAC must not warn padding-clamped; got %v", name, plan.Report().Warnings)
+			}
+		}
+		out := applyToBytes(t, data, plan)
+		if len(out) != tc.wantLen {
+			t.Errorf("%s: out=%d bytes, want %d (in=%d)", name, len(out), tc.wantLen, len(data))
+		}
+		if got := mustParseBytes(t, out).Fields().Title; got != "y" {
+			t.Errorf("%s: title after edit = %q, want y", name, got)
+		}
 	}
 }
 
@@ -59,12 +68,14 @@ func TestPictureTooLargeRejected(t *testing.T) {
 	copy(big, testfile.JPEG())  // complete JPEG header for the image-recognition gate
 	_, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Data: big}).Prepare()
 	if !errors.Is(err, waxerr.ErrPictureTooLarge) {
-		t.Errorf("err = %v, want ErrPictureTooLarge", err)
+		t.Fatalf("err = %v, want ErrPictureTooLarge", err)
 	}
-	// The size is humanized for the message: "picture block is 16.0 MiB (max
-	// 16.0 MiB)", not a raw byte count.
-	if err != nil && !strings.Contains(err.Error(), "MiB") {
-		t.Errorf("error should humanize the size, got %q", err.Error())
+	// The sizes are humanized for the message, and this close to the limit, where both round to
+	// 16.0 MiB, each carries its byte count so that the message does not read "16.0 MiB (max 16.0 MiB)".
+	for _, want := range []string{"16.0 MiB (16777258 bytes)", "16.0 MiB (16777215 bytes)"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err.Error(), want)
+		}
 	}
 }
 

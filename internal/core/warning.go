@@ -117,7 +117,8 @@ const (
 	WarnPictureSelectorMiss
 	// WarnFragmented: MP4 moof; unwritable, duration/digest degraded. Read; keyless.
 	WarnFragmented
-	// WarnInvalidText: non-UTF-8 decoded via legacy code page. Read path.
+	// WarnInvalidText: text that is not valid UTF-8, decoded via a legacy code page or shown
+	// with U+FFFD in place of the invalid bytes (Warning.Keys where a key reads it). Read path.
 	WarnInvalidText
 	// WarnElementCap: parse element limit; partial model; write refused. Read path.
 	WarnElementCap
@@ -359,10 +360,11 @@ func WarnTrailing(ws []Warning, n int64, subject, what string) []Warning {
 	return Warn(ws, WarnTrailingBytes, fmt.Sprintf("%d byte(s) %s %s; preserved verbatim", n, subject, what))
 }
 
-// WarnInvalidKey appends WarnInvalidTagKey for an unmappable native name.
+// WarnInvalidKey appends WarnInvalidTagKey for an unmappable native name, quoted so that
+// whitespace at its edge shows.
 func WarnInvalidKey(ws []Warning, name string) []Warning {
 	return Warn(ws, WarnInvalidTagKey,
-		"tag key not represented in canonical tags (not carried): "+WarnSnippet(name))
+		`tag key not represented in canonical tags (not carried): "`+WarnSnippet(name)+`"`)
 }
 
 // WarnUnseparatedEntry: one WarnMalformedTagEntry for unseparated comment entries (aggregated).

@@ -5,10 +5,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
+	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
@@ -158,6 +161,26 @@ func TestParseCommentListCountCapped(t *testing.T) {
 	}
 	if _, cs, _, err := ParseCommentList(body, 1<<20, 0); err != nil || len(cs) != max+50 {
 		t.Fatalf("uncapped (0): got %d comments, err = %v; want all %d", len(cs), err, max+50)
+	}
+}
+
+// TestCheckCommentCount is the writer's side of that cap: a list a reader with default limits
+// refuses is not written, unless the file was read holding as many.
+func TestCheckCommentCount(t *testing.T) {
+	max := bits.DefaultLimits.MaxElements
+	for _, tc := range []struct {
+		n, orig int
+		refused bool
+	}{
+		{max, 0, false},
+		{max + 1, 0, true},
+		{max + 50, max + 50, false},
+		{max + 51, max + 50, true},
+	} {
+		err := CheckCommentCount(tc.n, tc.orig)
+		if got := errors.Is(err, waxerr.ErrContentTooLarge); got != tc.refused || (err != nil) != tc.refused {
+			t.Errorf("%d comments on a file read with %d: err = %v, refused want %v", tc.n, tc.orig, err, tc.refused)
+		}
 	}
 }
 
@@ -314,12 +337,142 @@ func TestProjectSanitizesInvalidUTF8(t *testing.T) {
 	if len(fams) != 1 || len(fams[0].Values) != 1 || !utf8.ValidString(fams[0].Values[0]) {
 		t.Errorf("Project left invalid UTF-8 in the family view: %+v", fams)
 	}
+	// The substitution is reported, by key and once per key.
+	ws := InvalidTextWarnings([]Comment{
+		{Name: "artist", Value: "bad\xff\xfevalue"}, {Name: "ARTIST", Value: "worse\xff"}, {Name: "TITLE", Value: "fine"},
+	})
+	if len(ws) != 1 || ws[0].Code != core.WarnInvalidText || !slices.Equal(ws[0].Keys, []tag.Key{tag.Artist}) {
+		t.Errorf("warnings = %+v, want one invalid-text keyed ARTIST", ws)
+	}
 	// A valid value is untouched.
-	if ts2, _ := Project([]Comment{{Name: "ARTIST", Value: "Valid ☃"}}); func() bool {
+	valid := []Comment{{Name: "ARTIST", Value: "Valid ☃"}}
+	if ts2, _ := Project(valid); func() bool {
 		v, _ := ts2.First(tag.Artist)
 		return v != "Valid ☃"
 	}() {
 		t.Error("Project altered a valid UTF-8 value")
+	}
+	if ws := InvalidTextWarnings(valid); len(ws) != 0 {
+		t.Errorf("a valid value warned: %+v", ws)
+	}
+}
+
+// TestInvalidTextWarningsOwnedComments: a chapter title or synced lyric read with a substitution
+// is reported too, with no key and once for the titles; a comment nothing shows is not, nor is
+// one under a name that is no key's spelling.
+func TestInvalidTextWarningsOwnedComments(t *testing.T) {
+	comments := []Comment{
+		{Name: "CHAPTER001", Value: "00:00:00.000"}, {Name: "CHAPTER001NAME", Value: "Intr\xf6"},
+		{Name: "CHAPTER002", Value: "00:00:05.000"}, {Name: "CHAPTER002NAME", Value: "Vers\xe9"},
+		{Name: "SYNCEDLYRICS", Value: "[00:01.00]caf\xe9"},
+		{Name: " ALBUM", Value: "bad\xff"}, {Value: "noseparator\xff", Unseparated: true},
+		// Nothing shows a comment its projector passes over, with or without a substitution.
+		{Name: "CHAPTER009NAME", Value: "stray\xff"}, {Name: "SYNCEDLYRICS", Value: "[00:02.00]second\xff"},
+	}
+	if ws := InvalidTextWarnings(comments); len(ws) != 0 {
+		t.Errorf("the tag warnings cover an owned or opaque comment: %+v", ws)
+	}
+	ws := core.WarningsWithCode(ProjectOwned(comments).Warnings, core.WarnInvalidText)
+	if len(ws) != 2 || len(ws[0].Keys)+len(ws[1].Keys) != 0 {
+		t.Fatalf("warnings = %+v, want two keyless invalid-text", ws)
+	}
+	if !strings.Contains(ws[0].Message, "CHAPTER001NAME") || !strings.Contains(ws[0].Message, "and 1 more") || !strings.Contains(ws[1].Message, "SYNCEDLYRICS") {
+		t.Errorf("warnings do not name the comments: %+v", ws)
+	}
+}
+
+// TestRebuildMatchesStoredBytesInOnePass: writing stored values back costs the same for a key with
+// many values as for one with few. A value-by-value search through them took minutes here.
+func TestRebuildMatchesStoredBytesInOnePass(t *testing.T) {
+	const n = 20000
+	orig := make([]Comment, 0, 2*n)
+	for i := range n {
+		orig = append(orig, Comment{Name: "COMMENT", Value: "ok " + strconv.Itoa(i)})
+	}
+	for i := range n {
+		orig = append(orig, Comment{Name: "COMMENT", Value: "bad\xff " + strconv.Itoa(i)})
+	}
+	base, _ := Project(orig)
+	edited := base.Clone()
+	edited.Add(tag.Comment, "one more")
+
+	start := time.Now()
+	got, _ := Rebuild(orig, edited, DiffKeys(base, edited), nil, false, nil, false)
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("the rebuild took %v", d)
+	}
+	if want := append(slices.Clone(orig), Comment{Name: "COMMENT", Value: "one more"}); !slices.Equal(got, want) {
+		t.Errorf("the rebuild of %d values changed one it was to keep", len(want))
+	}
+}
+
+// TestRebuildMatchesStoredBytesByPosition: of two values that read alike, the one an edit leaves
+// in place keeps its own bytes, not those of the value that stood before it.
+func TestRebuildMatchesStoredBytesByPosition(t *testing.T) {
+	orig := []Comment{{Name: "TITLE", Value: "Caf\xe9"}, {Name: "TITLE", Value: "Caf\xff"}}
+	base, _ := Project(orig)
+	for name, tc := range map[string]struct {
+		vals []string
+		want []string
+	}{
+		"the first replaced":   {[]string{"new", "Caf\uFFFD"}, []string{"new", "Caf\xff"}},
+		"the second replaced":  {[]string{"Caf\uFFFD", "new"}, []string{"Caf\xe9", "new"}},
+		"one added":            {[]string{"Caf\uFFFD", "Caf\uFFFD", "new"}, []string{"Caf\xe9", "Caf\xff", "new"}},
+		"moved behind another": {[]string{"new", "other", "Caf\uFFFD"}, []string{"new", "other", "Caf\xe9"}},
+	} {
+		edited := base.Clone()
+		edited.Set(tag.Title, tc.vals...)
+		got, _ := Rebuild(orig, edited, DiffKeys(base, edited), nil, false, nil, false)
+		var vals []string
+		for _, cm := range got {
+			vals = append(vals, cm.Value)
+		}
+		if !slices.Equal(vals, tc.want) {
+			t.Errorf("%s: wrote %q, want %q", name, vals, tc.want)
+		}
+	}
+}
+
+// TestCommentCountConstraint: the limit is grouped in thousands whatever its size.
+func TestCommentCountConstraint(t *testing.T) {
+	old := bits.DefaultLimits.MaxElements
+	defer func() { bits.DefaultLimits.MaxElements = old }()
+	for n, want := range map[int]string{
+		500: "at most 500 comments", 100000: "at most 100,000 comments", 1000000: "at most 1,000,000 comments", 1234567: "at most 1,234,567 comments",
+	} {
+		bits.DefaultLimits.MaxElements = n
+		if got := CommentCountConstraint(); got != want {
+			t.Errorf("limit %d: %q, want %q", n, got, want)
+		}
+	}
+}
+
+// TestRebuildKeepsInvalidUTF8Bytes: a value read with U+FFFD in place of invalid bytes is written
+// back as the file holds it when an edit of its key keeps it.
+func TestRebuildKeepsInvalidUTF8Bytes(t *testing.T) {
+	orig := []Comment{{Name: "TITLE", Value: "caf\xe9"}, {Name: "ALBUM", Value: "A"}}
+	base, _ := Project(orig)
+
+	edited := base.Clone()
+	edited.Add(tag.Title, "second")
+	got, _ := Rebuild(orig, edited, DiffKeys(base, edited), nil, false, nil, false)
+	want := []Comment{{Name: "TITLE", Value: "caf\xe9"}, {Name: "TITLE", Value: "second"}, {Name: "ALBUM", Value: "A"}}
+	if !slices.Equal(got, want) {
+		t.Errorf("an added value: rebuild = %v, want %v", got, want)
+	}
+
+	edited = base.Clone()
+	edited.Set(tag.Artist, "Band")
+	got, _ = Rebuild(orig, edited, DiffKeys(base, edited), nil, false, nil, false)
+	if want := append(slices.Clone(orig), Comment{Name: "ARTIST", Value: "Band"}); !slices.Equal(got, want) {
+		t.Errorf("an unrelated edit: rebuild = %v, want %v", got, want)
+	}
+
+	edited = base.Clone()
+	edited.Set(tag.Title, "replaced")
+	got, _ = Rebuild(orig, edited, DiffKeys(base, edited), nil, false, nil, false)
+	if want := []Comment{{Name: "TITLE", Value: "replaced"}, {Name: "ALBUM", Value: "A"}}; !slices.Equal(got, want) {
+		t.Errorf("a replaced value: rebuild = %v, want %v", got, want)
 	}
 }
 
@@ -421,5 +574,105 @@ func TestNeutralizeVendorCodecStamp(t *testing.T) {
 	}
 	if got, changed := NeutralizeVendor("Lavc61.19.101 libopus", false); changed || got != "Lavc61.19.101 libopus" {
 		t.Errorf("NeutralizeVendor without the strip flag changed the vendor: %q, %v", got, changed)
+	}
+}
+
+// TestNonConformingNamesStayOpaque: a field name with a byte outside ASCII or whitespace at an edge
+// is no key's spelling. It is not read as the key that Unicode case folding or trimming would make
+// of it, it is reported by name, and an edit of that key leaves its bytes alone and writes the field.
+func TestNonConformingNamesStayOpaque(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  tag.Key
+	}{
+		{"tıtle", tag.Title},
+		{"ARTıST", tag.Artist},
+		{" ALBUM", tag.Album},
+		{"GENRE ", tag.Genre},
+	} {
+		orig := []Comment{{Name: tc.name, Value: "theirs"}}
+		if ts, fams := Project(orig); ts.Len() != 0 || len(fams) != 0 {
+			t.Errorf("%q: projected %v with %d family entries, want nothing", tc.name, ts.Keys(), len(fams))
+		}
+		ws := InvalidKeyWarnings(orig)
+		if len(ws) != 1 || ws[0].Code != core.WarnInvalidTagKey || !strings.Contains(ws[0].Message, `"`+tc.name+`"`) {
+			t.Errorf("%q: warnings = %v, want one invalid-tag-key quoting the name", tc.name, ws)
+		}
+		edited := tag.NewTagSet()
+		edited.Set(tc.key, "ours")
+		got, _ := Rebuild(orig, edited, map[tag.Key]bool{tc.key: true}, nil, false, nil, false)
+		if want := []Comment{orig[0], {Name: string(tc.key), Value: "ours"}}; !slices.Equal(got, want) {
+			t.Errorf("%q: rebuild = %v, want %v", tc.name, got, want)
+		}
+	}
+
+	// An ASCII spelling in another case is still the key.
+	orig := []Comment{{Name: "title", Value: "theirs"}}
+	if ts, _ := Project(orig); !ts.AnyValue(tag.Title, func(v string) bool { return v == "theirs" }) {
+		t.Errorf("title: projected %v, want TITLE", ts.Keys())
+	}
+	if ws := InvalidKeyWarnings(orig); len(ws) != 0 {
+		t.Errorf("title: warnings = %v, want none", ws)
+	}
+}
+
+// TestOwnedNamesFoldASCIIOnly: the owned comment names match in any ASCII case, and a letter that
+// only Unicode case folding equates with one of theirs (long s, the Kelvin sign) is another name.
+func TestOwnedNamesFoldASCIIOnly(t *testing.T) {
+	for name, want := range map[string]bool{
+		"syncedlyrics": true, "SyncedLyrics": true, "ſYNCEDLYRICS": false,
+	} {
+		if got := isSyncedLyricsComment(name); got != want {
+			t.Errorf("isSyncedLyricsComment(%q) = %v, want %v", name, got, want)
+		}
+	}
+	for name, want := range map[string]bool{
+		"metadata_block_picture": true, "Metadata_Block_Picture": true, "METADATA_BLOCK_PICTURE": false,
+	} {
+		if got := IsPictureComment(name); got != want {
+			t.Errorf("IsPictureComment(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// TestDecodePictureCommentUnpadded: a cover whose base64 lacks its padding, as some writers leave
+// it, decodes like the padded form; text that is not base64 either way is still refused.
+func TestDecodePictureCommentUnpadded(t *testing.T) {
+	for _, n := range []int{1, 2, 3} { // one of each padding length
+		want := core.Picture{Type: core.PicFrontCover, MIME: "image/png", Data: make([]byte, n)}
+		padded := base64.StdEncoding.EncodeToString(RenderPicture(want))
+		bare := strings.TrimRight(padded, "=")
+		// A line break after either form, or inside it, is not part of the encoding.
+		for _, value := range []string{padded, bare, padded + "\n", padded + "\r\n", bare + "\n", padded[:8] + "\n" + padded[8:]} {
+			got, err := DecodePictureComment(value, 1<<20)
+			if err != nil || got.MIME != want.MIME || len(got.Data) != n {
+				t.Errorf("%d data byte(s), %q: picture %+v, err %v", n, value, got, err)
+			}
+		}
+	}
+	if _, err := DecodePictureComment("not~base64", 1<<20); err == nil {
+		t.Error("text that is not base64 decoded")
+	}
+}
+
+// TestRebuildDropsKeyWithEdgeWhitespace: a key that passes Key.Valid with a space at its edge would
+// be written under a name the reader takes for no key, so it is dropped and reported instead.
+func TestRebuildDropsKeyWithEdgeWhitespace(t *testing.T) {
+	orig := []Comment{{Name: "TITLE", Value: "x"}}
+	for _, key := range []tag.Key{" EDGE", "EDGE "} {
+		if !key.Valid() {
+			t.Fatalf("setup: %q is not a valid key", key)
+		}
+		base, _ := Project(orig)
+		edited := base.Clone()
+		edited.Set(key, "v")
+		got, info := Rebuild(orig, edited, DiffKeys(base, edited), nil, false, nil, false)
+		if !slices.Equal(got, orig) || !slices.Equal(info.UnreadableKeys, []tag.Key{key}) {
+			t.Errorf("%q: rebuild = %v, dropped %q; want the list unchanged and the key recorded", key, got, info.UnreadableKeys)
+		}
+		ws := RebuildWarnings(nil, info)
+		if len(ws) != 1 || ws[0].Code != core.WarnValueDropped || !slices.Equal(ws[0].Keys, []tag.Key{key}) {
+			t.Errorf("%q: warnings = %+v, want one value-dropped keyed to it", key, ws)
+		}
 	}
 }

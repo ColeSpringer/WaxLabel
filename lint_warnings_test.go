@@ -7,9 +7,11 @@ import (
 )
 
 // TestLintWarningsPassThroughLayoutCodes: preserved-but-unread regions surface as lint
-// warnings; a multiplexed stream is legitimate, only unwritable, so it is info.
+// warnings, as does text shown with a substitution; a multiplexed stream is legitimate, only
+// unwritable, so it is info.
 func TestLintWarningsPassThroughLayoutCodes(t *testing.T) {
 	for code, want := range map[core.WarningCode]LintSeverity{
+		core.WarnInvalidText:       LintWarning,
 		core.WarnTrailingLyrics3:   LintWarning,
 		core.WarnLeadingBytes:      LintWarning,
 		core.WarnPageGap:           LintWarning,

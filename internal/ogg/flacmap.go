@@ -33,8 +33,6 @@ const (
 	flacBlkVorbisComment = vorbis.BlockVorbisComment
 	flacBlkPicture       = vorbis.BlockPicture
 	flacBlkInvalid       = vorbis.BlockInvalid
-
-	flacMaxBlockBody = vorbis.MaxBlockBody
 )
 
 var (
@@ -136,9 +134,9 @@ func flacHeaderPackets(blocks []fblock) [][]byte {
 // rebuildFLACBlocks assembles the new metadata block list, preserving order and
 // raw bytes for everything untouched. It mirrors the native FLAC writer: the
 // first VORBIS_COMMENT block is re-rendered (extras are dropped), pictures are
-// re-emitted at the position of the first PICTURE block, and every other block
-// is cloned verbatim.
-func rebuildFLACBlocks(d *doc, vendor string, comments []vorbis.Comment, pictures []core.Picture, commentsChanged, picturesChanged bool) (out []fblock, dupDropped bool) {
+// re-emitted at the position of the first PICTURE block, those that did not decode
+// behind them unless keepUnreadable is off, and every other block is cloned verbatim.
+func rebuildFLACBlocks(d *doc, vendor string, comments []vorbis.Comment, pictures []core.Picture, commentsChanged, picturesChanged, keepUnreadable bool) (out []fblock, dupDropped bool) {
 	out = make([]fblock, 0, len(d.flacBlocks)+len(pictures))
 	commentHandled := false
 	picturesEmitted := false
@@ -153,8 +151,10 @@ func rebuildFLACBlocks(d *doc, vendor string, comments []vorbis.Comment, picture
 		for _, p := range pictures {
 			out = append(out, fblock{code: flacBlkPicture, body: vorbis.RenderPicture(p)})
 		}
-		for _, body := range d.malformedPictureBlocks {
-			out = append(out, fblock{code: flacBlkPicture, body: body})
+		if keepUnreadable {
+			for _, body := range d.malformedPictureBlocks {
+				out = append(out, fblock{code: flacBlkPicture, body: body})
+			}
 		}
 		picturesEmitted = true
 	}
@@ -210,19 +210,13 @@ func rebuildFLACBlocks(d *doc, vendor string, comments []vorbis.Comment, picture
 	return out, dupDropped
 }
 
-// checkFLACBlockSizes rejects any block whose body exceeds the 24-bit length
-// field, which would otherwise be silently truncated into a corrupt file.
+// checkFLACBlockSizes rejects any block whose body exceeds the 24-bit length field
+// ([vorbis.CheckBlockSize]).
 func checkFLACBlockSizes(blocks []fblock) error {
 	for _, b := range blocks {
-		if len(b.body) <= flacMaxBlockBody {
-			continue
+		if err := vorbis.CheckBlockSize(b.code, len(b.body)); err != nil {
+			return err
 		}
-		if b.code == flacBlkPicture {
-			return fmt.Errorf("%w: picture block is %s (max %s)",
-				waxerr.ErrPictureTooLarge, bits.HumanBytes(int64(len(b.body))), bits.HumanBytes(int64(flacMaxBlockBody)))
-		}
-		return fmt.Errorf("%w: %s block is %s, exceeding the 24-bit limit %s",
-			waxerr.ErrInvalidData, flacBlockName(b.code), bits.HumanBytes(int64(len(b.body))), bits.HumanBytes(int64(flacMaxBlockBody)))
 	}
 	return nil
 }

@@ -40,17 +40,18 @@ func CheckSize(writeVersion byte, frames []Frame, maxElements int) error {
 		total += 10 + int64(fl)
 	}
 	if total > maxFrameSize {
-		return fmt.Errorf("%w: ID3v2 tag is %s, exceeding the 28-bit size field limit %s",
-			waxerr.ErrSizeTooLarge, bits.HumanBytes(total), bits.HumanBytes(int64(maxFrameSize)))
+		got, max := bits.SizeOverLimit(total, maxFrameSize)
+		return fmt.Errorf("%w: ID3v2 tag is %s, over the 28-bit size field limit of %s", waxerr.ErrSizeTooLarge, got, max)
 	}
 	return nil
 }
 
 func sizeErr(f Frame, n int) error {
+	got, max := bits.SizeOverLimit(int64(n), maxFrameSize)
 	if f.ID == "APIC" {
-		return fmt.Errorf("%w: APIC frame is %s (max %s)", waxerr.ErrPictureTooLarge, bits.HumanBytes(int64(n)), bits.HumanBytes(int64(maxFrameSize)))
+		return fmt.Errorf("%w: APIC frame is %s, max %s", waxerr.ErrPictureTooLarge, got, max)
 	}
-	return fmt.Errorf("%w: %s frame is %s (max %s)", waxerr.ErrSizeTooLarge, f.ID, bits.HumanBytes(int64(n)), bits.HumanBytes(int64(maxFrameSize)))
+	return fmt.Errorf("%w: %s frame is %s, max %s", waxerr.ErrSizeTooLarge, f.ID, got, max)
 }
 
 // Frame is one ID3v2 frame. ID is always the 4-character v2.3/v2.4 identifier (a v2.2
@@ -376,13 +377,31 @@ func Render(writeVersion byte, frames []Frame, padding int) []byte {
 // bytes, nil for a new chunk. A tag that had padding keeps its size while the frames fit; padding
 // in these chunks is not the caller's to set, so no other tag gets any and no option removes it.
 func RenderChunk(t, src *Tag, srcLen int64) []byte {
-	var pad int64
+	return Render(t.WriteVersion(), t.Frames(), int(ChunkPadding(t, src, srcLen)))
+}
+
+// ChunkPaddingAfter is the padding a WAV or AIFF id3 chunk holds once written, which is not the
+// caller's to size: what src had when the chunk is kept, what the frames of t leave of it when
+// it is rewritten in place of src ([ChunkPadding]; none for a new chunk), none when no chunk
+// is emitted.
+func ChunkPaddingAfter(t, src *Tag, srcLen int64, kept, emitted bool) int64 {
+	switch {
+	case kept:
+		return FrontTagPadding(src)
+	case emitted:
+		return ChunkPadding(t, src, srcLen)
+	}
+	return 0
+}
+
+// ChunkPadding is the padding [RenderChunk] leaves in the chunk.
+func ChunkPadding(t, src *Tag, srcLen int64) int64 {
 	if src != nil && src.Padding() > 0 {
 		if region, n := srcLen-src.behind, RenderedSize(t.Frames()); n <= region {
-			pad = region - n
+			return region - n
 		}
 	}
-	return Render(t.WriteVersion(), t.Frames(), int(pad))
+	return 0
 }
 
 // FramesEqual reports whether a and b hold the same frames in the same order.

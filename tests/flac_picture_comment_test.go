@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"strings"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
@@ -268,5 +269,23 @@ func TestFLACCommentPictureSurvivesChainedEdits(t *testing.T) {
 	}
 	if bytes.Contains(w2.b, []byte(vorbis.PictureComment)) {
 		t.Error("METADATA_BLOCK_PICTURE comment survived the chained tag edit; it must be materialized")
+	}
+}
+
+// A cover comment whose base64 was written without its padding still reads as the cover.
+func TestFLACCommentPictureWithoutBase64Padding(t *testing.T) {
+	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}
+	value := commentPictureValue(pic)
+	if !strings.HasSuffix(value, "=") {
+		t.Fatalf("the fixture's base64 has no padding to drop: %q", value[len(value)-4:])
+	}
+	doc := mustParseBytes(t, flacWithCommentBlock([]vorbis.Comment{
+		{Name: vorbis.PictureComment, Value: strings.TrimRight(value, "=")},
+	}))
+	if pics := doc.Pictures(); len(pics) != 1 || !bytes.Equal(pics[0].Data, testfile.PNG()) {
+		t.Errorf("read %d picture(s), want the cover", len(pics))
+	}
+	if hasWarning(doc, wl.WarnInvalidPicture) {
+		t.Errorf("the cover was reported invalid: %v", doc.Warnings())
 	}
 }

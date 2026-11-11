@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -124,7 +125,8 @@ func TestPlanRejectsCoversJointlyExceedingLimit(t *testing.T) {
 // TestPlanRejectsAdditiveEditPastFloor pins the edge: on a file whose comment packet
 // already sits above the write limit (a raised WithLimits parse, then a lower-limit
 // write), an edit that grows the packet past the whole-packet floor is rejected with a
-// limit hint.
+// limit hint. The cover is the file's own and the edit leaves it alone, so what is too
+// large is the content the edit adds, not a picture.
 func TestPlanRejectsAdditiveEditPastFloor(t *testing.T) {
 	cover := smallCover()
 	base := parseOpusStreamWith(t, pictureComment(cover)) // parsed at the default (high) limit
@@ -138,10 +140,62 @@ func TestPlanRejectsAdditiveEditPastFloor(t *testing.T) {
 	edited.Tags.Set(tag.Title, "Retitled") // "Song" -> "Retitled" grows the packet past the p1 floor
 
 	_, err := NewOpus().Plan(context.Background(), base, edited, core.DefaultWriteOptions())
-	if !errors.Is(err, waxerr.ErrPictureTooLarge) {
-		t.Fatalf("an additive edit past the floor must be rejected: err=%v, want ErrPictureTooLarge", err)
+	if !errors.Is(err, waxerr.ErrContentTooLarge) {
+		t.Fatalf("an additive edit past the floor must be rejected: err=%v, want ErrContentTooLarge", err)
 	}
 	if !strings.Contains(err.Error(), "raise the write allocation limit") {
 		t.Errorf("rejection should hint at raising the limit; got %q", err.Error())
+	}
+
+	// The same header with a second cover the edit adds is too large for the picture.
+	edited = base.Clone()
+	edited.Pictures = append(edited.Pictures, cover)
+	if _, err := NewOpus().Plan(context.Background(), base, edited, core.DefaultWriteOptions()); !errors.Is(err, waxerr.ErrPictureTooLarge) {
+		t.Fatalf("a cover added past the floor: err=%v, want ErrPictureTooLarge", err)
+	}
+}
+
+// TestPlanRejectsCommentTextOverTheLimit: a comment header too large with no cover in it is content
+// too large, not a picture.
+func TestPlanRejectsCommentTextOverTheLimit(t *testing.T) {
+	base := parseOpusStreamWith(t)
+	old := bits.DefaultLimits.MaxAllocBytes
+	defer func() { bits.DefaultLimits.MaxAllocBytes = old }()
+	bits.DefaultLimits.MaxAllocBytes = 4096
+
+	edited := base.Clone()
+	edited.Tags.Set(tag.Lyrics, strings.Repeat("la ", 4096))
+	_, err := NewOpus().Plan(context.Background(), base, edited, core.DefaultWriteOptions())
+	if !errors.Is(err, waxerr.ErrContentTooLarge) {
+		t.Fatalf("a comment header over the limit: err = %v, want ErrContentTooLarge", err)
+	}
+}
+
+// TestPlanKeepsCommentCountReadUnderRaisedLimit: a stream read holding more comments than the
+// default cap takes an edit that adds none and refuses one that does.
+func TestPlanKeepsCommentCountReadUnderRaisedLimit(t *testing.T) {
+	const serial = 0x4F4747
+	n := bits.DefaultLimits.MaxElements + 1
+	head := []byte{'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 2, 0, 0, 0x80, 0xBB, 0, 0, 0, 0, 0}
+	tags := opusTagsPacket("libopus 1.4", append([]string{"TITLE=Song"}, slices.Repeat([]string{"C=v"}, n-1)...)...)
+	page0, _ := paginateBOS(serial, head)
+	tagPages, pages := paginate(serial, 1, [][]byte{tags})
+	audio := []byte("AUDIOPKT!!")
+	stream := slices.Concat(page0, tagPages, buildPage(0, 960, serial, uint32(1+pages), []byte{byte(len(audio))}, audio))
+
+	opts := core.DefaultParseOptions()
+	opts.Limits.MaxElements = 2 * n
+	base, err := parse(context.Background(), core.BytesSource(stream), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := base.Clone()
+	edited.Tags.Set(tag.Title, "Tune")
+	if _, err := NewOpus().Plan(context.Background(), base, edited, core.DefaultWriteOptions()); err != nil {
+		t.Fatalf("an edit that adds no comment to a stream holding %d: %v", n, err)
+	}
+	edited.Tags.Set(tag.Artist, "One More")
+	if _, err := NewOpus().Plan(context.Background(), base, edited, core.DefaultWriteOptions()); !errors.Is(err, waxerr.ErrContentTooLarge) {
+		t.Fatalf("one more comment than the stream held: err = %v, want ErrContentTooLarge", err)
 	}
 }

@@ -10,12 +10,15 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
 	"github.com/colespringer/waxlabel/tag"
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // Comment is one "NAME=value" entry. Name spelling kept for unedited rewrite.
@@ -62,6 +65,29 @@ func ParseCommentList(body []byte, limit int64, maxElements int) (vendor string,
 		return vendor, comments, c.Pos(), fmt.Errorf("vorbis comment: %w", c.Err())
 	}
 	return vendor, comments, c.Pos(), nil
+}
+
+// CheckCommentCount refuses a list of n comments that a reader with default limits would not take
+// ([ParseCommentList] caps the count), unless the file was read holding origCount or more.
+func CheckCommentCount(n, origCount int) error {
+	return checkCount(n, origCount, "Vorbis comments")
+}
+
+// CheckBlockCount is [CheckCommentCount] for FLAC metadata blocks.
+func CheckBlockCount(n, origCount int) error {
+	return checkCount(n, origCount, "FLAC metadata blocks")
+}
+
+func checkCount(n, origCount int, what string) error {
+	if limit := max(bits.DefaultLimits.MaxElements, origCount); n > limit {
+		return fmt.Errorf("%w: %d %s (max %d)", waxerr.ErrContentTooLarge, n, what, limit)
+	}
+	return nil
+}
+
+// CommentCountConstraint is the capability text for the cap [CheckCommentCount] enforces.
+func CommentCountConstraint() string {
+	return "at most " + bits.GroupThousands(int64(bits.DefaultLimits.MaxElements)) + " comments"
 }
 
 // RenderCommentList encodes vendor+comments (LE lengths, no framing). Deterministic.
@@ -152,8 +178,15 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 	var info RebuildInfo
 	emitted := map[tag.Key]bool{}
 	out := make([]Comment, 0, len(orig))
+	// stored holds each key's values that are not valid UTF-8, by their place among the key's
+	// values. The edit sees them with U+FFFD in place of the invalid bytes; one it keeps is
+	// written back as stored.
+	stored := map[tag.Key][]storedValue{}
 	emit := func(k tag.Key, name string) {
 		vals, _ := edited.Get(k)
+		if st := stored[k]; len(st) > 0 {
+			vals = restoreStored(st, vals, func(i int) int64 { return int64(i) })
+		}
 		// Canonicalize a recognized boolean word to "1"/"0" (COMPILATION=true -> 1),
 		// matching MP4's cpil, so copy (Carried) and diff (no change) agree across
 		// formats. CanonicalBoolValue leaves an unrecognized value ("maybe") as text.
@@ -166,16 +199,20 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 		}
 		emitted[k] = true
 	}
-	// hasNative marks the canonical keys that own a native comment in orig. The
-	// slash-pair rewrite below derives a total only when the total key has no
-	// comment of its own; the normal loop preserves or replaces an explicit
-	// TRACKTOTAL/TOTALTRACKS in place, so it is neither duplicated nor moved.
-	hasNative := map[tag.Key]bool{}
+	// native counts the comments each canonical key owns in orig, which is also each value's
+	// place among its key's values. The slash-pair rewrite below derives a total only when
+	// the total key has no comment of its own; the normal loop preserves or replaces an
+	// explicit TRACKTOTAL/TOTALTRACKS in place, so it is neither duplicated nor moved.
+	native := map[tag.Key]int{}
 	for _, cm := range orig {
 		if cm.Unseparated || isChapterComment(cm.Name) || isSyncedLyricsComment(cm.Name) {
 			continue
 		}
-		hasNative[mapping.CanonicalVorbis(cm.Name)] = true
+		k := mapping.CanonicalVorbis(cm.Name)
+		if !utf8.ValidString(cm.Value) {
+			stored[k] = append(stored[k], storedValue{at: int64(native[k]), raw: cm.Value, text: core.SanitizeUTF8(cm.Value)})
+		}
+		native[k]++
 	}
 	for _, cm := range orig {
 		if cm.Unseparated {
@@ -207,7 +244,7 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 		// ([tag.NumberTotalSplit]). When either key changed, rewrite the number from the
 		// edited value and drop the slash, or a cleared or edited total would resurface
 		// from the preserved "4/9". The derived total gets its own comment only when the
-		// total key has no native comment (see hasNative). This matches Matroska's edit
+		// total key has no native comment (see native). This matches Matroska's edit
 		// decisions. An unrelated edit falls through and preserves the slash comment.
 		if k == tag.TrackNumber || k == tag.DiscNumber {
 			if _, _, split := tag.NumberTotalSplit(k, cm.Value); split {
@@ -216,7 +253,7 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 					if !emitted[k] {
 						emit(k, cm.Name) // number only, keeping the file's spelling (no slash)
 					}
-					if !hasNative[totKey] && !emitted[totKey] {
+					if native[totKey] == 0 && !emitted[totKey] {
 						emit(totKey, mapping.VorbisName(totKey)) // derived total with no comment of its own
 					}
 					continue
@@ -252,11 +289,17 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 				info.ReservedKeys = append(info.ReservedKeys, k)
 				continue
 			}
+			// A key with whitespace at an edge would be written under a name that no reader,
+			// this one included, takes for a key.
+			if mapping.CanonicalVorbis(name) == "" {
+				info.UnreadableKeys = append(info.UnreadableKeys, k)
+				continue
+			}
 			emit(k, name) // newly-added key: the preferred Vorbis spelling
 		}
 	}
 	if chaptersChanged {
-		cc, overflow := chapterComments(chapters)
+		cc, overflow := chapterComments(restoreTitles(orig, chapters))
 		out = append(out, cc...)
 		info.ChapterOverflow = overflow
 	}
@@ -266,6 +309,46 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 		info.SyncedLyricsOverflow = overflow
 	}
 	return out, info
+}
+
+// storedValue is a value the file holds that is not valid UTF-8: where it stands (its place
+// among its key's values, or the start of the chapter it titles) and the text it reads as.
+type storedValue struct {
+	at        int64
+	raw, text string
+}
+
+// restoreStored returns texts with each one that a stored value reads as replaced by that value:
+// the one standing where the text stands (place(i) for texts[i]) when it reads so, else the first
+// not yet given out that does, in order. Values that read alike are so told apart by where they
+// stand, and each is given out once.
+func restoreStored(vals []storedValue, texts []string, place func(i int) int64) []string {
+	out := slices.Clone(texts)
+	used, done := make([]bool, len(vals)), make([]bool, len(texts))
+	at := map[int64][]int{}
+	for j, v := range vals {
+		at[v.at] = append(at[v.at], j)
+	}
+	for i, text := range texts {
+		for _, j := range at[place(i)] {
+			if !used[j] && vals[j].text == text {
+				out[i], used[j], done[i] = vals[j].raw, true, true
+				break
+			}
+		}
+	}
+	byText := map[string][]int{}
+	for j, v := range vals {
+		if !used[j] {
+			byText[v.text] = append(byText[v.text], j)
+		}
+	}
+	for i, text := range texts {
+		if q := byText[text]; !done[i] && len(q) > 0 {
+			out[i], byText[text] = vals[q[0]].raw, q[1:]
+		}
+	}
+	return out
 }
 
 // RebuildInfo reports the codec-ceiling clamps [Rebuild] applied to owned chapter
@@ -285,6 +368,9 @@ type RebuildInfo struct {
 	// custom fields, since a structured projector would consume the comment on read.
 	// The caller surfaces a value-dropped warning naming the namespace per key.
 	ReservedKeys []tag.Key
+	// UnreadableKeys lists new keys with whitespace at an edge, dropped because the comment
+	// would not read back under the key.
+	UnreadableKeys []tag.Key
 }
 
 // RebuildWarnings appends the write-time warnings for what [Rebuild] recorded: the
@@ -306,6 +392,10 @@ func RebuildWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
 		ns := reservedNamespace(mapping.VorbisName(k))
 		prior = core.WarnKeyed(prior, core.WarnValueDropped,
 			fmt.Sprintf("%s is in the reserved %s namespace and cannot be written as a custom field", k, ns), k)
+	}
+	for _, k := range info.UnreadableKeys {
+		prior = core.WarnKeyed(prior, core.WarnValueDropped,
+			fmt.Sprintf("%q has whitespace at an edge, which no Vorbis field name is read with, and is not written", string(k)), k)
 	}
 	return prior
 }
@@ -337,6 +427,25 @@ func InvalidKeyWarnings(comments []Comment) []core.Warning {
 		ws = core.WarnInvalidKey(ws, cm.Name)
 	}
 	return core.WarnUnseparatedEntry(ws, first, unseparated)
+}
+
+// InvalidTextWarnings reports a WarnInvalidText for each key holding a value that is not valid
+// UTF-8. [Project] shows such a value with U+FFFD in place of the invalid bytes; the file keeps
+// the bytes until the value is replaced. Called at the parse sites like [InvalidKeyWarnings];
+// [ProjectOwned] reports the same for a chapter title and the synced lyrics.
+func InvalidTextWarnings(comments []Comment) []core.Warning {
+	var ws []core.Warning
+	seen := map[tag.Key]bool{}
+	for _, cm := range comments {
+		if cm.Unseparated || utf8.ValidString(cm.Value) || reservedNamespace(cm.Name) != "" {
+			continue
+		}
+		if k, valid := canonicalTagKey(cm.Name); valid && !seen[k] {
+			seen[k] = true
+			ws = core.WarnKeyed(ws, core.WarnInvalidText, invalidTextMessage(string(k)), k)
+		}
+	}
+	return ws
 }
 
 // canonicalTagKey resolves a Vorbis comment name to its canonical key and reports

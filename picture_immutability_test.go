@@ -57,3 +57,41 @@ func TestRemovePicturesNoRaceWithPictures(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// TestReplacePictures: the picture takes the place of the first match and every other match goes;
+// with no match it is appended. Only the new picture counts as added.
+func TestReplacePictures(t *testing.T) {
+	pic := func(typ core.PictureType, id byte) core.Picture {
+		return core.Picture{Type: typ, MIME: "image/jpeg", Data: []byte{id}}
+	}
+	isFront := func(p Picture) bool { return p.Type == PicFrontCover }
+	front, back := core.PicFrontCover, core.PicBackCover
+	for name, tc := range map[string]struct {
+		have    []core.Picture
+		replace []byte // the ids of the covers put in, one call each
+		want    []byte // ids, in order
+		added   int    // index of the added picture
+	}{
+		"front then back":     {[]core.Picture{pic(front, 1), pic(back, 2)}, []byte{9}, []byte{9, 2}, 0},
+		"back then two front": {[]core.Picture{pic(back, 2), pic(front, 1), pic(front, 3)}, []byte{9}, []byte{2, 9}, 1},
+		"no front":            {[]core.Picture{pic(back, 2)}, []byte{9}, []byte{2, 9}, 1},
+		"no pictures":         {nil, []byte{9}, []byte{9}, 0},
+		"replaced twice":      {[]core.Picture{pic(front, 1), pic(back, 2)}, []byte{8, 9}, []byte{9, 2}, 0},
+	} {
+		doc := &Document{media: &core.Media{Format: core.FormatFLAC, Pictures: tc.have}}
+		ed := doc.Edit()
+		for _, id := range tc.replace {
+			ed.ReplacePictures(isFront, pic(front, id))
+		}
+		var got []byte
+		for i, p := range ed.pictures {
+			got = append(got, p.Data[0])
+			if added := i < len(ed.addedMask) && ed.addedMask[i]; added != (i == tc.added) {
+				t.Errorf("%s: picture %d added = %v, want only picture %d added", name, i, added, tc.added)
+			}
+		}
+		if string(got) != string(tc.want) || !ed.picsTouched {
+			t.Errorf("%s: pictures %v (touched %v), want %v", name, got, ed.picsTouched, tc.want)
+		}
+	}
+}

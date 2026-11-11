@@ -93,6 +93,7 @@ func (c Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabili
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "Vorbis comment", Fidelity: "lossless",
+		Constraints: []string{vorbis.CommentCountConstraint()},
 	}
 	pictureRep := "METADATA_BLOCK_PICTURE"
 	if c.format == core.FormatOggFLAC {

@@ -29,10 +29,14 @@ type Editor struct {
 	patch       tag.TagPatch
 	pictures    []core.Picture
 	picsTouched bool
+	// After ClearPictures: FLAC and Ogg drop the pictures that did not decode too.
+	picsCleared bool
 	// Parallel to pictures: true if AddPicture added it (Prepare validates those).
-	addedMask           []bool
-	chapters            []core.Chapter
-	chaptersTouched     bool
+	addedMask       []bool
+	chapters        []core.Chapter
+	chaptersTouched bool
+	// After ClearChapters: Vorbis comments drop the CHAPTERxxx comments nothing read too.
+	chaptersCleared     bool
 	syncedLyrics        []core.SyncedLyrics
 	syncedLyricsTouched bool
 	// After ClearSyncedLyrics: ID3 SYLT must not inherit dest language/descriptor.
@@ -133,12 +137,47 @@ func (e *Editor) RemovePictures(match func(Picture) bool) *Editor {
 	return e
 }
 
-// ClearPictures removes all pictures.
-func (e *Editor) ClearPictures() *Editor {
-	e.pictures = nil
-	e.addedMask = nil
+// ReplacePictures puts p where the first picture match selects stands and drops every other
+// match, so the pictures around it keep their order; with no match p is appended. p is sniffed
+// and validated as [Editor.AddPicture] does.
+func (e *Editor) ReplacePictures(match func(Picture) bool, p Picture) *Editor {
+	p.SniffAuthoritative()
+	p.Data = append([]byte(nil), p.Data...)
+	pics := make([]core.Picture, 0, len(e.pictures)+1)
+	mask := make([]bool, 0, len(e.pictures)+1)
+	placed := false
+	for i, old := range e.pictures {
+		// match gets a Data-detached copy, as in RemovePictures.
+		probe := old
+		probe.Data = append([]byte(nil), old.Data...)
+		switch {
+		case !match(probe):
+			pics = append(pics, old)
+			mask = append(mask, i < len(e.addedMask) && e.addedMask[i])
+		case !placed:
+			pics, mask, placed = append(pics, p), append(mask, true), true
+		}
+	}
+	if !placed {
+		pics, mask = append(pics, p), append(mask, true)
+	}
+	e.pictures, e.addedMask = pics, mask
 	e.picsTouched = true
 	return e
+}
+
+// ClearPictures removes all pictures. In FLAC and Ogg it also removes picture comments and
+// PICTURE blocks that did not decode, which an edit of the pictures otherwise keeps.
+func (e *Editor) ClearPictures() *Editor {
+	e.dropPictures()
+	e.picsCleared = true
+	return e
+}
+
+// dropPictures empties the picture set, for a clear or for pictures that take the set's place.
+// Only a clear also asks for what the file holds unread to go.
+func (e *Editor) dropPictures() {
+	e.pictures, e.addedMask, e.picsTouched = nil, nil, true
 }
 
 // SetChapters replaces chapters (sorted by start). Cap checked at Prepare.
@@ -155,10 +194,12 @@ func normalizeChapters(chs []Chapter) []core.Chapter {
 	return out
 }
 
-// ClearChapters removes all chapters.
+// ClearChapters removes all chapters. In FLAC and Ogg it also removes CHAPTERxxx comments
+// that were not read as chapters.
 func (e *Editor) ClearChapters() *Editor {
 	e.chapters = nil
 	e.chaptersTouched = true
+	e.chaptersCleared = true
 	return e
 }
 
@@ -216,7 +257,8 @@ func (e *Editor) NotePictureSelectorMiss(roles ...string) *Editor {
 	return e
 }
 
-// ClearSyncedLyrics removes synced lyrics and marks clear-then-set as fresh.
+// ClearSyncedLyrics removes synced lyrics and marks clear-then-set as fresh. In FLAC and Ogg
+// it also removes SYNCEDLYRICS comments that were not read as synced lyrics.
 func (e *Editor) ClearSyncedLyrics() *Editor {
 	e.syncedLyrics = nil
 	e.syncedLyricsTouched = true
@@ -251,6 +293,8 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// fallback, so a cleared-then-authored set does not inherit the destination's SYLT
 	// metadata. Distinct from Carried, which would mislabel the edit.
 	wo.SyncedLyricsCleared = e.syncedLyricsCleared
+	wo.ChaptersCleared = e.chaptersCleared
+	wo.PicturesCleared = e.picsCleared
 
 	// An editor from a zero-value Document has no base media to plan against.
 	if e.base == nil {

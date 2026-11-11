@@ -6,6 +6,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -82,4 +83,18 @@ func BlockName(code byte) string {
 	default:
 		return "UNKNOWN"
 	}
+}
+
+// CheckBlockSize refuses a block body of n bytes that the 24-bit length field cannot describe,
+// which would otherwise be written truncated into a corrupt file: ErrPictureTooLarge for a
+// picture, ErrContentTooLarge for any other block.
+func CheckBlockSize(code byte, n int) error {
+	if n <= MaxBlockBody {
+		return nil
+	}
+	got, max := bits.SizeOverLimit(int64(n), MaxBlockBody)
+	if code == BlockPicture {
+		return fmt.Errorf("%w: picture block is %s, max %s", waxerr.ErrPictureTooLarge, got, max)
+	}
+	return fmt.Errorf("%w: %s block is %s, over the 24-bit limit of %s", waxerr.ErrContentTooLarge, BlockName(code), got, max)
 }

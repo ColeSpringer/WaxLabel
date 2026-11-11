@@ -321,8 +321,9 @@ func Render(items []Item, version int, hasHeader bool) ([]byte, error) {
 	}
 	tagSize := total // items + footer, per the specification
 	if tagSize > maxTagBytes {
-		return nil, fmt.Errorf("%w: APE tag is %s (max %s; readers refuse a larger tag outright, losing every item)",
-			waxerr.ErrPictureTooLarge, bits.HumanBytes(int64(tagSize)), bits.HumanBytes(int64(maxTagBytes)))
+		got, max := bits.SizeOverLimit(int64(tagSize), maxTagBytes)
+		return nil, fmt.Errorf("%w: APE tag is %s, max %s (readers refuse a larger tag outright, losing every item)",
+			waxerr.ErrPictureTooLarge, got, max)
 	}
 	if hasHeader {
 		total += footerLen
@@ -356,8 +357,9 @@ func checkRenderLimits(items []Item) error {
 	}
 	for _, it := range items {
 		if n := len(it.Payload()); int64(n) > maxItemBytes {
-			return fmt.Errorf("%w: APE item %q is %s, past the 32-bit item-length field",
-				waxerr.ErrSizeTooLarge, it.Key, bits.HumanBytes(int64(n)))
+			got, max := bits.SizeOverLimit(int64(n), maxItemBytes)
+			return fmt.Errorf("%w: APE item %q is %s, past the %s of the 32-bit item-length field",
+				waxerr.ErrSizeTooLarge, it.Key, got, max)
 		}
 	}
 	return nil

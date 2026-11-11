@@ -6,13 +6,19 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// All codec read paths use normalizeKey (trim + upper) before lookup.
+// The MP4, Matroska and ID3 read paths use normalizeKey (trim + upper) before lookup. A Vorbis
+// field name folds ASCII case only: padded, or with a letter outside ASCII, it is no key.
 func TestReadPathsShareKeyNormalization(t *testing.T) {
-	if k := CanonicalVorbis("  date  "); k != tag.RecordingDate {
-		t.Errorf("CanonicalVorbis(padded DATE alias) = %q, want RecordingDate", k)
+	if k := CanonicalVorbis("date"); k != tag.RecordingDate {
+		t.Errorf("CanonicalVorbis(DATE alias) = %q, want RecordingDate", k)
 	}
-	if k := CanonicalVorbis("  MyField  "); k != tag.Key("MYFIELD") {
-		t.Errorf("CanonicalVorbis(padded custom) = %q, want MYFIELD", k)
+	if k := CanonicalVorbis("MyField"); k != tag.Key("MYFIELD") {
+		t.Errorf("CanonicalVorbis(custom) = %q, want MYFIELD", k)
+	}
+	for _, name := range []string{"  date  ", "MyField ", "\tTITLE", "t\u0131tle", "ALBUM\u017f"} {
+		if k := CanonicalVorbis(name); k != "" {
+			t.Errorf("CanonicalVorbis(%q) = %q, want no key", name, k)
+		}
 	}
 	if k, ok := MP4FreeformKey("  musicbrainz album id  "); !ok || k != tag.MBReleaseID {
 		t.Errorf("MP4FreeformKey(padded foreign) = %q,%v, want MBReleaseID,true", k, ok)

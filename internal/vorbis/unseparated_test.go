@@ -52,8 +52,8 @@ func TestUnseparatedEntryStaysOutOfEveryProjection(t *testing.T) {
 	if chs := ProjectChapters(cs); len(chs) != 0 {
 		t.Errorf("chapters = %v, want none", chs)
 	}
-	if sets, ws := ProjectSyncedLyricsReport(cs); len(sets) != 0 || len(ws) != 0 {
-		t.Errorf("synced lyrics = %v, warnings = %v, want none", sets, ws)
+	if o := ProjectOwned(cs); len(o.Chapters) != 0 || len(o.SyncedLyrics) != 0 || len(o.Warnings) != 0 {
+		t.Errorf("chapters = %v, synced lyrics = %v, warnings = %v; want none", o.Chapters, o.SyncedLyrics, o.Warnings)
 	}
 	if ws := EncoderNoise("vend", cs); len(ws) != 0 {
 		t.Errorf("encoder noise = %v, want none", ws)

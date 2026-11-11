@@ -31,7 +31,9 @@ type PaddingPolicy struct {
 	// Min/Max bound written padding. Min is reuse floor for ReuseInPlace. Max==0: no cap.
 	Min int64
 	Max int64
-	// ReuseInPlace reuses existing padding when content still fits and leftover >= Min.
+	// ReuseInPlace reuses existing padding when content still fits and leftover >= Min. In
+	// FLAC and in an MP3 or ADTS front tag, a region with more free space than Max keeps Max
+	// of it.
 	ReuseInPlace bool
 }
 
@@ -138,8 +140,15 @@ type WriteOptions struct {
 	AllowUnsupportedDrop bool
 	// KeepR128Gains leaves R128_* tags unrebased when output gain changes.
 	KeepR128Gains bool
-	// SyncedLyricsCleared: skip SYLT language/descriptor fallback after explicit clear.
+	// SyncedLyricsCleared: skip SYLT language/descriptor fallback after explicit clear. In
+	// Vorbis comments the clear also removes SYNCEDLYRICS comments that were not read.
 	SyncedLyricsCleared bool
+	// ChaptersCleared: the edit cleared the chapters explicitly. In Vorbis comments the clear
+	// also removes CHAPTERxxx comments that were not read.
+	ChaptersCleared bool
+	// PicturesCleared: the edit cleared the pictures explicitly. FLAC and Ogg then also remove
+	// picture comments and PICTURE blocks that did not decode.
+	PicturesCleared bool
 }
 
 // DefaultWriteOptions returns the preservation-first defaults.

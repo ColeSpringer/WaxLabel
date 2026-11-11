@@ -173,6 +173,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Operations = append(report.Operations, core.EncodingRewriteOp("genre"))
 	}
 	report.BytesAfter = lay.total
+	report.PaddingAfter = id3.ChunkPaddingAfter(newID3, d.id3, d.id3ChunkLen(), id3Kept, emitID3)
 
 	result := buildResult(edited, d, newID3, lay)
 	// Surface ID3 rebuild losses the bytes cannot show. AIFF's native text chunks store

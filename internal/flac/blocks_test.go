@@ -75,10 +75,10 @@ func TestParseStreamInfoRejectsZeroRate(t *testing.T) {
 
 func TestVorbisCommentRoundTrip(t *testing.T) {
 	comments := []comment{
-		{name: "TITLE", value: "Hello"},
-		{name: "ARTIST", value: "World"},
-		{name: "ARTIST", value: "Second"}, // multi-value preserved in order
-		{name: "DESCRIPTION", value: "has = equals = signs"},
+		{Name: "TITLE", Value: "Hello"},
+		{Name: "ARTIST", Value: "World"},
+		{Name: "ARTIST", Value: "Second"}, // multi-value preserved in order
+		{Name: "DESCRIPTION", Value: "has = equals = signs"},
 	}
 	body := renderVorbisComment("WaxLabel/0.1", comments)
 	vendor, got, err := parseVorbisComment(body, 1<<20, 0)
@@ -131,7 +131,7 @@ func TestRenderBlockHeader(t *testing.T) {
 
 func TestParseVorbisCommentPreservesEntriesWithoutEquals(t *testing.T) {
 	// Entry without '=' is kept and re-rendered unchanged.
-	comments := []comment{{name: "TITLE", value: "ok"}}
+	comments := []comment{{Name: "TITLE", Value: "ok"}}
 	body := renderVorbisComment("v", comments)
 
 	bad := []byte("noequalshere")
@@ -146,10 +146,10 @@ func TestParseVorbisCommentPreservesEntriesWithoutEquals(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %v, want the TITLE entry and the unseparated one", got)
 	}
-	if got[0].name != "TITLE" || got[0].unseparated {
+	if got[0].Name != "TITLE" || got[0].Unseparated {
 		t.Errorf("first entry = %+v, want the parsed TITLE", got[0])
 	}
-	if !got[1].unseparated || got[1].name != "" || got[1].value != string(bad) {
+	if !got[1].Unseparated || got[1].Name != "" || got[1].Value != string(bad) {
 		t.Errorf("second entry = %+v, want the raw bytes under an empty name", got[1])
 	}
 	if out := renderVorbisComment(vendor, got); !slices.Equal(out, body) {

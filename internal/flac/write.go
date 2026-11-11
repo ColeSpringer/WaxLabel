@@ -9,7 +9,6 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/tail"
 	"github.com/colespringer/waxlabel/internal/vorbis"
-	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // Plan builds the rewrite from source to edited media. Unchanged blocks and
@@ -28,11 +27,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	changed := diffKeys(base.Tags, edited.Tags)
 	vorbisChanged := len(changed) > 0
-	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
-	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
-	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
+	// An explicit clear, or a cleared name, also removes what the file holds unread: owned
+	// comments nothing reads and PICTURE blocks that did not decode.
+	unread := vorbis.PlanUnread(d.comments, len(d.malformedPictureBlocks), edited.Tags, opts,
+		!core.EqualChapters(base.Chapters, edited.Chapters), !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics))
+	chaptersChanged, syncedLyricsChanged := unread.ChaptersChanged, unread.LyricsChanged
+	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures) || unread.DropBlocks
 	// Chapters/synced lyrics live as Vorbis comments; either edit rewrites the block.
-	commentsChanged := vorbisChanged || chaptersChanged || syncedLyricsChanged
+	commentsChanged := vorbisChanged || chaptersChanged || syncedLyricsChanged || len(unread.Comments) != len(d.comments)
 	stripLegacy := opts.Legacy == core.LegacyStrip
 	legacyChange := stripLegacy && legacyPresent
 	// Vendor neutralization must bypass the no-op path even if comments are unchanged.
@@ -49,10 +51,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	newComments := d.comments
 	var rebuildInfo vorbis.RebuildInfo
 	if commentsChanged {
-		newComments, rebuildInfo = rebuildComments(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged, edited.SyncedLyrics, syncedLyricsChanged)
+		newComments, rebuildInfo = vorbis.Rebuild(unread.Comments, edited.Tags, changed, edited.Chapters, chaptersChanged, edited.SyncedLyrics, syncedLyricsChanged)
+	}
+	if err := vorbis.CheckCommentCount(len(newComments), d.origCommentCount); err != nil {
+		return nil, err
 	}
 
-	newBlocks, ops, dupDropped := rebuildBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged, vendorChanged, picturesChanged)
+	newBlocks, ops, dupDropped := rebuildBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged, vendorChanged, picturesChanged, !unread.DropBlocks)
+	ops = append(ops, unread.Ops...)
 	if vendorChanged {
 		ops = append(ops, "vendor stamp neutralized")
 	}
@@ -66,7 +72,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if err := checkBlockSizes(newBlocks); err != nil {
 		return nil, err
 	}
-	metaBytes, padSize, padClamped := serializeMetadata(newBlocks, d, opts.Padding)
+	metaBytes, padSize, padClamped, blockCount := serializeMetadata(newBlocks, d, opts.Padding)
+	if err := vorbis.CheckBlockCount(blockCount, len(d.blocks)); err != nil {
+		return nil, err
+	}
 
 	origRegion := d.audioStart - (d.flacStart + 4)
 	regionDiffers := int64(len(metaBytes)) != origRegion
@@ -77,9 +86,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			fmt.Sprintf("requested padding exceeded FLAC's %d-byte metadata-block limit and was clamped to it", maxBlockBody))
 	}
 	// Padding-only report: gate on commentsChanged (tags OR chapters), not vorbisChanged alone.
-	if regionDiffers && !commentsChanged && !picturesChanged && !legacyChange && !vendorChanged {
-
-		report.Operations = append(report.Operations, core.PaddingOp(max(0, origRegion-(int64(len(metaBytes))-int64(padSize))), int64(padSize)))
+	// A region with more padding than the policy's Max is cut to it, which the plan says too.
+	paddingOnly := !commentsChanged && !picturesChanged && !legacyChange && !vendorChanged
+	if before := d.PaddingBytes(); regionDiffers && (paddingOnly || opts.Padding.Max > 0 && before > opts.Padding.Max && int64(padSize) < before) {
+		report.Operations = append(report.Operations, core.PaddingOp(before, int64(padSize)))
 	}
 
 	var segs []bits.Segment
@@ -104,6 +114,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	// Clamp warnings before DowngradeNoOp; clamp keeps result != base so write proceeds.
 	report.Warnings = vorbis.RebuildWarnings(report.Warnings, rebuildInfo)
+	report.Warnings = append(report.Warnings, unread.Warnings...)
 
 	result := buildResult(edited, d, newComments, audioOutStart, stripLegacy)
 	if dupDropped {
@@ -112,9 +123,12 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 
 	// Downgrade catches rebuild drops (e.g. empty strings). Legacy strip and vendor
-	// neutralization stay real. ReuseInPlace can absorb a shorter vendor without
-	// changing region length, so vendorChanged is structural.
-	if np := core.DowngradeNoOp(core.FormatFLAC, edited.Identity.Size, base, result, len(diffKeys(base.Tags, result.Tags)) == 0, legacyChange || regionDiffers || vendorChanged, report.Warnings); np != nil {
+	// neutralization stay real. ReuseInPlace can absorb a shorter vendor, or what the edit
+	// removes unread, without changing region length, so those are structural. A region
+	// the padding policy would resize is a change only when the padding was asked for:
+	// an edit that is discarded does not rewrite the file to move its padding.
+	if np := core.DowngradeNoOp(core.FormatFLAC, edited.Identity.Size, base, result, len(diffKeys(base.Tags, result.Tags)) == 0,
+		legacyChange || vendorChanged || unread.Removes() || regionDiffers && opts.PaddingExplicit, report.Warnings); np != nil {
 		return np, nil
 	}
 
@@ -126,27 +140,21 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}, nil
 }
 
-// checkBlockSizes rejects bodies over the 24-bit length field. Oversized pictures
-// report ErrPictureTooLarge.
+// checkBlockSizes rejects bodies over the 24-bit length field ([vorbis.CheckBlockSize]).
 func checkBlockSizes(blocks []block) error {
 	for _, b := range blocks {
-		if len(b.body) <= maxBlockBody {
-			continue
+		if err := vorbis.CheckBlockSize(b.code, len(b.body)); err != nil {
+			return err
 		}
-		if b.code == blkPicture {
-			return fmt.Errorf("%w: picture block is %s (max %s)",
-				waxerr.ErrPictureTooLarge, bits.HumanBytes(int64(len(b.body))), bits.HumanBytes(int64(maxBlockBody)))
-		}
-		return fmt.Errorf("%w: %s block is %s, exceeding the 24-bit limit %s",
-			waxerr.ErrInvalidData, blockName(b.code), bits.HumanBytes(int64(len(b.body))), bits.HumanBytes(int64(maxBlockBody)))
 	}
 	return nil
 }
 
 // rebuildBlocks builds the new block list (no padding). Untouched blocks keep raw
 // bytes. commentsChanged covers tag or chapter edits; vendorChanged forces re-render
-// with newVendor. Third return: an extra Vorbis comment block was dropped.
-func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []core.Picture, commentsChanged, vendorChanged, picturesChanged bool) ([]block, []string, bool) {
+// with newVendor; keepUnreadable re-appends the PICTURE blocks that did not decode on a
+// picture edit. Third return: an extra Vorbis comment block was dropped.
+func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []core.Picture, commentsChanged, vendorChanged, picturesChanged, keepUnreadable bool) ([]block, []string, bool) {
 	var out []block
 	var ops []string
 	vorbisHandled := false
@@ -209,7 +217,7 @@ func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []c
 	}
 	// On picture edit, re-append undecodable native PICTURE bodies (never in media.Pictures).
 	// May move past valid pictures; FLAC does not care about order beyond STREAMINFO-first.
-	if picturesChanged {
+	if picturesChanged && keepUnreadable {
 		for _, body := range d.malformedPictureBlocks {
 			out = append(out, block{code: blkPicture, body: slices.Clone(body)})
 		}
@@ -254,8 +262,10 @@ func insertAfterStreamInfo(blocks []block, b block) []block {
 }
 
 // serializeMetadata renders blocks plus trailing PADDING per policy. ReuseInPlace
-// fills the original region exactly when content fits.
-func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []byte, padSize int, clamped bool) {
+// fills the original region exactly when content fits, or leaves the policy's Max of
+// a region with more free space than that. count is the blocks written,
+// STREAMINFO and padding among them.
+func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []byte, padSize int, clamped bool, count int) {
 	nonPad := 0
 	for _, b := range blocks {
 		nonPad += 4 + len(b.body)
@@ -264,10 +274,15 @@ func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []by
 
 	// Reuse only if leftover padding ≥ Min; else ClampTarget (also floors to Min).
 	var padBlocks []block
-	if pol.ReuseInPlace && int64(nonPad)+4 <= origRegion && origRegion-(int64(nonPad)+4) >= pol.Min {
+	left := origRegion - (int64(nonPad) + 4)
+	switch reuse := pol.ReuseInPlace && left >= 0 && left >= pol.Min; {
+	case reuse && pol.Max > 0 && left > pol.Max:
+		// More free space than the policy allows: keep Max of it.
+		padBlocks = paddingBlocks(int(pol.Max) + 4)
+	case reuse:
 		// Fill region exactly; may need several PADDING blocks. Region-derived, no clamp warn.
 		padBlocks = paddingBlocks(int(origRegion - int64(nonPad)))
-	} else {
+	default:
 		// ClampTarget floors to Min. Body ≤ 24-bit; larger Target clamps (int64 compare).
 		t := pol.ClampTarget()
 		if t > int64(maxBlockBody) {
@@ -287,7 +302,7 @@ func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []by
 	for i, b := range all {
 		out = append(out, renderBlock(b.code, i == len(all)-1, b.body)...)
 	}
-	return out, padSize, clamped
+	return out, padSize, clamped, len(all)
 }
 
 // buildResult builds the plan's result: the canonical view a fresh parse of the output reads, and
@@ -299,8 +314,8 @@ func buildResult(edited *core.Media, base *doc, newComments []comment, audioStar
 		Properties:   edited.Properties.Clone(),
 		Tags:         tags,
 		Pictures:     core.ClonePictures(edited.Pictures),
-		Chapters:     projectChapters(newComments),
-		SyncedLyrics: projectSyncedLyrics(newComments),
+		Chapters:     vorbis.ProjectChapters(newComments),
+		SyncedLyrics: vorbis.ProjectSyncedLyrics(newComments),
 	}
 	base.layout.SetMovedEssence(m, base.audioStart, audioStart, strip)
 	core.SyncTextItems(m)

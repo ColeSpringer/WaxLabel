@@ -431,3 +431,41 @@ func TestConflictCountInTagHeader(t *testing.T) {
 		t.Errorf("tag header should report the conflict count:\n%s", got)
 	}
 }
+
+// --add-cover puts the new front cover where the old one stood, so the pictures keep their order;
+// with no front cover to replace it goes last, and of several --add-cover the last is the one kept.
+func TestAddCoverReplacesTheFrontCoverInPlace(t *testing.T) {
+	t.Parallel()
+	png, jpeg := writeTempImage(t, "a.png", testfile.PNG()), writeTempImage(t, "b.jpg", testfile.JPEG())
+	order := func(f string) string {
+		var rows []string
+		for _, p := range dumpJSON(t, f).Pictures {
+			rows = append(rows, p.Type+" "+p.MIME)
+		}
+		return strings.Join(rows, ", ")
+	}
+	for name, tc := range map[string]struct {
+		seed, args []string
+		want       string
+	}{
+		"front then back": {[]string{"--add-picture", "front-cover=" + png, "--add-picture", "back-cover=" + png},
+			[]string{"--add-cover", jpeg}, "Front cover image/jpeg, Back cover image/png"},
+		"no front cover": {[]string{"--add-picture", "back-cover=" + png},
+			[]string{"--add-cover", jpeg}, "Back cover image/png, Front cover image/jpeg"},
+		"two --add-cover": {[]string{"--add-picture", "front-cover=" + png, "--add-picture", "back-cover=" + png},
+			[]string{"--add-cover", png, "--add-cover", jpeg}, "Front cover image/jpeg, Back cover image/png"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := copyFixture(t, td("notags.flac"))
+			for _, args := range [][]string{tc.seed, tc.args} {
+				if _, errb, code := runCLI(t, append([]string{"set", f}, args...)...); code != 0 {
+					t.Fatalf("set %v: exit %d, %s", args, code, errb)
+				}
+			}
+			if got := order(f); got != tc.want {
+				t.Errorf("pictures = %s; want %s", got, tc.want)
+			}
+		})
+	}
+}

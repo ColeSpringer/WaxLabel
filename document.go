@@ -175,7 +175,8 @@ func (d *Document) Native() NativeDoc {
 	return d.media.Native.Clone()
 }
 
-// Padding reports free bytes in the metadata region (FLAC/MP3/AAC/MP4). Formats
+// Padding reports free bytes in the metadata region: a FLAC's padding blocks, an MP3, AAC,
+// WAV or AIFF ID3 tag's padding, an MP4's free space, an Opus comment header's padding. Formats
 // without a reporter return 0 ("not reported"). A truncated ID3 frame walk also
 // reports 0 (malformed remainder, not free space); a plan may still report
 // padding it will write. Uses [core.PaddingReporter] without deep-cloning Native.

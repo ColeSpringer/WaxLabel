@@ -487,3 +487,63 @@ func TestOggDifferentialFFmpegAppliesOutputGain(t *testing.T) {
 		t.Errorf("mean volume moved %.2f dB (%.1f -> %.1f), want the -3.50 dB header gain applied", delta, before, after)
 	}
 }
+
+// An Ogg comment header holds no more comments than a reader with default limits takes, a cover's
+// comment among them.
+func TestOggCommentCountLimit(t *testing.T) {
+	const limit = 100000
+	for _, path := range []string{notagsOgg, "../testdata/notags.opus", notagsOggFLAC} {
+		t.Run(path, func(t *testing.T) {
+			src := readFixture(t, path)
+			doc := mustParseBytes(t, src)
+			if n := doc.Tags().Len(); n != 1 {
+				t.Fatalf("the fixture holds %d comments, want its one ENCODER", n)
+			}
+
+			plan, err := doc.Edit().Set(tag.Comment, numberedValues(limit-1)...).Prepare()
+			if err != nil {
+				t.Fatalf("%d comments: %v", limit, err)
+			}
+			if got, _ := mustParseBytes(t, applyToBytes(t, src, plan)).Get(tag.Comment); len(got) != limit-1 {
+				t.Errorf("read back %d comments, want %d", len(got), limit-1)
+			}
+
+			_, err = doc.Edit().Set(tag.Comment, numberedValues(limit)...).Prepare()
+			if !errors.Is(err, waxerr.ErrContentTooLarge) {
+				t.Errorf("%d comments: err = %v, want ErrContentTooLarge", limit+1, err)
+			}
+
+			// Ogg FLAC keeps a cover in a block of its own; the other two in one more comment.
+			_, err = doc.Edit().Set(tag.Comment, numberedValues(limit-1)...).
+				AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
+			if wantRefused := path != notagsOggFLAC; errors.Is(err, waxerr.ErrContentTooLarge) != wantRefused || (err != nil) != wantRefused {
+				t.Errorf("%d comments and a cover: err = %v, refused want %v", limit, err, wantRefused)
+			}
+		})
+	}
+}
+
+// An Ogg FLAC stream holds no more header packets than a reader with default limits takes, the
+// identification packet among them: the last picture that fits writes and reads back, one more is
+// refused before the write.
+func TestOggFLACBlockCountLimit(t *testing.T) {
+	const limit = 100000
+	src := readFixture(t, notagsOggFLAC) // the identification packet and one comment block
+	withPictures := func(n int) *wl.Editor {
+		ed := mustParseBytes(t, src).Edit()
+		for range n {
+			ed.AddPicture(wl.Picture{Type: wl.PicOther, Data: testfile.PNG()})
+		}
+		return ed
+	}
+	plan, err := withPictures(limit - 2).Prepare()
+	if err != nil {
+		t.Fatalf("%d header packets: %v", limit, err)
+	}
+	if got := len(mustParseBytes(t, applyToBytes(t, src, plan)).Pictures()); got != limit-2 {
+		t.Errorf("read back %d pictures, want %d", got, limit-2)
+	}
+	if _, err := withPictures(limit - 1).Prepare(); !errors.Is(err, waxerr.ErrContentTooLarge) {
+		t.Errorf("%d header packets: err = %v, want ErrContentTooLarge", limit+1, err)
+	}
+}

@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
@@ -21,19 +20,23 @@ const PictureComment = "METADATA_BLOCK_PICTURE"
 // DecodePictureComment.
 const pictureCommentBase64Error = "METADATA_BLOCK_PICTURE is not valid base64; preserved as a comment"
 
-// IsPictureComment reports whether a comment name is the cover-art picture comment,
-// case-insensitively. Lowercase spellings are decoded as pictures at parse time, so the tag
+// IsPictureComment reports whether a comment name is the cover-art picture comment, in any
+// ASCII case. Lowercase spellings are decoded as pictures at parse time, so the tag
 // projector must skip them the same way.
 func IsPictureComment(name string) bool {
-	return strings.EqualFold(name, PictureComment)
+	return equalFoldASCII(name, PictureComment)
 }
 
 // DecodePictureComment base64-decodes a METADATA_BLOCK_PICTURE comment value and parses it
-// into a Picture. On failure it returns the shared base64 message or ParsePicture's error,
-// and the caller warns WarnInvalidPicture and preserves the comment verbatim. The FLAC and
-// Ogg picture-comment decoders share it.
+// into a Picture. A value some writers leave without its "=" padding decodes too. On failure
+// it returns the shared base64 message or ParsePicture's error, and the caller warns
+// WarnInvalidPicture and preserves the comment verbatim. The FLAC and Ogg picture-comment
+// decoders share it.
 func DecodePictureComment(value string, limit int64) (core.Picture, error) {
 	raw, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(value)
+	}
 	if err != nil {
 		return core.Picture{}, errors.New(pictureCommentBase64Error)
 	}

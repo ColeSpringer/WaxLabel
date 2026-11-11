@@ -5,7 +5,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/testfile"
@@ -450,5 +454,375 @@ func TestFLACPaddingClampWarns(t *testing.T) {
 	}
 	if hasClamp(small) {
 		t.Errorf("a 4 KiB padding must not warn padding-clamped; got %v", small.Report().Warnings)
+	}
+}
+
+// numberedValues is n distinct values.
+func numberedValues(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = strconv.Itoa(i)
+	}
+	return out
+}
+
+// A write holds no more Vorbis comments than a reader with default limits takes, and a file read
+// under a raised limit keeps the comments it holds.
+func TestFLACCommentCountLimit(t *testing.T) {
+	const limit = 100000
+	src := flacWithComments()
+
+	plan, err := mustParseBytes(t, src).Edit().Set(tag.Comment, numberedValues(limit)...).Prepare()
+	if err != nil {
+		t.Fatalf("%d comments: %v", limit, err)
+	}
+	if got, _ := mustParseBytes(t, applyToBytes(t, src, plan)).Get(tag.Comment); len(got) != limit {
+		t.Errorf("read back %d comments, want %d", len(got), limit)
+	}
+
+	_, err = mustParseBytes(t, src).Edit().Set(tag.Comment, numberedValues(limit+1)...).Prepare()
+	if !errors.Is(err, waxerr.ErrContentTooLarge) {
+		t.Errorf("%d comments: err = %v, want ErrContentTooLarge", limit+1, err)
+	}
+
+	over := flacWithComments(append([]string{"TITLE=old"}, slices.Repeat([]string{"C=v"}, limit)...)...)
+	raised := wl.WithLimits(wl.Limits{MaxElements: 2 * limit})
+	doc, err := wl.Parse(context.Background(), wl.BytesSource(over), raised)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err = doc.Edit().Set(tag.Title, "new").Prepare()
+	if err != nil {
+		t.Fatalf("an edit that adds no comment to a file holding %d: %v", limit+1, err)
+	}
+	var out writerTo
+	if _, _, err := plan.Execute(context.Background(), wl.WriteTo(&out, wl.BytesSource(over))); err != nil {
+		t.Fatalf("writing it: %v", err)
+	}
+	if _, err := doc.Edit().Set(tag.Artist, "one more").Prepare(); !errors.Is(err, waxerr.ErrContentTooLarge) {
+		t.Errorf("one more comment than the file held: err = %v, want ErrContentTooLarge", err)
+	}
+}
+
+// A comment block past the 24-bit block length is refused as content too large for the format, not
+// as a damaged file.
+func TestFLACCommentBlockSizeLimit(t *testing.T) {
+	_, err := mustParseBytes(t, flacWithComments("TITLE=x")).Edit().Set(tag.Lyrics, strings.Repeat("la ", 6<<20)).Prepare()
+	if !errors.Is(err, waxerr.ErrContentTooLarge) {
+		t.Errorf("an 18 MiB comment block: err = %v, want ErrContentTooLarge", err)
+	}
+}
+
+// A write holds no more metadata blocks than a reader with default limits takes.
+func TestFLACBlockCountLimit(t *testing.T) {
+	const limit = 100000
+	// STREAMINFO, the comment block, APPLICATION blocks and one PADDING block: limit blocks in all.
+	blocks := [][]byte{testfile.CommentBlock("test", "TITLE=x")}
+	for len(blocks) < limit-2 {
+		blocks = append(blocks, testfile.FLACBlock(2, []byte("test")))
+	}
+	src := testfile.FLAC(append(blocks, testfile.FLACBlock(1, make([]byte, 64)))...)
+	doc := mustParseBytes(t, src)
+
+	plan, err := doc.Edit().Set(tag.Title, "y").Prepare()
+	if err != nil {
+		t.Fatalf("an edit that adds no block: %v", err)
+	}
+	if got := mustParseBytes(t, applyToBytes(t, src, plan)).Fields().Title; got != "y" {
+		t.Errorf("title = %q, want y", got)
+	}
+	_, err = doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
+	if !errors.Is(err, waxerr.ErrContentTooLarge) {
+		t.Errorf("a block past the limit: err = %v, want ErrContentTooLarge", err)
+	}
+}
+
+// A field name no other reader takes for the key (a space at its edge, a letter outside ASCII) is
+// reported and left alone: the key reads as unset, and setting it writes the real field beside it.
+func TestFLACNonConformingFieldNameStaysOpaque(t *testing.T) {
+	for _, name := range []string{" ALBUM", "ALBUM ", "ALBUMſ", "albıum"} {
+		src := flacWithComments(name+"=theirs", "TITLE=x")
+		doc := mustParseBytes(t, src)
+		if v, ok := doc.Get(tag.Album); ok {
+			t.Errorf("%q read as ALBUM %q", name, v)
+		}
+		if !hasWarning(doc, wl.WarnInvalidTagKey) {
+			t.Errorf("%q: no invalid-tag-key warning in %v", name, doc.Warnings())
+		}
+		plan, err := doc.Edit().Set(tag.Album, "ours").Prepare()
+		if err != nil {
+			t.Fatalf("%q: %v", name, err)
+		}
+		out := applyToBytes(t, src, plan)
+		for _, want := range []string{name + "=theirs", "ALBUM=ours"} {
+			if !bytes.Contains(out, []byte(want)) {
+				t.Errorf("%q: output lacks %q", name, want)
+			}
+		}
+		if got := mustParseBytes(t, out).Fields().Album; got != "ours" {
+			t.Errorf("%q: ALBUM reads back %q, want ours", name, got)
+		}
+	}
+}
+
+// A comment that is not valid UTF-8 reads with U+FFFD in place of the invalid bytes, is reported,
+// and keeps its bytes through an edit of another key and an edit of its own key that keeps it.
+func TestVorbisInvalidUTF8ValueIsReportedAndKept(t *testing.T) {
+	const raw = "TITLE=caf\xe9"
+	for name, src := range map[string][]byte{
+		"FLAC":     flacWithComments(raw, "ALBUM=A"),
+		"Ogg FLAC": testfile.OggFLAC(testfile.CommentBlock("test", raw, "ALBUM=A")),
+	} {
+		doc := mustParseBytes(t, src)
+		if got := doc.Fields().Title; got != "caf\uFFFD" {
+			t.Errorf("%s: TITLE = %q, want the substitution", name, got)
+		}
+		keyed := false
+		for _, w := range doc.Warnings() {
+			keyed = keyed || w.Code == wl.WarnInvalidText && slices.Equal(w.Keys, []tag.Key{tag.Title})
+		}
+		if !keyed {
+			t.Errorf("%s: no invalid-text warning keyed TITLE in %v", name, doc.Warnings())
+		}
+		if !lintHasCode(doc, "invalid-text") {
+			t.Errorf("%s: lint does not report invalid-text", name)
+		}
+		for edit, ed := range map[string]*wl.Editor{
+			"another key":      doc.Edit().Add(tag.Artist, "Band"),
+			"a value added":    doc.Edit().Add(tag.Title, "second"),
+			"the same value":   doc.Edit().Set(tag.Title, "caf\uFFFD", "second"),
+			"a comment beside": doc.Edit().Set(tag.Comment, "note"),
+		} {
+			plan, err := ed.Prepare()
+			if err != nil {
+				t.Fatalf("%s, %s: %v", name, edit, err)
+			}
+			if out := applyToBytes(t, src, plan); !bytes.Contains(out, []byte(raw)) {
+				t.Errorf("%s, %s: the write lost the bytes of %q", name, edit, raw)
+			}
+		}
+	}
+}
+
+// An owned comment that no projector reads (a chapter time that does not parse and its title, a
+// repeated chapter, an untimed or second SYNCEDLYRICS) is reported, survives an unrelated edit,
+// and goes with a clear of its kind or of its name. The write happens though no tag, chapter or
+// synced lyric changes and the padding takes up the freed bytes.
+func TestVorbisUnreadOwnedCommentsAreReportedAndCleared(t *testing.T) {
+	entries := []string{
+		"TITLE=x",
+		"CHAPTER001=bogus", "CHAPTER001NAME=Intro",
+		"CHAPTER002=00:00:01.000", "CHAPTER002=00:00:05.000", "CHAPTER002NAME=Verse",
+		"SYNCEDLYRICS=[00:01.00]sung", "SYNCEDLYRICS=just words",
+		"METADATA_BLOCK_PICTURE=not~base64",
+	}
+	const junkChapters, junkLyrics, junkPicture = "CHAPTER001=bogus", "SYNCEDLYRICS=just words", "METADATA_BLOCK_PICTURE=not~base64"
+	for name, src := range map[string][]byte{
+		"FLAC":     testfile.FLAC(testfile.CommentBlock("test", entries...), testfile.FLACBlock(1, make([]byte, 1024))),
+		"Ogg FLAC": testfile.OggFLAC(testfile.CommentBlock("test", entries...)),
+	} {
+		doc := mustParseBytes(t, src)
+		if n := countWarnings(doc, wl.WarnMalformedTagEntry); n != 2 {
+			t.Errorf("%s: %d malformed-tag-entry warnings in %v, want one for the chapters and one for the lyrics", name, n, doc.Warnings())
+		}
+		if chs := doc.Chapters(); len(chs) != 1 || chs[0].Start != 5*time.Second || chs[0].Title != "Verse" {
+			t.Errorf("%s: chapters = %+v, want the one readable chapter", name, chs)
+		}
+
+		for edit, tc := range map[string]struct {
+			ed            *wl.Editor
+			gone          []string // what the write removes
+			warnsDropped  bool
+			chapters, lrc int // what a re-read holds
+		}{
+			"an unrelated edit":         {ed: doc.Edit().Set(tag.Artist, "Band"), chapters: 1, lrc: 1},
+			"the chapters cleared":      {ed: doc.Edit().ClearChapters(), gone: []string{junkChapters, "CHAPTER001NAME", "CHAPTER002"}, lrc: 1},
+			"the synced lyrics cleared": {ed: doc.Edit().ClearSyncedLyrics(), gone: []string{junkLyrics, "SYNCEDLYRICS"}, chapters: 1},
+			"a chapter's name cleared":  {ed: doc.Edit().Clear("CHAPTER001"), gone: []string{junkChapters}, chapters: 1, lrc: 1},
+			"a title's name cleared":    {ed: doc.Edit().Clear("CHAPTER001NAME"), gone: []string{"CHAPTER001NAME"}, chapters: 1, lrc: 1},
+			"a repeat's name cleared":   {ed: doc.Edit().Clear("CHAPTER002"), gone: []string{"CHAPTER002=00:00:01.000"}, chapters: 1, lrc: 1},
+			"the lyrics name cleared":   {ed: doc.Edit().Clear("SYNCEDLYRICS"), gone: []string{junkLyrics}, chapters: 1, lrc: 1},
+			"the pictures cleared":      {ed: doc.Edit().ClearPictures(), gone: []string{junkPicture}, chapters: 1, lrc: 1},
+			"the picture name cleared":  {ed: doc.Edit().Clear("METADATA_BLOCK_PICTURE"), gone: []string{junkPicture}, chapters: 1, lrc: 1},
+			"a picture added":           {ed: doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}), chapters: 1, lrc: 1},
+			"the chapters replaced": {ed: doc.Edit().SetChapters(wl.Chapter{Start: 2 * time.Second, Title: "New"}),
+				gone: []string{junkChapters, "CHAPTER001NAME", "CHAPTER002=00:00:01.000"}, warnsDropped: true, chapters: 1, lrc: 1},
+		} {
+			plan, err := tc.ed.Prepare()
+			if err != nil {
+				t.Fatalf("%s, %s: %v", name, edit, err)
+			}
+			if plan.IsNoOp() {
+				t.Errorf("%s, %s: the plan is a no-op", name, edit)
+				continue
+			}
+			report := plan.Report()
+			if hasOp := slices.ContainsFunc(report.Operations, func(op string) bool { return strings.Contains(op, "unread") }); hasOp != (len(tc.gone) > 0 && !tc.warnsDropped) {
+				t.Errorf("%s, %s: operations = %q", name, edit, report.Operations)
+			}
+			if got := hasWarn(report.Warnings, wl.WarnMalformedTagEntryDropped); got != tc.warnsDropped {
+				t.Errorf("%s, %s: malformed-tag-entry-dropped warned = %v, want %v (%v)", name, edit, got, tc.warnsDropped, report.Warnings)
+			}
+			out := applyToBytes(t, src, plan)
+			for _, junk := range []string{junkChapters, "CHAPTER001NAME=Intro", "CHAPTER002=00:00:01.000", junkLyrics, junkPicture} {
+				wantGone := slices.ContainsFunc(tc.gone, func(g string) bool { return strings.HasPrefix(junk, g) })
+				if gone := !bytes.Contains(out, []byte(junk)); gone != wantGone {
+					t.Errorf("%s, %s: %q gone = %v, want %v", name, edit, junk, gone, wantGone)
+				}
+			}
+			re := mustParseBytes(t, out)
+			if len(re.Chapters()) != tc.chapters || len(re.SyncedLyrics()) != tc.lrc {
+				t.Errorf("%s, %s: re-read %d chapter(s) and %d synced lyrics, want %d and %d", name, edit, len(re.Chapters()), len(re.SyncedLyrics()), tc.chapters, tc.lrc)
+			}
+			if name == "FLAC" && edit != "a picture added" && len(out) != len(src) {
+				t.Errorf("%s, %s: the write changed the file size (%d -> %d); the padding should take up the difference", name, edit, len(src), len(out))
+			}
+		}
+	}
+}
+
+// A key with a space at its edge, which only a hand-built Key can be, is not written to a Vorbis
+// comment under a name nothing reads back: the plan says so, with or without padding to reuse.
+func TestVorbisKeyWithEdgeWhitespaceIsDroppedWithAWarning(t *testing.T) {
+	for name, src := range map[string][]byte{
+		"FLAC":            flacWithComments("TITLE=x"),
+		"FLAC no padding": testfile.FLAC(testfile.CommentBlock("test", "TITLE=x")),
+		"Ogg FLAC":        testfile.OggFLAC(testfile.CommentBlock("test", "TITLE=x")),
+	} {
+		plan, err := mustParseBytes(t, src).Edit().Set(tag.Key(" EDGE"), "v").Prepare()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !hasWarn(plan.Report().Warnings, wl.WarnValueDropped) {
+			t.Errorf("%s: no value-dropped warning in %v", name, plan.Report().Warnings)
+		}
+		if out := applyToBytes(t, src, plan); bytes.Contains(out, []byte("EDGE")) {
+			t.Errorf("%s: the write holds the key under a name nothing reads", name)
+		}
+	}
+}
+
+// A chapter added beside one whose title holds invalid bytes keeps those bytes.
+func TestVorbisChapterEditKeepsInvalidUTF8Title(t *testing.T) {
+	src := flacWithComments("CHAPTER001=00:00:00.000", "CHAPTER001NAME=Intr\xf6")
+	doc := mustParseBytes(t, src)
+	plan, err := doc.Edit().SetChapters(append(doc.Chapters(), wl.Chapter{Start: time.Second, Title: "Two"})...).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, src, plan)
+	if !bytes.Contains(out, []byte("CHAPTER001NAME=Intr\xf6")) || !bytes.Contains(out, []byte("CHAPTER002NAME=Two")) {
+		t.Error("the chapter edit did not keep the stored title bytes beside the new chapter")
+	}
+}
+
+// Clearing the pictures also removes a PICTURE block that does not decode, which a picture added
+// beside it keeps.
+func TestClearPicturesRemovesAnUnreadablePictureBlock(t *testing.T) {
+	bad := testfile.FLACBlock(6, []byte{0, 0, 0, 3, 1, 2})
+	for name, src := range map[string][]byte{
+		"FLAC":     testfile.FLAC(testfile.CommentBlock("test", "TITLE=x"), bad, testfile.FLACBlock(1, make([]byte, 64))),
+		"Ogg FLAC": testfile.OggFLAC(testfile.CommentBlock("test", "TITLE=x"), bad),
+	} {
+		doc := mustParseBytes(t, src)
+		if !hasWarning(doc, wl.WarnInvalidPicture) {
+			t.Fatalf("%s: setup: no invalid-picture warning in %v", name, doc.Warnings())
+		}
+		for edit, tc := range map[string]struct {
+			ed       *wl.Editor
+			gone     bool
+			pictures int
+		}{
+			"cleared":           {doc.Edit().ClearPictures(), true, 0},
+			"cleared and added": {doc.Edit().ClearPictures().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}), true, 1},
+			"added":             {doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}), false, 1},
+			"an unrelated edit": {doc.Edit().Set(tag.Artist, "Band"), false, 0},
+		} {
+			plan, err := tc.ed.Prepare()
+			if err != nil {
+				t.Fatalf("%s, %s: %v", name, edit, err)
+			}
+			if plan.IsNoOp() {
+				t.Errorf("%s, %s: the plan is a no-op", name, edit)
+				continue
+			}
+			if hasOp := slices.ContainsFunc(plan.Report().Operations, func(op string) bool { return strings.Contains(op, "unreadable PICTURE") }); hasOp != tc.gone {
+				t.Errorf("%s, %s: operations = %q", name, edit, plan.Report().Operations)
+			}
+			re := mustParseBytes(t, applyToBytes(t, src, plan))
+			if gone := !hasWarning(re, wl.WarnInvalidPicture); gone != tc.gone || len(re.Pictures()) != tc.pictures {
+				t.Errorf("%s, %s: unreadable block gone = %v with %d picture(s), want %v with %d", name, edit, gone, len(re.Pictures()), tc.gone, tc.pictures)
+			}
+		}
+	}
+}
+
+// A copy puts the source's pictures in place of the destination's without having been asked to
+// clear anything, so a cover comment and a PICTURE block the destination holds unread stay.
+func TestTransferKeepsUnreadablePictures(t *testing.T) {
+	src := mustParseBytes(t, coverBearingFLAC(t, "Source"))
+	for name, dst := range map[string][]byte{
+		"FLAC": testfile.FLAC(testfile.CommentBlock("test", "TITLE=x", "METADATA_BLOCK_PICTURE=not~base64"),
+			testfile.FLACBlock(6, []byte{0, 0, 0, 3, 1, 2}), testfile.FLACBlock(1, make([]byte, 64))),
+		"Ogg FLAC": testfile.OggFLAC(testfile.CommentBlock("test", "TITLE=x", "METADATA_BLOCK_PICTURE=not~base64"),
+			testfile.FLACBlock(6, []byte{0, 0, 0, 3, 1, 2})),
+	} {
+		plan, _, err := src.PrepareTransfer(mustParseBytes(t, dst))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		out := applyToBytes(t, dst, plan)
+		re := mustParseBytes(t, out)
+		if n := countWarnings(re, wl.WarnInvalidPicture); n != 2 || !bytes.Contains(out, []byte("METADATA_BLOCK_PICTURE=not~base64")) {
+			t.Errorf("%s: %d invalid-picture warning(s) after the copy, want the comment and the block kept: %v", name, n, re.Warnings())
+		}
+		if len(re.Pictures()) != 1 {
+			t.Errorf("%s: %d picture(s) after the copy, want the source's cover", name, len(re.Pictures()))
+		}
+	}
+}
+
+// An edit that is discarded writes nothing, however the padding policy would resize the file's
+// padding on a write: more padding than the policy's cap is cut only by a write that has
+// something else to do, or that was asked for the padding, and the plan then names the cut.
+func TestFLACDiscardedEditDoesNotRewriteToResizePadding(t *testing.T) {
+	for name, pad := range map[string][]byte{
+		"more padding than the cap": testfile.FLACBlock(1, make([]byte, 4<<20)),
+		"no padding":                nil,
+	} {
+		blocks := [][]byte{testfile.CommentBlock("test", "TITLE=x")}
+		if pad != nil {
+			blocks = append(blocks, pad)
+		}
+		src := testfile.FLAC(blocks...)
+		doc := mustParseBytes(t, src)
+
+		plan, err := doc.Edit().Set("CHAPTER005", "x").Prepare()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !plan.IsNoOp() || !hasWarn(plan.Report().Warnings, wl.WarnValueDropped) {
+			t.Errorf("%s: a discarded edit plans a write: no-op %v, operations %q, warnings %v", name,
+				plan.IsNoOp(), plan.Report().Operations, plan.Report().Warnings)
+		}
+
+		// The padding asked for is a change of its own.
+		plan, err = doc.Edit().Set("CHAPTER005", "x").Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 2048, Min: 2048, Max: 2048}))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if plan.IsNoOp() || plan.Report().PaddingAfter != 2048 {
+			t.Errorf("%s: padding asked for with a discarded edit: no-op %v, padding %d", name, plan.IsNoOp(), plan.Report().PaddingAfter)
+		}
+	}
+
+	// A real edit of the padded file cuts the padding to the cap and says so.
+	src := testfile.FLAC(testfile.CommentBlock("test", "TITLE=x"), testfile.FLACBlock(1, make([]byte, 4<<20)))
+	plan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "y").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ops := plan.Report().Operations; !slices.Contains(ops, "padding 4194304 -> 1048576") {
+		t.Errorf("operations = %q, want the padding cut named", ops)
 	}
 }

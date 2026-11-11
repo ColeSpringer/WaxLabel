@@ -95,3 +95,14 @@ func wavPackWithAPE(t *testing.T, items ...[2]string) []byte {
 	out = append(out, body...)
 	return append(out, rec(hasHeader)...)
 }
+
+// An APE item that is not valid UTF-8 reads as Latin-1, and lint reports it as dump does.
+func TestLintReportsInvalidTextInAPE(t *testing.T) {
+	doc := mustParseBytes(t, wavPackWithAPE(t, [2]string{"Title", "caf\xe9"}))
+	if !hasWarning(doc, wl.WarnInvalidText) {
+		t.Fatalf("no invalid-text warning in %v", doc.Warnings())
+	}
+	if !lintHasCode(doc, "invalid-text") {
+		t.Errorf("lint does not report invalid-text: %v", doc.Lint())
+	}
+}

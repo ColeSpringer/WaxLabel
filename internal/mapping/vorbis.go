@@ -3,7 +3,11 @@
 // Most keys are identity; value is read-side aliases ([tag.AliasKey]) and writePreferred.
 package mapping
 
-import "github.com/colespringer/waxlabel/tag"
+import (
+	"strings"
+
+	"github.com/colespringer/waxlabel/tag"
+)
 
 // Read-side aliases live in [tag.AliasKey]; native bytes are preserved.
 
@@ -12,10 +16,16 @@ var writePreferred = map[tag.Key]string{
 	tag.RecordingDate: "DATE",
 }
 
-// CanonicalVorbis maps a native Vorbis field name to its canonical key. Unknown names pass
-// through uppercased.
+// CanonicalVorbis maps a native Vorbis field name to its canonical key: ASCII letters uppercased
+// and aliases folded, an unknown name otherwise as spelled. A name with a byte outside ASCII or
+// whitespace at an edge is no key's spelling and maps to "", which is no valid key: trimming it,
+// or folding its case as Unicode does (a dotless i, a long s), would read a field there that no
+// other reader of the file sees.
 func CanonicalVorbis(name string) tag.Key {
-	norm := normalizeKey(name)
+	if name != strings.TrimSpace(name) || strings.ContainsFunc(name, func(r rune) bool { return r >= 0x80 }) {
+		return ""
+	}
+	norm := strings.ToUpper(name)
 	if k, ok := tag.AliasKey(norm); ok {
 		return k
 	}

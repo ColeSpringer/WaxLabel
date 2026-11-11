@@ -45,6 +45,7 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "Vorbis comment", Fidelity: "lossless",
+		Constraints: []string{vorbis.CommentCountConstraint()},
 	}
 	pictures := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,

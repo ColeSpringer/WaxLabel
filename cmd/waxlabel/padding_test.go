@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -112,6 +113,40 @@ func TestPaddingPresetsApplyAlone(t *testing.T) {
 			}
 			if after := sizeOf(t, f); after != before {
 				t.Errorf("--preset preserve changed size on a %s: %d -> %d", state.name, before, after)
+			}
+		})
+	}
+}
+
+// TestReusedPaddingIsCappedAtTheMax: a padding region larger than the policy's 1 MiB cap shrinks
+// to the cap on the next write, under the default policy and a preset; --padding N has no cap.
+func TestReusedPaddingIsCappedAtTheMax(t *testing.T) {
+	t.Parallel()
+	const seeded = 4 << 20
+	for name, tc := range map[string]struct {
+		args []string
+		want func(int64) bool
+	}{
+		"the default":  {[]string{"--set", "TITLE=Capped"}, func(p int64) bool { return p == 1<<20 }},
+		"compatible":   {[]string{"--preset", "compatible"}, func(p int64) bool { return p == 1<<20 }},
+		"--padding N":  {[]string{"--padding", "4096", "--set", "TITLE=Kept"}, func(p int64) bool { return p > seeded-1024 }},
+		"--no-padding": {[]string{"--no-padding"}, func(p int64) bool { return p == 0 }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := copyFixture(t, sampleFLAC)
+			if _, errb, code := runCLI(t, "set", f, "--padding", strconv.Itoa(seeded)); code != 0 {
+				t.Fatalf("seeding: exit %d, %s", code, errb)
+			}
+			if _, errb, code := runCLI(t, append([]string{"set", f}, tc.args...)...); code != 0 {
+				t.Fatalf("exit %d, %s", code, errb)
+			}
+			var got int64
+			if p := dumpJSON(t, f).Properties; p != nil {
+				got = p.PaddingBytes
+			}
+			if !tc.want(got) {
+				t.Errorf("padding after the write = %d", got)
 			}
 		})
 	}

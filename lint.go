@@ -115,7 +115,7 @@ func lintWarnings(ws []core.Warning) []Finding {
 			core.WarnInheritedEncoder, core.WarnInvalidPicture, core.WarnTruncatedAudio,
 			core.WarnInvalidTagKey, core.WarnChainedStream, core.WarnTrailingBytes,
 			core.WarnOversizedChunk, core.WarnMalformedTagEntry, core.WarnTrailingLyrics3,
-			core.WarnLeadingBytes, core.WarnPageGap:
+			core.WarnLeadingBytes, core.WarnPageGap, core.WarnInvalidText:
 			out = append(out, Finding{Severity: LintWarning, Code: w.Code.String(), Message: w.Message})
 		case core.WarnMultipleVorbisComment, core.WarnDuplicateTagBlock, core.WarnNoAudioFrames:
 			out = append(out, Finding{Severity: LintError, Code: w.Code.String(), Message: w.Message})

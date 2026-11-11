@@ -122,6 +122,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 		}
 		d.vendor = vendor
 		d.comments = comments
+		d.origCommentCount = len(comments)
 	}
 
 	// Legacy tags into family entries (not canonical), the tail's then the leading ID3v2's; conflicts
@@ -134,12 +135,12 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	media.Families = append(media.Families, leading...)
 	media.LegacyOpaqueContent = media.LegacyOpaqueContent || leadingOpaque || d.flacStart > int64(len(d.leadingID3))
 	warnings = slices.Concat(warnings, tailWarnings, walkWarnings, vcWarnings)
-	media.Chapters = projectChapters(d.comments)
-	var syncedWarnings []core.Warning
-	media.SyncedLyrics, syncedWarnings = projectSyncedLyricsReport(d.comments)
-	warnings = append(warnings, syncedWarnings...)
-	warnings = append(warnings, encoderNoiseWarnings(d.vendor, d.comments)...)
-	warnings = append(warnings, invalidKeyWarnings(d.comments)...)
+	owned := vorbis.ProjectOwned(d.comments)
+	media.Chapters, media.SyncedLyrics = owned.Chapters, owned.SyncedLyrics
+	warnings = append(warnings, vorbis.EncoderNoise(d.vendor, d.comments)...)
+	warnings = append(warnings, vorbis.InvalidKeyWarnings(d.comments)...)
+	warnings = append(warnings, vorbis.InvalidTextWarnings(d.comments)...)
+	warnings = append(warnings, owned.Warnings...)
 
 	// Malformed picture: warn, skip from Media.Pictures, keep raw body for re-emit.
 	for _, b := range d.blocks {
@@ -191,7 +192,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 func extractCommentPictures(comments []comment, limit int64) (kept []comment, pics []core.Picture, ws []core.Warning) {
 	has := false
 	for _, cm := range comments {
-		if vorbis.IsPictureComment(cm.name) {
+		if vorbis.IsPictureComment(cm.Name) {
 			has = true
 			break
 		}
@@ -201,12 +202,12 @@ func extractCommentPictures(comments []comment, limit int64) (kept []comment, pi
 	}
 	kept = make([]comment, 0, len(comments))
 	for _, cm := range comments {
-		if !vorbis.IsPictureComment(cm.name) {
+		if !vorbis.IsPictureComment(cm.Name) {
 			kept = append(kept, cm)
 			continue
 		}
 		// Shared with Ogg so decode and invalid-base64 wording stay aligned.
-		pic, err := vorbis.DecodePictureComment(cm.value, limit)
+		pic, err := vorbis.DecodePictureComment(cm.Value, limit)
 		if err != nil {
 			ws = core.Warn(ws, core.WarnInvalidPicture, err.Error())
 			kept = append(kept, cm)

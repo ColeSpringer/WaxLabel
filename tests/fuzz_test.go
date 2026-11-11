@@ -167,6 +167,17 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x004\x12\x00\x00\x00\x00\x00\x00\x16\xbb\xdb\t\x01\x13OpusHead\x01\x02\x00\x00\x80\xbb\x00\x00\x00\x00\x00OggS\x00\x00\xc0\x03\x00\x00\x00\x00\x00\x004\x12\x00\x00\x01\x00\x00\x00\xe3K\x9c\x11\x02\x10\nOpusTags\x00\x00\x00\x00\x00\x00\x00\x00AUDIOPKT!!"))
 	f.Add([]byte{})
 	f.Add(flacCommentPictureSeed()) // FLAC with a base64 METADATA_BLOCK_PICTURE comment (regression)
+	// Owned comments nothing reads: a time that does not parse, a repeated chapter, a stray title,
+	// an untimed and a second SYNCEDLYRICS, a cover comment that is not base64.
+	f.Add(flacWithComments("CHAPTER001=bogus", "CHAPTER001NAME=Intro", "CHAPTER002=00:00:01.000", "CHAPTER002=00:00:05.000",
+		"CHAPTER009NAME=Stray", "SYNCEDLYRICS=just words", "SYNCEDLYRICS=[00:01.00]sung", "SYNCEDLYRICS=[00:02.00]again",
+		"METADATA_BLOCK_PICTURE=not~base64"))
+	// A cover comment without its base64 padding, and one with a line break behind it.
+	cover := commentPictureValue(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()})
+	f.Add(flacWithComments("METADATA_BLOCK_PICTURE="+strings.TrimRight(cover, "="), "METADATA_BLOCK_PICTURE="+cover+"\n"))
+	// Values and a chapter title that are not valid UTF-8, and names that are no key's spelling.
+	f.Add(flacWithComments("TITLE=caf\xe9", "TITLE=second", "CHAPTER001=00:00:00.000", "CHAPTER001NAME=Intr\xf6",
+		"t\u0131tle=dotless", " ALBUM=padded", "GENRE =trail", "\u017fYNCEDLYRICS=long s"))
 	if b, err := os.ReadFile(notagsMP3); err == nil {
 		// Comment and lyrics frames with descriptions, a shared, an undefined and a garbage language.
 		f.Add(append(testfile.ID3v2(4, commFrame(4, "eng", "", "a\x00b"), commFrame(4, "eng", "", "c"), commFrame(4, "XXX", "d", "e"),

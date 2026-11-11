@@ -103,7 +103,9 @@ func (t *Transfer) Prepare(dst *Document, opts ...WriteOption) (*Plan, TransferR
 		representable, _, _ := core.PartitionRepresentable(caps.Pictures, core.ClonePictures(m.Pictures))
 		representable, _, _ = core.PartitionPictureSlots(caps.Pictures, representable)
 		if len(representable) > 0 {
-			ed.ClearPictures()
+			// The source's pictures take the place of the destination's. That is no ClearPictures:
+			// nobody asked for the pictures the destination holds unread to go.
+			ed.dropPictures()
 			for _, p := range representable {
 				ed.AddPicture(p)
 			}

@@ -140,12 +140,12 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		Pictures: d.pictures,
 	}
 	media.Tags, media.Families = vorbis.Project(d.comments)
-	media.Chapters = vorbis.ProjectChapters(d.comments)
-	var syncedWarnings []core.Warning
-	media.SyncedLyrics, syncedWarnings = vorbis.ProjectSyncedLyricsReport(d.comments)
-	warnings = append(warnings, syncedWarnings...)
+	owned := vorbis.ProjectOwned(d.comments)
+	media.Chapters, media.SyncedLyrics = owned.Chapters, owned.SyncedLyrics
 	warnings = append(warnings, vorbis.EncoderNoise(d.vendor, d.comments)...)
 	warnings = append(warnings, vorbis.InvalidKeyWarnings(d.comments)...)
+	warnings = append(warnings, vorbis.InvalidTextWarnings(d.comments)...)
+	warnings = append(warnings, owned.Warnings...)
 	// Recorded above only for a clean single stream; a chained file's tail is other
 	// streams, which chained-stream already reports.
 	warnings = core.WarnTrailing(warnings, d.trailingLen, "after the Ogg stream", "")
@@ -354,6 +354,7 @@ func (d *doc) decodeComments(pkt []byte, limit int64, maxElements int, warnings 
 		return err
 	}
 	d.vendor = vendor
+	d.origCommentCount = len(comments)
 	// Preserve trailing bytes after the comment list: Opus comment-header padding
 	// (RFC 7845 section 5.2). For Vorbis the next byte is the framing bit, which the
 	// writer re-adds, so there is nothing to preserve there.

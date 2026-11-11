@@ -37,14 +37,8 @@ type block struct {
 
 func (b block) clone() block { return block{code: b.code, body: slices.Clone(b.body)} }
 
-// comment is one Vorbis "NAME=value" entry. Name spelling is kept for unedited
-// comments. unseparated marks an entry with no "=": empty name, value holds the
-// entry bytes verbatim (see [vorbis.Comment]).
-type comment struct {
-	name        string
-	value       string
-	unseparated bool
-}
+// comment is one Vorbis "NAME=value" entry ([vorbis.Comment]), shared with the Ogg mapping.
+type comment = vorbis.Comment
 
 // doc is the parsed FLAC native document. Implements [core.NativeDoc].
 type doc struct {
@@ -54,6 +48,9 @@ type doc struct {
 	blocks   []block   // all metadata blocks, in original order
 	vendor   string    // Vorbis comment vendor string
 	comments []comment // decoded Vorbis comments, in order (picture comments stripped)
+	// origCommentCount: how many comments the block was read holding, the covers decoded out of
+	// it among them. The write-side count check floors at it.
+	origCommentCount int
 	// commentPictures: covers from base64 METADATA_BLOCK_PICTURE comments (Ogg-style
 	// in FLAC). Stripped from comments and projected into Media.Pictures; on a
 	// metadata rewrite the writer emits them as native PICTURE blocks so a tag-only
@@ -82,12 +79,13 @@ func (d *doc) Format() core.Format { return core.FormatFLAC }
 // Clone deep-copies the document so Document accessors stay detached.
 func (d *doc) Clone() core.NativeDoc {
 	c := &doc{
-		leadingID3:      slices.Clone(d.leadingID3),
-		leadingUnread:   d.leadingUnread,
-		vendor:          d.vendor,
-		comments:        slices.Clone(d.comments),
-		commentPictures: core.ClonePictures(d.commentPictures),
-		streamInfo:      d.streamInfo,
+		leadingID3:       slices.Clone(d.leadingID3),
+		leadingUnread:    d.leadingUnread,
+		vendor:           d.vendor,
+		comments:         slices.Clone(d.comments),
+		origCommentCount: d.origCommentCount,
+		commentPictures:  core.ClonePictures(d.commentPictures),
+		streamInfo:       d.streamInfo,
 		// so a picture edit on the clone still re-appends undecodable blocks
 		malformedPictureBlocks: cloneByteSlices(d.malformedPictureBlocks),
 		dupContent:             slices.Clone(d.dupContent),
@@ -137,10 +135,10 @@ func (d *doc) Describe() []core.NativeEntry {
 	return append(out, d.layout.Entries("FLAC frames")...)
 }
 
-// PaddingBytes is the reusable padding region for in-place rewrite (PaddingAfter).
-// Not a sum of PADDING bodies: rewrite drops source PADDING and fills the same
-// region, so k blocks collapse and k-1 headers become payload. Budget the whole
-// region through paddingBlocks so the plan matches the writer.
+// PaddingBytes is the padding the file holds, counted as a rewrite that keeps the region
+// refills it: the source PADDING blocks collapse into as few as the region needs, so with k
+// blocks k-1 headers become payload. It is what dump shows and a plan with nothing to do
+// reports. A rewrite keeps less of it where the policy's Max is smaller.
 func (d *doc) PaddingBytes() int64 {
 	budget := 0
 	for _, b := range d.blocks {

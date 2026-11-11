@@ -196,6 +196,43 @@ All notable changes to this project are documented here.
   resetting it to `eng`. An ID3 write of several LYRICS values keeps each one a description or
   language tells apart and warns `value-dropped` for the rest, instead of writing only the
   first without saying so.
+- A FLAC or Ogg write that would hold more than 100,000 Vorbis comments (an Ogg cover's comment
+  among them), or a FLAC or Ogg FLAC more metadata blocks than a reader takes, is refused as
+  `content-too-large` (exit 3) instead of failing its read-back as `invalid-data`; a file read
+  under a raised `MaxElements` keeps the count it holds. A comment block past the 24-bit block
+  length, or an Ogg comment header past the allocation limit that no cover the edit adds accounts
+  for, is `content-too-large` too. `caps` states the comment limit.
+- A Vorbis field name with a byte outside ASCII or whitespace at an edge (`tıtle`, ` ALBUM`) is
+  left alone and reported (`invalid-tag-key`, whose message now quotes the name in every format)
+  instead of read as the key that Unicode case folding or trimming made of it, which no other
+  reader sees there and an edit then rewrote under that name; setting the key writes the real
+  field beside it. `SYNCEDLYRICS` and `METADATA_BLOCK_PICTURE` match in ASCII case only. A
+  hand-built `tag.Key` with a space at its edge warns `value-dropped` there instead of being
+  written under a name nothing reads back.
+- A Vorbis comment that is not valid UTF-8 warns `invalid-text`, naming the key, and keeps its
+  bytes when an edit of that key keeps the value, which was rewritten with U+FFFD in their place;
+  a chapter title keeps its bytes through a chapter edit likewise. `lint` reports `invalid-text`
+  in every format.
+- `CHAPTERxxx` and `SYNCEDLYRICS` comments that do not read (a time that does not parse, a repeated
+  chapter, a title with no time, an untimed or second `SYNCEDLYRICS`) are reported
+  (`malformed-tag-entry`), and they and a cover comment that does not decode are removed by
+  `--clear-chapters`, `--clear-synced-lyrics`, `--remove-pictures` or a `--clear` of their
+  exact name, listed as an operation; nothing could remove them. `--remove-pictures`
+  (`ClearPictures`) also removes a FLAC PICTURE block that does not decode, which a picture added
+  beside it still keeps. Chapters or synced lyrics set over unread ones warn
+  `malformed-tag-entry-dropped` (`--strict` refuses). The note for such a `--clear` says what the
+  name holds in FLAC and Ogg.
+- A `METADATA_BLOCK_PICTURE` comment whose base64 lacks its padding reads as the cover.
+- An edit that is discarded (every change dropped with a warning) no longer rewrites a FLAC only
+  to give it the padding it lacks; it writes nothing, as in the other formats.
+- A size refusal whose size and limit round alike prints both byte counts (`16.0 MiB (16777258
+  bytes), max 16.0 MiB (16777215 bytes)`) instead of `16.0 MiB (max 16.0 MiB)`.
+- Padding figures agree: a FLAC padding-only plan counts from the padding `dump` shows (`padding
+  8192 -> 0`, was 8196), and a plan with nothing to do reports the file's padding in JSON
+  `paddingAfter` instead of 0. Padding no option sizes (an Opus comment header's, a WAV or AIFF
+  ID3 chunk's, which `dump` now shows) prints `(preserved)` in a plan, without the hint to
+  `--padding`.
+- `--add-cover` puts the new front cover where the old one stood instead of last.
 
 ### Changed
 
@@ -239,8 +276,9 @@ All notable changes to this project are documented here.
   `TIT2`, `TXXX`) is stored as a `TXXX` frame of that name and reads back unchanged, instead of
   writing that frame (`--set TBPM=128` read back as BPM); `TCMP` reads back as COMPILATION, the
   spelling ffmpeg writes. `USLT` is an alias of LYRICS on every format.
-- `PaddingPolicy.Max` also caps the padding an MP3 or ADTS front tag reuses in place, so a rewrite
-  shrinks a tag with more free space than that (1 MiB by default).
+- `PaddingPolicy.Max` also caps the padding an MP3 or ADTS front tag or a FLAC reuses in place, so
+  a rewrite shrinks one with more free space than that (1 MiB by default) to it; `--padding N`
+  sets no cap. A FLAC plan lists the cut (`padding 4194304 -> 1048576`).
 - The `comment-description-dropped` warning is gone: every ID3 comment frame keeps its own
   description and language through an edit. A described `USLT` frame reads as LYRICS, and
   lyrics told apart by description or language no longer lint `single-valued-multi`. A WAV or
@@ -273,6 +311,8 @@ All notable changes to this project are documented here.
   format cannot say of it. `diff` compares them where both formats store them, `dump` prints
   them after the value, `caps` lists them, and JSON `dump` and `diff` gain `comments` and
   `lyrics`.
+- `Editor.ReplacePictures(match, p)` puts a picture in place of the ones a predicate selects,
+  keeping the order of the rest.
 
 ## [1.8.0]
 

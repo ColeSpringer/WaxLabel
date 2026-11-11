@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/testfile"
@@ -20,5 +21,21 @@ func TestOversizedPictureIsAWriteRefusal(t *testing.T) {
 	}
 	if got := decodeJSONOne[jsonErrorEntry](t, stdout).Error.Code; got != "picture-too-large" {
 		t.Errorf("machine code = %q, want %q", got, "picture-too-large")
+	}
+}
+
+// TestTooManyCommentsIsAWriteRefusal: more comments than a reader takes is exit 3 content-too-large.
+func TestTooManyCommentsIsAWriteRefusal(t *testing.T) {
+	t.Parallel()
+	args := []string{"set", "--json", copyFixture(t, sampleFLAC)}
+	for i := range 100001 {
+		args = append(args, "--add", "COMMENT="+strconv.Itoa(i))
+	}
+	stdout, stderr, code := runCLI(t, args...)
+	if code != 3 {
+		t.Fatalf("exit = %d, want 3\n%s\n%s", code, stdout, stderr)
+	}
+	if got := decodeJSONOne[jsonErrorEntry](t, stdout).Error.Code; got != "content-too-large" {
+		t.Errorf("machine code = %q, want %q", got, "content-too-large")
 	}
 }

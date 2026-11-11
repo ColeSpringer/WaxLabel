@@ -74,6 +74,10 @@ type doc struct {
 	malformedPictureBlocks [][]byte       // PICTURE bodies that failed to decode, preserved
 	commentPictures        []core.Picture // covers found as METADATA_BLOCK_PICTURE comments
 
+	// origCommentCount: how many comments the comment header was read holding, the covers
+	// decoded out of it among them. The write-side count check floors at it.
+	origCommentCount int
+
 	// origCommentPacketLen: parsed comment packet length. Write floors its size guard here
 	// so data already readable under the parse limit stays writable under a lower write limit.
 	origCommentPacketLen int64

@@ -78,11 +78,15 @@ type WritePlan struct {
 	Result *Media
 }
 
-// NoOpPlan builds unchanged write plan (SaveBack skips; SaveAsFile still writes file).
+// NoOpPlan builds unchanged write plan (SaveBack skips; SaveAsFile still writes file). The
+// padding it reports is what result, the file as parsed, holds.
 func NoOpPlan(report WriteReport, size int64, result *Media) *WritePlan {
 	report.NoOp = true
 	report.BytesAfter = size
 	report.Operations = []string{"no changes"}
+	if p, ok := result.Native.(PaddingReporter); ok {
+		report.PaddingAfter = p.PaddingBytes()
+	}
 	return &WritePlan{
 		Segments: []bits.Segment{bits.Copy(0, size)},
 		NoOp:     true,

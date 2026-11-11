@@ -137,6 +137,18 @@ func (d *doc) containerName() string {
 
 func (d *doc) Format() core.Format { return core.FormatWAV }
 
+// PaddingBytes is the padding inside the id3 chunk's tag, which a rewrite keeps while the frames
+// fit and no option sizes.
+func (d *doc) PaddingBytes() int64 { return id3.FrontTagPadding(d.id3) }
+
+// id3ChunkLen is the body length of the chunk the tag was read from, 0 with no such chunk.
+func (d *doc) id3ChunkLen() int64 {
+	if d.id3Idx < 0 {
+		return 0
+	}
+	return d.chunks[d.id3Idx].bodyLen
+}
+
 // Clone deep-copies the document so Document accessors stay detached.
 func (d *doc) Clone() core.NativeDoc {
 	c := *d

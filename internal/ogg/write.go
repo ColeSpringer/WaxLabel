@@ -28,9 +28,16 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 
 	changed := vorbis.DiffKeys(base.Tags, edited.Tags)
 	tagsChanged := len(changed) > 0
-	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
-	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
-	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
+	// An explicit clear, or a cleared name, also removes what the file holds unread: owned
+	// comments nothing reads and, in the FLAC mapping, PICTURE blocks that did not decode.
+	unread := vorbis.PlanUnread(d.comments, len(d.malformedPictureBlocks), edited.Tags, opts,
+		!core.EqualChapters(base.Chapters, edited.Chapters), !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics))
+	chaptersChanged, syncedLyricsChanged := unread.ChaptersChanged, unread.LyricsChanged
+	// coversChanged is the edit's own change to the covers; picturesChanged also counts the
+	// blocks a clear takes.
+	coversChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
+	picturesChanged := coversChanged || unread.DropBlocks
+	unreadRemoved := unread.Removes()
 	// Vendor neutralization bypasses no-op even if comments are unchanged.
 	newVendor, vendorChanged := vorbis.NeutralizeVendor(d.vendor, opts.StripEncoderStamp)
 	// The output gain lives in the OpusHead, outside the comment header, so no tag,
@@ -42,7 +49,7 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 
 	// NoOp: full copy for SaveAsFile/WriteTo; SaveBack skips. Before chained/alignment
 	// guards. Chapters/synced-lyrics-only edits must defeat this gate too.
-	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !vendorChanged && !gainChanged {
+	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !vendorChanged && !gainChanged && !unreadRemoved {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
@@ -59,16 +66,16 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 
 	// Gain-only: rebuild page 0; copy everything after original page 0 (comment/audio
 	// byte-identical; no header re-pagination).
-	if gainChanged && !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !vendorChanged {
+	if gainChanged && !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !vendorChanged && !unreadRemoved {
 		return gainOnlyPlan(edited, d, gain, report), nil
 	}
 
 	// Rebuild comments: tags, owned chapters/synced lyrics, then picture comments.
 	newComments := d.comments
-	commentsChanged := tagsChanged || chaptersChanged || syncedLyricsChanged
+	commentsChanged := tagsChanged || chaptersChanged || syncedLyricsChanged || len(unread.Comments) != len(d.comments)
 	var rebuildInfo vorbis.RebuildInfo
 	if commentsChanged {
-		newComments, rebuildInfo = vorbis.Rebuild(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged, edited.SyncedLyrics, syncedLyricsChanged)
+		newComments, rebuildInfo = vorbis.Rebuild(unread.Comments, edited.Tags, changed, edited.Chapters, chaptersChanged, edited.SyncedLyrics, syncedLyricsChanged)
 		report.Operations = append(report.Operations, "Vorbis comment rewrite")
 	}
 	if chaptersChanged && len(edited.Chapters) > 0 {
@@ -82,18 +89,25 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// One METADATA_BLOCK_PICTURE per picture (stored MIME, not sniffed). Clone only when
 	// appending; otherwise aliasing newComments is safe.
 	full := newComments
+	var coverBytes int64 // what the covers add to the comment header
 	if d.kind != kindFLAC && len(edited.Pictures) > 0 {
 		full = slices.Clone(newComments)
 		for _, p := range edited.Pictures {
-			full = append(full, vorbis.Comment{
+			cm := vorbis.Comment{
 				Name:  vorbis.PictureComment,
 				Value: base64.StdEncoding.EncodeToString(vorbis.RenderPicture(p)),
-			})
+			}
+			full = append(full, cm)
+			coverBytes += int64(4 + len(cm.Name) + 1 + len(cm.Value))
 		}
+	}
+	if err := vorbis.CheckCommentCount(len(full), d.origCommentCount); err != nil {
+		return nil, err
 	}
 	if picturesChanged {
 		report.Operations = append(report.Operations, fmt.Sprintf("pictures: %d", len(edited.Pictures)))
 	}
+	report.Operations = append(report.Operations, unread.Ops...)
 	if vendorChanged {
 		report.Operations = append(report.Operations, "vendor stamp neutralized")
 	}
@@ -111,11 +125,15 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	page0Len := d.page0Len
 	var tailPackets [][]byte
 	if d.kind == kindFLAC {
-		newBlocks, dupDropped := rebuildFLACBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged || vendorChanged, picturesChanged)
+		newBlocks, dupDropped := rebuildFLACBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged || vendorChanged, picturesChanged, !unread.DropBlocks)
 		if dupDropped {
 			flacDupContent = d.dupContent
 		}
 		if err := checkFLACBlockSizes(newBlocks); err != nil {
+			return nil, err
+		}
+		// The reader's cap counts the identification packet with the blocks.
+		if err := vorbis.CheckBlockCount(len(newBlocks)+1, len(d.flacBlocks)+1); err != nil {
 			return nil, err
 		}
 		tailPackets = flacHeaderPackets(newBlocks)
@@ -137,12 +155,21 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 			report.Operations = append(report.Operations, "OpusHead output gain rewrite")
 		}
 	}
-	// Per-packet guard on re-read (Vorbis/Opus: comment; FLAC: each metadata packet).
+	// Per-packet guard on re-read (Vorbis/Opus: comment; FLAC: each metadata packet). A cover is
+	// what is too large when the packet is its block, or a comment header that fits without the
+	// covers an edit of the covers gave it; a header the edit grew beside covers it left alone is
+	// content, like anything else.
 	for _, pkt := range tailPackets {
-		if int64(len(pkt)) > limit {
-			return nil, fmt.Errorf("%w: Ogg %s is %s (max %s; raise the write allocation limit to keep it)",
-				waxerr.ErrPictureTooLarge, headerPacketName(d.kind, pkt), bits.HumanBytes(int64(len(pkt))), bits.HumanBytes(limit))
+		if int64(len(pkt)) <= limit {
+			continue
 		}
+		class := waxerr.ErrContentTooLarge
+		if d.kind == kindFLAC && pkt[0]&0x7F == flacBlkPicture || d.kind != kindFLAC && coversChanged && int64(len(pkt))-coverBytes <= limit {
+			class = waxerr.ErrPictureTooLarge
+		}
+		got, max := bits.SizeOverLimit(int64(len(pkt)), limit)
+		return nil, fmt.Errorf("%w: Ogg %s is %s, max %s (raise the write allocation limit to keep it)",
+			class, headerPacketName(d.kind, pkt), got, max)
 	}
 
 	// Re-paginate the header tail (everything after the BOS id page).
@@ -188,14 +215,16 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 
 	// Clamp warnings before DowngradeNoOp; clamp keeps result != base.
 	report.Warnings = vorbis.RebuildWarnings(report.Warnings, rebuildInfo)
+	report.Warnings = append(report.Warnings, unread.Warnings...)
 
 	result := buildResult(edited, d, newComments, shift)
 	// Only the first Vorbis comment block survives; warn when an extra held content the
 	// written set does not, matching native FLAC.
 	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "Vorbis comment block", base.Tags, result.Tags, flacDupContent)
 	// Downgrade catches rebuild drops (e.g. empty strings). Vendor/gain are structural
-	// so a combined drop is not collapsed to a no-op that keeps the old gain.
-	if np := core.DowngradeNoOp(d.format, edited.Identity.Size, base, result, len(vorbis.DiffKeys(base.Tags, result.Tags)) == 0, vendorChanged || gainChanged, report.Warnings); np != nil {
+	// so a combined drop is not collapsed to a no-op that keeps the old gain, and so are
+	// the unread comments and unreadable blocks an edit removes, which no projection shows.
+	if np := core.DowngradeNoOp(d.format, edited.Identity.Size, base, result, len(vorbis.DiffKeys(base.Tags, result.Tags)) == 0, vendorChanged || gainChanged || unreadRemoved, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{

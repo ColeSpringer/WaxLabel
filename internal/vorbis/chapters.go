@@ -1,18 +1,21 @@
 package vorbis
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
 // Chapters use the CHAPTERxxx convention (foobar2000; FLAC and Ogg). Structured
 // chapters (start+title), not custom tags. Replaced only by a chapter edit;
-// otherwise preserved including malformed. CUESHEET preserved but not projected.
+// otherwise preserved, a malformed one too until a clear of the chapters or of its
+// name removes it (owned.go). CUESHEET preserved but not projected.
 //
 // Write: 1-based 3-digit (CHAPTER001). Read: any digit count, 0- or 1-based.
 
@@ -66,19 +69,24 @@ func isChapterComment(name string) bool {
 	return ok
 }
 
-// ProjectChapters decodes the CHAPTERxxx/CHAPTERxxxNAME comments into a chapter list
-// sorted by start. A comment with no parseable timestamp contributes no chapter. A
-// stray CHAPTERxxxNAME with no CHAPTERxxx is not a chapter but is still owned:
-// unrelated edits preserve it, chapter edits replace it. Returns nil when none.
-func ProjectChapters(comments []Comment) []core.Chapter {
+// chapterRead is a chapter as read, with the comments it came from.
+type chapterRead struct {
+	core.Chapter
+	timeAt, titleAt int // indices of the comments read; titleAt is -1 for a chapter with no title
+}
+
+// readChapters decodes the CHAPTERxxx/CHAPTERxxxNAME comments into chapters sorted by start: of
+// the comments sharing a number the last readable time and the last title are read, a title only
+// where a time is. With owned given it marks every chapter comment the chapters did not come
+// from, so what is reported unread is what this reader passed over.
+func readChapters(comments []Comment, owned []unreadKind) []chapterRead {
 	type entry struct {
-		start    time.Duration
-		title    string
-		hasStart bool
+		start           time.Duration
+		timeAt, titleAt int
 	}
 	byIndex := map[int]*entry{}
 	var order []int
-	for _, cm := range comments {
+	for i, cm := range comments {
 		if cm.Unseparated {
 			continue // no name to match the CHAPTERxxx convention against
 		}
@@ -86,30 +94,89 @@ func ProjectChapters(comments []Comment) []core.Chapter {
 		if !ok {
 			continue
 		}
+		if owned != nil {
+			owned[i] = unreadChapter
+		}
 		e := byIndex[idx]
 		if e == nil {
-			e = &entry{}
+			e = &entry{timeAt: -1, titleAt: -1}
 			byIndex[idx] = e
 			order = append(order, idx)
 		}
 		if isTitle {
-			e.title = core.SanitizeUTF8(cm.Value)
+			e.titleAt = i
 		} else if d, ok := parseChapterTime(cm.Value); ok {
-			e.start, e.hasStart = d, true
+			e.start, e.timeAt = d, i
 		}
 	}
 	slices.Sort(order)
-	var chs []core.Chapter
+	var chs []chapterRead
 	for _, idx := range order {
-		if e := byIndex[idx]; e.hasStart {
-			chs = append(chs, core.Chapter{Start: e.start, Title: e.title})
+		e := byIndex[idx]
+		if e.timeAt < 0 {
+			continue
 		}
+		ch := chapterRead{Chapter: core.Chapter{Start: e.start}, timeAt: e.timeAt, titleAt: e.titleAt}
+		if e.titleAt >= 0 {
+			ch.Title = core.SanitizeUTF8(comments[e.titleAt].Value)
+		}
+		if owned != nil {
+			owned[e.timeAt] = unreadNone
+			if e.titleAt >= 0 {
+				owned[e.titleAt] = unreadNone
+			}
+		}
+		chs = append(chs, ch)
 	}
 	// Sort by start so an out-of-order source (CHAPTER001 later than CHAPTER002)
 	// projects in time order and a load->store round-trip is a no-op; the index order
 	// above breaks ties for equal-start chapters.
-	core.SortChaptersByStart(chs)
+	slices.SortStableFunc(chs, func(a, b chapterRead) int { return cmp.Compare(a.Start, b.Start) })
 	return chs
+}
+
+// ProjectChapters decodes the CHAPTERxxx/CHAPTERxxxNAME comments into a chapter list
+// sorted by start. A comment with no parseable timestamp contributes no chapter. A
+// stray CHAPTERxxxNAME with no CHAPTERxxx is not a chapter but is still owned:
+// unrelated edits preserve it, chapter edits replace it. Returns nil when none.
+func ProjectChapters(comments []Comment) []core.Chapter {
+	return chaptersOf(readChapters(comments, nil))
+}
+
+func chaptersOf(read []chapterRead) []core.Chapter {
+	if len(read) == 0 {
+		return nil
+	}
+	chs := make([]core.Chapter, len(read))
+	for i, ch := range read {
+		chs[i] = ch.Chapter
+	}
+	return chs
+}
+
+// restoreTitles returns chapters with each title that an invalid-UTF-8 title in orig reads as
+// given the bytes orig stores: those of the chapter starting where it starts, else those of the
+// next such chapter in start order (a chapter that was moved).
+func restoreTitles(orig []Comment, chapters []core.Chapter) []core.Chapter {
+	var stored []storedValue
+	for _, ch := range readChapters(orig, nil) {
+		if ch.titleAt >= 0 && !utf8.ValidString(orig[ch.titleAt].Value) {
+			stored = append(stored, storedValue{at: int64(ch.Start), raw: orig[ch.titleAt].Value, text: ch.Title})
+		}
+	}
+	if len(stored) == 0 {
+		return chapters
+	}
+	titles := make([]string, len(chapters))
+	for i, ch := range chapters {
+		titles[i] = ch.Title
+	}
+	titles = restoreStored(stored, titles, func(i int) int64 { return int64(chapters[i].Start) })
+	out := slices.Clone(chapters)
+	for i := range out {
+		out[i].Title = titles[i]
+	}
+	return out
 }
 
 // chapterComments renders a chapter list as CHAPTERxxx (+ optional CHAPTERxxxNAME)

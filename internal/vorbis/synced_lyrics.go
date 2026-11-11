@@ -2,59 +2,82 @@ package vorbis
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
 // Synced lyrics: one SYNCEDLYRICS comment with an LRC document (foobar2000;
 // FLAC and Ogg). Structured, not a custom tag. Replaced only by a synced-lyrics
-// edit; otherwise preserved including malformed. LRC has no language/descriptor.
+// edit; otherwise preserved, a malformed one too until a clear of the synced lyrics
+// or of its name removes it (owned.go). LRC has no language/descriptor.
 
 // syncedLyricsName is the comment name owning the LRC document.
 const syncedLyricsName = "SYNCEDLYRICS"
 
 // isSyncedLyricsComment reports whether a comment name is the owned synced-lyrics comment,
 // so [Project] can exclude it from the generic tag view and [Rebuild] can drop it on a
-// synced-lyrics edit. The match is case-insensitive, like the chapter-comment check.
+// synced-lyrics edit. The match takes any ASCII case, like the chapter-comment check.
 func isSyncedLyricsComment(name string) bool {
-	return strings.EqualFold(name, syncedLyricsName)
+	return equalFoldASCII(name, syncedLyricsName)
+}
+
+// equalFoldASCII reports whether name is upper, an uppercase ASCII name, in any ASCII case.
+// Unicode case folding would also match a long s or a Kelvin sign, which no other reader of the
+// file takes for the name.
+func equalFoldASCII(name, upper string) bool {
+	if len(name) != len(upper) {
+		return false
+	}
+	for i := range len(name) {
+		c := name[i]
+		if c >= 'a' && c <= 'z' {
+			c -= 'a' - 'A'
+		}
+		if c != upper[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// readSyncedLyrics finds the SYNCEDLYRICS comment that is read, the first holding a timed line
+// (the LRC store holds one set): its index, -1 for none, its lines, and whether the document
+// held more lines than the cap. A value with no timed line is passed over so that a later one
+// can be read. With owned given it marks every SYNCEDLYRICS comment but the one read.
+func readSyncedLyrics(comments []Comment, owned []unreadKind) (at int, lines []core.SyncedLine, truncated bool) {
+	at = -1
+	for i, cm := range comments {
+		if cm.Unseparated || !isSyncedLyricsComment(cm.Name) {
+			continue
+		}
+		if at < 0 {
+			// LRC carries no language or descriptor; only the timed lines survive.
+			if l, cut := core.ParseLRCReport(core.SanitizeUTF8(cm.Value)); len(l) > 0 {
+				at, lines, truncated = i, l, cut
+				continue
+			}
+		}
+		if owned != nil {
+			owned[i] = unreadLyrics
+		}
+	}
+	return at, lines, truncated
 }
 
 // ProjectSyncedLyrics decodes the first SYNCEDLYRICS comment holding a parseable LRC
-// document into one synced-lyrics set (the LRC store holds one). A value with no timed
-// line is skipped so a later valid one can project, but every SYNCEDLYRICS comment is
-// owned: unrelated edits preserve them, a synced-lyrics edit replaces them. Returns nil
-// when none carries timed lines.
+// document into one synced-lyrics set (the LRC store holds one). Every SYNCEDLYRICS comment
+// is owned: unrelated edits preserve them, a synced-lyrics edit replaces them. Returns nil
+// when none carries timed lines. The parse sites use [ProjectOwned], which also reports.
 func ProjectSyncedLyrics(comments []Comment) []core.SyncedLyrics {
-	sets, _ := ProjectSyncedLyricsReport(comments)
-	return sets
+	_, lines, _ := readSyncedLyrics(comments, nil)
+	return syncedLyricsOf(lines)
 }
 
-// ProjectSyncedLyricsReport is [ProjectSyncedLyrics] plus a [core.WarnSyncedLyricsTruncated]
-// when the LRC document exceeded the line cap and lines past it were dropped on read. The
-// FLAC and Ogg parse paths use it; the write re-projection uses [ProjectSyncedLyrics].
-func ProjectSyncedLyricsReport(comments []Comment) ([]core.SyncedLyrics, []core.Warning) {
-	for _, cm := range comments {
-		if cm.Unseparated {
-			continue // no name to match the SYNCEDLYRICS convention against
-		}
-		if !isSyncedLyricsComment(cm.Name) {
-			continue
-		}
-		lines, truncated := core.ParseLRCReport(core.SanitizeUTF8(cm.Value))
-		if len(lines) == 0 {
-			continue
-		}
-		// LRC carries no language or descriptor; only the timed lines survive.
-		var ws []core.Warning
-		if truncated {
-			ws = []core.Warning{{Code: core.WarnSyncedLyricsTruncated,
-				Message: fmt.Sprintf("a SYNCEDLYRICS comment carried more than %d synced-lyric lines; the lines past the limit were dropped on read", core.MaxSyncedLines)}}
-		}
-		return []core.SyncedLyrics{{Lines: lines}}, ws
+func syncedLyricsOf(lines []core.SyncedLine) []core.SyncedLyrics {
+	if len(lines) == 0 {
+		return nil
 	}
-	return nil, nil
+	return []core.SyncedLyrics{{Lines: lines}}
 }
 
 // syncedLyricsComments renders the first set's lines as one SYNCEDLYRICS comment in LRC
