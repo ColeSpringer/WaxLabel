@@ -1,6 +1,7 @@
 package aiff
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -75,6 +76,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// corrupt-then-valid ID3 pair.
 	commFound := false
 	var id3Idxs []int
+	var hidden int64 // bytes behind the NUL that ends a text chunk's value
 	for i := range d.chunks {
 		ch := d.chunks[i]
 		switch {
@@ -94,10 +96,17 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 				return nil, err
 			}
 			d.textIdx = append(d.textIdx, i)
-			d.texts = append(d.texts, textItem{id: ch.id, raw: textValue(body)})
+			value, tail := textValue(body)
+			d.texts = append(d.texts, textItem{id: ch.id, raw: value, tail: tail})
+			hidden += tail
 		case isID3Chunk(ch.id4()):
 			id3Idxs = append(id3Idxs, i)
 		}
+	}
+
+	if hidden > 0 {
+		warnings = core.Warn(warnings, core.WarnMalformedTagEntry, fmt.Sprintf(
+			"%d byte(s) follow the NUL that ends a native text chunk's value; kept until an edit rewrites that chunk", hidden))
 	}
 
 	// The first ID3 chunk that parses and holds frames is authoritative, else the first that
@@ -117,6 +126,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	if pick >= 0 {
 		d.id3, d.id3Idx = picked, id3Idxs[pick]
+		warnings = id3.WarnBehind(warnings, d.id3)
 		for k, i := range id3Idxs {
 			if k != pick {
 				d.chunks[i].dupTag, d.chunks[i].dupID3 = true, digests[k]
@@ -301,14 +311,13 @@ func isTextChunk(id string) bool {
 // isID3Chunk reports whether a chunk identifier holds an embedded ID3v2 tag.
 func isID3Chunk(id string) bool { return id == "ID3 " || id == "id3 " }
 
-// textValue extracts a native text chunk's value: the run up to the first NUL (AIFF
-// text chunks are commonly NUL-padded). Cutting there keeps an interior NUL from
-// truncating an ID3 text frame when the value is promoted to the ID3 chunk.
-func textValue(body []byte) []byte {
-	for i, b := range body {
-		if b == 0 {
-			return slices.Clone(body[:i])
-		}
+// textValue splits a native text chunk's body at its first NUL: the value ahead of it, which
+// keeps an interior NUL from truncating an ID3 text frame the value is promoted to, and the count
+// of the bytes behind it unless they are all zero, the padding such chunks commonly carry.
+func textValue(body []byte) (value []byte, tail int64) {
+	value, rest, _ := bytes.Cut(body, []byte{0})
+	if len(bytes.TrimRight(rest, "\x00")) > 0 {
+		tail = int64(len(rest))
 	}
-	return slices.Clone(body)
+	return slices.Clone(value), tail
 }

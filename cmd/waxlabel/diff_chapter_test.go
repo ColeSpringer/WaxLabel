@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -26,10 +27,23 @@ func diffChaptersChanged(t *testing.T, a, b string) bool {
 	return jd.Chapters.Changed
 }
 
+// xingMP3 is n zero-filled MPEG-1 Layer III frames (128 kbps, 44.1 kHz, 1152 samples each) whose
+// Xing header counts them and states no encoder delay.
+func xingMP3(n int) []byte {
+	out := make([]byte, 0, n*417)
+	for range n {
+		f := make([]byte, 417)
+		copy(f, []byte{0xFF, 0xFB, 0x90, 0x00})
+		out = append(out, f...)
+	}
+	copy(out[36:], "Xing") // past the header and the 32 bytes of stereo side information
+	out[43] = 1            // frame count present
+	binary.BigEndian.PutUint32(out[44:], uint32(n))
+	return out
+}
+
 // TestDiffChaptersReconstructableIdentical: diff ignores reconstructable end differences (Finding 7).
 func TestDiffChaptersReconstructableIdentical(t *testing.T) {
-	notagsMP3 := filepath.Join("..", "..", "testdata", "notags.mp3")
-
 	// M4B gapless interior ends reconstruct from next start; FLAC stores start+title only.
 	t.Run("m4b copied to flac", func(t *testing.T) {
 		dst := copyFixture(t, notagsFLAC)
@@ -41,10 +55,13 @@ func TestDiffChaptersReconstructableIdentical(t *testing.T) {
 		}
 	})
 
-	// Truncate path: notags.mp3 duration is 2037.551 ms; trailing end must floor to 2037 ms
+	// Truncate path: 78 frames play 2037.551 ms; trailing end must floor to 2037 ms
 	// before compare, not use raw float duration.
 	t.Run("id3 vs flac, non-whole-ms duration", func(t *testing.T) {
-		mp3 := copyFixture(t, notagsMP3)
+		mp3 := filepath.Join(t.TempDir(), "frames.mp3")
+		if err := os.WriteFile(mp3, xingMP3(78), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		flac := copyFixture(t, notagsFLAC)
 		for _, f := range []string{mp3, flac} {
 			if _, _, code := runCLI(t, "set", f, "--add-chapter", "0=A", "--add-chapter", "0.5=B", "--add-chapter", "1=C"); code != 0 {
@@ -106,7 +123,7 @@ func TestDiffChaptersGenuineEndStillDiffers(t *testing.T) {
 	t.Run("trailing end before EOF", func(t *testing.T) {
 		early := chapteredDoc(t, notagsMP3,
 			wl.Chapter{Start: 0, Title: "A"},
-			wl.Chapter{Start: 500 * time.Millisecond, End: 800 * time.Millisecond, Title: "B"}, // ends at 800ms, EOF ~2037ms
+			wl.Chapter{Start: 500 * time.Millisecond, End: 800 * time.Millisecond, Title: "B"}, // ends at 800ms, EOF at 2000ms
 		)
 		toEOF := chapteredDoc(t, notagsMP3,
 			wl.Chapter{Start: 0, Title: "A"},

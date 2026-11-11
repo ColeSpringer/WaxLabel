@@ -88,6 +88,21 @@ func TestPaddingNotePerFormat(t *testing.T) {
 	if _, errb, _ := runCLI(t, "set", wav, "--no-padding", "-o", filepath.Join(t.TempDir(), "o.wav")); !strings.Contains(errb, "does not apply to WAV") {
 		t.Errorf("WAV --no-padding should note it does not apply:\n%s", errb)
 	}
+	// The note holds for a WAV whose id3 chunk has padding: a rewrite under the flag keeps it.
+	padded := filepath.Join(t.TempDir(), "padded.wav")
+	chunk := testfile.WAVChunk("id3 ", testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T"), make([]byte, 64)))
+	if err := os.WriteFile(padded, testfile.WAV(testfile.WAVFmtPCM(), chunk, testfile.WAVData(4000)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, errb, code := runCLI(t, "set", padded, "--set", "TITLE=Tx", "--no-padding"); code != 0 || !strings.Contains(errb, "has no effect") {
+		t.Fatalf("exit %d, stderr %q; want the note", code, errb)
+	}
+	out, _, _ := runCLI(t, "--json", "dump", "--native", padded)
+	for _, n := range decodeJSONOne[jsonDocument](t, out).Native {
+		if n.Kind == "id3 chunk" && n.Size != len(chunk)-8 {
+			t.Errorf("the id3 chunk is %d bytes under --no-padding, want the %d it had", n.Size, len(chunk)-8)
+		}
+	}
 	// MP3 honors padding flags; no "does not apply" or "no effect" note.
 	for _, flags := range [][]string{{"--no-padding"}, {"--padding", "30000"}} {
 		args := append([]string{"set", copyFixture(t, sampleMP3)}, flags...)

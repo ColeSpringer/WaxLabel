@@ -94,10 +94,42 @@ func TestReuseInPlaceCountsTheGroupByte(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ft := RenderFrontTag(tg, major, tg.Frames(), RebuildInfo{}, core.DefaultPadding, int64(len(src)),
-			tg, false, false, 0, false, 0, false, 0)
+		ft := RenderFrontTag(FrontTagEdit{SrcTag: tg, Front: tg, Version: major, Frames: tg.Frames(),
+			Padding: core.DefaultPadding, SrcTagLen: int64(len(src))})
 		if len(ft.Bytes) != len(src) || ft.Padding != 100 {
 			t.Errorf("v2.%d: rendered %d bytes with %d of padding, want the %d-byte region with 100", major, len(ft.Bytes), ft.Padding, len(src))
+		}
+	}
+}
+
+// With bytes between the front tags and the first frame, a tag left without frames is still
+// written, padded as the policy sizes any tag; the operation is named only when the tag held
+// something.
+func TestRenderFrontTagKeepsAnEmptyTagAheadOfAGap(t *testing.T) {
+	held, err := ParseTag(wrapTag(4, 0, rawFrame(4, "TIT2", []byte("\x00T"))), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	none, emptied := core.PaddingPolicy{}, []string{"ID3v2 emptied (kept: 3 byte(s) precede the first frame)"}
+	for _, c := range []struct {
+		name   string
+		front  *Tag
+		gap    int64
+		policy core.PaddingPolicy
+		bytes  int
+		ops    []string
+	}{
+		{"a tag that held a frame keeps its room", held, 3, core.DefaultPadding, 22, emptied},
+		{"no padding asked for", held, 3, none, 10, emptied},
+		{"padding asked for", held, 3, core.PaddingPolicy{Target: 100, Min: 100, ReuseInPlace: true}, 110, emptied},
+		{"a tag already empty", NewEmpty(4), 3, core.DefaultPadding, 22, nil},
+		{"no gap", held, 0, core.DefaultPadding, 0, []string{"ID3v2 removal"}},
+		{"no tag", nil, 3, core.DefaultPadding, 0, nil},
+	} {
+		ft := RenderFrontTag(FrontTagEdit{SrcTag: NewEmpty(4), Front: c.front, Version: 4, Padding: c.policy,
+			SrcTagLen: 22, Gap: c.gap, TagsChanged: true})
+		if len(ft.Bytes) != c.bytes || !slices.Equal(ft.Operations, c.ops) || (ft.Tag != nil) != (c.bytes > 0) || ft.Padding != int64(max(c.bytes-10, 0)) {
+			t.Errorf("%s: %d byte(s), padding %d, operations %v; want %d and %v", c.name, len(ft.Bytes), ft.Padding, ft.Operations, c.bytes, c.ops)
 		}
 	}
 }

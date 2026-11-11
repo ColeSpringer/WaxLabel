@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"slices"
-	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
@@ -32,8 +31,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
 	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
 	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
-	// LegacyStrip consolidates tags into the ID3 chunk by dropping the native ones.
-	stripText := opts.Legacy == core.LegacyStrip && textPresent
+	// LegacyStrip consolidates tags into the ID3 chunk: it drops the native chunks and never
+	// creates one.
+	legacyStrip := opts.Legacy == core.LegacyStrip
+	stripText := legacyStrip && textPresent
 	// Keys whose text chunks this write re-renders: those whose value moved plus those
 	// the edit named outright. Setting the already-projected value is how a caller
 	// resolves a chunk the ID3 chunk disagrees with.
@@ -51,17 +52,18 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// or lyrics' description and language (ID3 CHAP/CTOC and SYLT frames, COMM/USLT fields)
 	// force an ID3 chunk, since native text cannot store them.
 	needID3 := id3Present || len(edited.Pictures) > 0 || len(edited.Chapters) > 0 || len(edited.SyncedLyrics) > 0 ||
-		id3.NeedsTextFrames(edited) || !textRepresentable(edited.Tags, changed) || stripText
+		id3.NeedsTextFrames(edited) || !textRepresentable(edited.Tags, changed) || legacyStrip
 	writeText := (textPresent && !stripText) || !needID3
 
-	// Build the new native text chunks (changed keys re-rendered; everything else verbatim).
-	var newText []outChunk
+	// Each native text chunk's fate: a changed key's re-rendered, every other kept whole. The
+	// zero plan drops them all, as a strip does.
+	tp := textPlan{at: make([]textDecision, len(d.texts))}
 	if writeText {
-		newText = rebuildText(d.texts, edited.Tags, changed)
+		tp = rebuildText(d.texts, edited.Tags, changed)
 	}
 	// An explicit set of a key whose text chunk disagreed with the projection changes the
 	// chunks while leaving the canonical set as it was; it must defeat both no-op gates.
-	textRewrite := writeText && textPresent && !equalTextChunks(newText, d.texts)
+	textRewrite := writeText && textPresent && tp.rewrites()
 
 	// Fast path: nothing changed. NoOpPlan emits a verbatim copy flagged NoOp, so
 	// SaveAsFile/WriteTo still produce a whole file and SaveBack skips it. A chapters-
@@ -114,8 +116,13 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	// An empty container is not emitted (no point writing a header-only chunk);
 	// this also lets a full clear drop the container.
-	emitText := writeText && len(newText) > 0
+	emitText := tp.holds()
 	emitID3 := needID3 && newID3 != nil && len(newID3.Frames()) > 0
+	// A chunk whose frames the edit leaves alone is copied whole, padding included.
+	id3Kept := id3.ChunkKept(d.id3, newID3)
+	if id3Kept {
+		newID3 = d.id3
+	}
 
 	// When both native text chunks and ID3 are emitted, any multi-valued key backed by a
 	// single-valued text chunk keeps its full set only in ID3.
@@ -123,15 +130,15 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags, changed)...)
 	}
 
-	outs, ops, dropped, staleDropped := planChunks(d, newText, newID3, emitText, emitID3, stripText, textBytesChange(d, newText))
+	outs, ops, dropped, staleDropped := planChunks(d, tp, newID3, emitText, emitID3, id3Kept, stripText)
 
 	segs, lay, err := assemble(d, outs)
 	if err != nil {
 		return nil, err
 	}
 	report.Operations = ops
-	// Only a chunk this plan writes can have a conflict resolved in it; a strip or a full
-	// clear drops the chunks outright.
+	// A conflict is resolved only in chunks the output holds, whichever side the edit moved;
+	// a strip or a full clear drops the chunks outright.
 	if emitText {
 		for _, k := range textConflictKeys(base.Families, changed) {
 			report.Operations = append(report.Operations, "native text chunk conflict resolved ("+string(k)+")")
@@ -148,14 +155,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		// LegacyStrip moves the native values into the ID3 chunk, but a value the projection
 		// did not select has no canonical key to carry it: dropping the chunks destroys it.
 		// doc.go requires a warning for such a loss.
-		if keys := strippedTextKeys(base.Families, edited.Tags); len(keys) > 0 {
-			names := make([]string, len(keys))
-			for i, k := range keys {
-				names[i] = string(k)
-			}
-			report.Warnings = core.Warn(report.Warnings, core.WarnLegacyStripDropped,
-				core.StripDroppedMessage("native text chunks", []string{"values the canonical set does not carry (" + strings.Join(names, ", ") + ")"}))
+		if keys := core.StrippedFamilyKeys(base.Families, core.FamilyAIFF, edited.Tags); len(keys) > 0 {
+			report.Warnings = core.WarnKeyed(report.Warnings, core.WarnLegacyStripDropped,
+				core.StripDroppedMessage("native text chunks", []string{core.StrippedValuesLost(keys)}), keys...)
 		}
+	}
+	if n := tp.lostTail(d.texts); n > 0 {
+		report.Warnings = core.Warn(report.Warnings, core.WarnMalformedTagEntryDropped, fmt.Sprintf(
+			"%d byte(s) after the NUL that ends a native text chunk's value are not carried into the rewritten file", n))
 	}
 	if id3Info.UsedV23Multi {
 		report.Operations = append(report.Operations, "v2.3 multi-value NUL-separated storage")
@@ -167,7 +174,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 	report.BytesAfter = lay.total
 
-	result := buildResult(edited, d, newText, newID3, lay)
+	result := buildResult(edited, d, newID3, lay)
 	// Surface ID3 rebuild losses the bytes cannot show. AIFF's native text chunks store
 	// no dates, so a v2.3 ID3 date drop or reduction is a file-level loss.
 	var written []id3.Frame
@@ -185,7 +192,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			"the ID3 chunk that could not be read is replaced by the rewritten one and its contents are not carried")
 	}
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, id3Info, result.Tags)
-	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3, emitID3)
+	if !id3Kept {
+		report.Warnings = id3.AppendChunkDropped(report.Warnings, d.id3, emitID3)
+	}
 	// Collapse to a no-op when the containers re-projected to base's values.
 	// DowngradeNoOp carries the value-dropped warning forward.
 	if np := core.DowngradeNoOp(core.FormatAIFF, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripText || encodingRewrite || textRewrite, report.Warnings); np != nil {
@@ -194,63 +203,65 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 
-// planChunks builds the output chunk list in source order, re-rendering or dropping the
-// tag containers and copying everything else (including the SSND sound chunk) verbatim. It
-// returns the duplicate ID3 chunks the rewrite drops and whether it drops a stale one, one that
-// could not be read, that a fresh chunk replaces.
-func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, stripText, textBytesChange bool) (outs []outChunk, ops []string, dropped []chunk, staleDropped bool) {
-	textGroupEmitted, id3Rewritten := false, false
-
-	firstTextIdx := -1
-	if len(d.textIdx) > 0 {
-		firstTextIdx = d.textIdx[0]
+// planChunks builds the output chunk list in source order: each tag chunk kept whole, re-rendered
+// where it stands or dropped, and everything else (including the SSND sound chunk) copied
+// verbatim. It returns the duplicate ID3 chunks the rewrite drops and whether it drops a stale one,
+// one that could not be read, that a fresh chunk replaces.
+func planChunks(d *doc, tp textPlan, newID3 *id3.Tag, emitText, emitID3, id3Kept, stripText bool) (outs []outChunk, ops []string, dropped []chunk, staleDropped bool) {
+	// A created text chunk goes behind anchor, the last one ahead of the sound, where a reader
+	// that stops at SSND still finds it; with none there, just ahead of SSND.
+	textAt, anchor := make(map[int]int, len(d.textIdx)), -1
+	for j, i := range d.textIdx {
+		textAt[i] = j
+		if d.ssndIdx < 0 || i < d.ssndIdx {
+			anchor = j
+		}
 	}
-	textIdxSet := map[int]bool{}
-	for _, i := range d.textIdx {
-		textIdxSet[i] = true
+	// What the write does to the chunks the file holds, reported where the first one stands.
+	textOp := ""
+	switch {
+	case stripText:
+		textOp = "native text chunk strip"
+	case !emitText:
+		textOp = "native text chunk drop" // the edit emptied every chunk
+	case tp.rewrites():
+		textOp = "native text chunk rewrite"
 	}
+	id3Placed := false
 
 	for i, ch := range d.chunks {
+		j, isText := textAt[i]
 		switch {
-		case textIdxSet[i]:
-			if stripText {
-				if !textGroupEmitted {
-					ops = append(ops, "native text chunk strip")
-					textGroupEmitted = true
+		case isText:
+			if j == 0 && textOp != "" {
+				ops = append(ops, textOp)
+			}
+			if tp.at[j].keep {
+				outs = append(outs, outChunk{id: ch.id, srcOff: ch.bodyOff, bodyLen: ch.bodyLen, text: &d.texts[j]})
+			}
+			for _, it := range tp.at[j].out {
+				outs = append(outs, textOut(it))
+			}
+			if j == anchor {
+				for _, it := range tp.created {
+					outs = append(outs, textOut(it))
 				}
-				continue
 			}
-			// Regroup all native text chunks at the first one's position; drop the rest.
-			if i != firstTextIdx {
-				continue
-			}
-			if emitText {
-				outs = append(outs, newText...)
-				textGroupEmitted = true
-				// A present group is always re-emitted as literals; the op reports a rewrite
-				// only when the bytes change.
-				if textBytesChange {
-					ops = append(ops, "native text chunk rewrite")
-				}
-				continue
-			}
-			// The edit emptied every chunk, so Execute deletes a group the file had.
-			ops = append(ops, "native text chunk drop")
-			continue
 		case i == d.id3Idx:
-			if emitID3 {
-				outs = append(outs, id3Out(newID3))
-				id3Rewritten = true
+			switch {
+			case id3Kept:
+				outs = append(outs, outChunk{id: ch.id, role: roleID3, srcOff: ch.bodyOff, bodyLen: ch.bodyLen})
+			case emitID3:
+				outs = append(outs, id3Out(newID3, ch.id, d.id3, ch.bodyLen))
 				ops = append(ops, "ID3 chunk rewrite")
-				continue
+			default:
+				ops = append(ops, "ID3 chunk drop")
 			}
-			ops = append(ops, "ID3 chunk drop")
-			continue
+			id3Placed = emitID3
 		case ch.dupTag:
 			// A duplicate ID3 chunk: dropped so the output carries one copy.
 			ops = append(ops, "duplicate ID3 chunk drop")
 			dropped = append(dropped, ch)
-			continue
 		default:
 			// An ID3-identified chunk reaches here only when it is neither the authoritative
 			// ID3 nor a marked duplicate: a lone chunk that failed to parse. Drop it when a
@@ -271,12 +282,16 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 	// Insert newly created containers (native text then ID3) just before the SSND
 	// chunk, the conventional position.
 	var created []outChunk
-	if emitText && !textGroupEmitted {
-		created = append(created, newText...)
-		ops = append(ops, "native text chunk creation")
+	if anchor < 0 {
+		for _, it := range tp.created {
+			created = append(created, textOut(it))
+		}
+		if len(d.textIdx) == 0 && len(created) > 0 {
+			ops = append(ops, "native text chunk creation")
+		}
 	}
-	if emitID3 && !id3Rewritten {
-		created = append(created, id3Out(newID3))
+	if emitID3 && !id3Placed {
+		created = append(created, id3Out(newID3, [4]byte{'I', 'D', '3', ' '}, nil, 0))
 		ops = append(ops, "ID3 chunk creation")
 	}
 	if len(created) > 0 {
@@ -285,10 +300,11 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 	return outs, ops, dropped, staleDropped
 }
 
-// id3Out builds the "ID3 " output chunk from a rendered ID3v2 tag.
-func id3Out(t *id3.Tag) outChunk {
-	body := id3.Render(t.WriteVersion(), t.Frames(), 0)
-	return outChunk{id: [4]byte{'I', 'D', '3', ' '}, role: roleID3, body: body, bodyLen: int64(len(body))}
+// id3Out builds the ID3 output chunk under id from t, rendered in place of src, the tag the chunk
+// held in srcLen bytes (nil for a new chunk).
+func id3Out(t *id3.Tag, id [4]byte, src *id3.Tag, srcLen int64) outChunk {
+	body := id3.RenderChunk(t, src, srcLen)
+	return outChunk{id: id, role: roleID3, body: body, bodyLen: int64(len(body))}
 }
 
 // insertBeforeSSND inserts created chunks just before the SSND chunk, or at the
@@ -324,6 +340,7 @@ type outChunk struct {
 	body    []byte // literal body; nil means copy bodyLen bytes from srcOff
 	srcOff  int64
 	bodyLen int64
+	text    *textItem // the value a native text chunk holds, nil for any other chunk
 }
 
 // outLayout is the byte-level result of assembling the output chunks: the new
@@ -331,6 +348,7 @@ type outChunk struct {
 // result, the sound extent, and the total output size.
 type outLayout struct {
 	chunks   []chunk
+	texts    []textItem // the native text chunks, in output order
 	ssndIdx  int
 	id3Idx   int
 	audioOff int64
@@ -377,6 +395,9 @@ func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err 
 		running += 8
 		idx := len(lay.chunks)
 		lay.chunks = append(lay.chunks, chunk{id: oc.id, bodyOff: running, bodyLen: oc.bodyLen})
+		if oc.text != nil {
+			lay.texts = append(lay.texts, *oc.text)
+		}
 		switch oc.role {
 		case roleID3:
 			lay.id3Idx = idx
@@ -413,14 +434,11 @@ func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err 
 // buildResult constructs the plan's result. Its canonical view
 // is re-projected from the written containers with the same project Parse uses, so it
 // equals a fresh parse of the output.
-func buildResult(edited *core.Media, base *doc, newText []outChunk, newID3 *id3.Tag, lay outLayout) *core.Media {
+func buildResult(edited *core.Media, base *doc, newID3 *id3.Tag, lay outLayout) *core.Media {
 	// The track bounds the chapter ends, so derive it from the written chunks as Parse does:
 	// the written SSND declares the bytes it holds.
 	written := &doc{track: buildTrack(base.comm, ssndAudioBytes(lay.chunks, lay.ssndIdx, base.ssndAlign))}
-	// newText is the native text set the output holds, in order.
-	for _, oc := range newText {
-		written.texts = append(written.texts, textItem{id: oc.id, raw: oc.body})
-	}
+	written.texts = lay.texts
 	if lay.id3Idx >= 0 {
 		written.id3 = newID3
 	}

@@ -7,7 +7,7 @@
 //
 //   - LIST/INFO: RIFF-native fixed 4CC vocabulary (what ffmpeg reads/writes).
 //   - embedded "id3 " chunk: full ID3v2 (via internal/id3); only place for
-//     pictures and the long tail.
+//     pictures and the long tail. "ID3 " reads too and keeps its identifier.
 //
 // Read precedence: id3 wins when present; else LIST/INFO. Both in the family
 // view with conflicts flagged. Write: see write.go. Other chunks stay verbatim.
@@ -86,7 +86,8 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	// Genre may route through id3; capability is value-blind so numeric GENRE is
 	// partial. Shared v2.3 original-date rules.
 	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatWAV), opts.NumericGenre, true)
-	// No metadata padding. Synced lyrics need id3 (edit may create the chunk).
+	// Padding is not the caller's to set: an id3 chunk keeps what its tag had while the
+	// frames fit. Synced lyrics need id3 (edit may create the chunk).
 	return core.NewCapabilities(core.FormatWAV, false, fields, pictures, chapters, core.AccessNone, perField).
 		WithSyncedLyrics(id3.SyncedLyricsCapability()).
 		WithTextQualifiers(core.TextLossNone, id3.DefaultLanguage).

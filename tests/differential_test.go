@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,6 +211,70 @@ func ffmpegSine(t *testing.T, path string, channels, rate int, codecArgs ...stri
 	args := []string{"-f", "lavfi", "-i", "sine=frequency=1000:duration=1",
 		"-ac", strconv.Itoa(channels), "-ar", strconv.Itoa(rate)}
 	return ffmpegEncode(t, path, append(args, codecArgs...)...)
+}
+
+// ffprobePackets counts the packets of a file's first audio stream, which reads the whole of it.
+func ffprobePackets(t *testing.T, path string) int {
+	t.Helper()
+	out, err := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error", "-select_streams", "a:0",
+		"-count_packets", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", path).Output()
+	if err != nil {
+		t.Fatalf("ffprobe %s: %v", path, err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		t.Fatalf("ffprobe %s: packet count %q: %v", path, out, err)
+	}
+	return n
+}
+
+// ffmpegDecodedSamples decodes a file's first audio stream and counts the samples per channel
+// that come out, the length a player plays.
+func ffmpegDecodedSamples(t *testing.T, path string, channels int) int {
+	t.Helper()
+	pcm, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path,
+		"-map", "0:a:0", "-f", "s16le", "-c:a", "pcm_s16le", "-").Output()
+	if err != nil {
+		t.Fatalf("ffmpeg decode %s: %v", path, err)
+	}
+	return len(pcm) / 2 / channels
+}
+
+// An MP3's length is what ffmpeg decodes: with the Info header libmp3lame writes, the frames less
+// the encoder's delay and padding; with no header, the bytes at a constant bitrate, or the frames
+// themselves when the bitrate varies. ffprobe's own duration is no witness for the first: ffmpeg
+// 6.1 leaves the delay and padding in it, 8.0 does not.
+func TestDifferentialMP3Duration(t *testing.T) {
+	requireTool(t, "ffmpeg")
+	requireTool(t, "ffprobe")
+	for _, c := range []struct {
+		name     string
+		channels int
+		rate     int
+		args     []string
+	}{
+		{"cbr 128k 44.1 kHz", 2, 44100, []string{"-c:a", "libmp3lame", "-b:a", "128k"}},
+		{"cbr 8k 8 kHz", 1, 8000, []string{"-c:a", "libmp3lame", "-b:a", "8k"}},
+		{"cbr 128k without a header", 2, 44100, []string{"-c:a", "libmp3lame", "-b:a", "128k", "-write_xing", "0"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			path := ffmpegSine(t, filepath.Join(t.TempDir(), "sine.mp3"), c.channels, c.rate, c.args...)
+			decoded := ffmpegDecodedSamples(t, path, c.channels)
+			got, want := mustParseFile(t, path).Properties().Duration(), time.Duration(decoded)*time.Second/time.Duration(c.rate)
+			if d := got - want; d < -time.Millisecond || d > time.Millisecond {
+				t.Errorf("duration %v, ffmpeg decodes %d samples: %v", got, decoded, want)
+			}
+		})
+	}
+	t.Run("vbr without a header", func(t *testing.T) {
+		// A swept tone makes the encoder vary its frames; the stream is long enough to pass 64 KiB.
+		path := ffmpegEncode(t, filepath.Join(t.TempDir(), "sweep.mp3"), "-f", "lavfi", "-i",
+			"aevalsrc=sin(2*PI*t*(200+1500*t)):d=8:s=44100", "-ac", "2", "-c:a", "libmp3lame", "-q:a", "2", "-write_xing", "0")
+		tr := mustParseFile(t, path).Properties().First()
+		if want := uint64(ffprobePackets(t, path)) * 1152; tr.TotalSamples != want {
+			t.Errorf("TotalSamples %d, want ffprobe's packet count times 1152 = %d", tr.TotalSamples, want)
+		}
+	})
 }
 
 // ffprobeAudio reports the played sample rate, channel count and profile name of a

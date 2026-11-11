@@ -31,6 +31,9 @@ func (c chunk) id4() string { return string(c.id[:]) }
 type textItem struct {
 	id  [4]byte
 	raw []byte
+	// tail counts the bytes behind that NUL unless they are all zero: content a re-rendered
+	// chunk does not carry.
+	tail int64
 }
 
 func (it textItem) id4() string { return string(it.id[:]) }

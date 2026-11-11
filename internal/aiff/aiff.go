@@ -8,7 +8,8 @@
 //   - native text: NAME (title), AUTH (artist), "(c) " (copyright), ANNO
 //     (comment, repeatable). Fixed vocabulary; what ffmpeg's AIFF muxer writes.
 //   - embedded "ID3 " chunk: full ID3v2 (via internal/id3); only place for
-//     pictures and the long tail. Also reads lowercase "id3 "; writer emits "ID3 ".
+//     pictures and the long tail. Lowercase "id3 " reads too and keeps its
+//     identifier; a new chunk is "ID3 ".
 //
 // Read precedence: ID3 wins when present; else native text. Both in the family
 // view with conflicts flagged. Write: see write.go. Other chunks stay verbatim.
@@ -79,7 +80,8 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	}
 	// No native genre; ID3 carries it. Shared numeric-genre / v2.3 date rules.
 	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatAIFF), opts.NumericGenre, true)
-	// No metadata padding. Synced lyrics need ID3 (edit may create the chunk).
+	// Padding is not the caller's to set: an ID3 chunk keeps what its tag had while the
+	// frames fit. Synced lyrics need ID3 (edit may create the chunk).
 	return core.NewCapabilities(core.FormatAIFF, false, fields, pictures, chapters, core.AccessNone, perField).
 		WithSyncedLyrics(id3.SyncedLyricsCapability()).
 		WithTextQualifiers(core.TextLossNone, id3.DefaultLanguage).

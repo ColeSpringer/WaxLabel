@@ -111,10 +111,13 @@ Edits use `--set KEY=VALUE`, `--add KEY=VALUE`, `--clear KEY`, plus picture
 `--lyrics-desc` and `--lyrics-lang` give the `COMMENT` or `LYRICS` values an
 invocation sets or adds a description and language; ID3 stores both, Matroska the
 language, and other formats drop them with a warning. Write shaping: `--preset`, `--legacy`,
-`--padding`. `--id3-multi null|repeat|slash` controls ID3v2.3 multi-value storage.
+`--padding`. `--id3-multi null|repeat|slash` sets how an ID3v2.3 tag stores multiple values:
+a new MP3 tag, or an existing v2.3 tag in any container; ID3v2.4 tags ignore it.
 See `waxlabel <command> --help`. `--legacy strip` (and `--preset minimal`) removes
 ID3v1/Lyrics3/APEv2/stray-ID3 unconditionally; when one holds the only copy of a value, the
-plan says so and `--strict` refuses the write.
+plan says so and `--strict` refuses the write. On WAV and AIFF it moves the LIST/INFO and
+native text chunk values into the ID3 chunk and removes those chunks, with the same warning
+for a value or item that cannot move.
 
 Read commands accept `-` for stdin. `dump`, `verify`, `lint`, `plan`, and `set`
 walk directories with `--recursive`. Format comes from leading bytes, not extension,

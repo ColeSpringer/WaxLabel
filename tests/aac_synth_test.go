@@ -40,6 +40,11 @@ func adtsStream(chanConfig, frames, payloadPerFrame int) []byte {
 	return out
 }
 
+// An ADTS file keeps an empty tag ahead of leading bytes as an MP3 does.
+func TestAACClearingTheLastFrameKeepsAHeaderAheadOfLeadingBytes(t *testing.T) {
+	emptiedTagCase(t, wl.FormatAAC, adtsStream(2, 20, 200))
+}
+
 func TestAACBareDetectAndCreateTags(t *testing.T) {
 	data := adtsStream(2, 50, 200) // stereo
 	doc := mustParseBytes(t, data)

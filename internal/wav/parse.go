@@ -192,6 +192,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	if pick >= 0 {
 		d.id3, d.id3Idx = picked, id3Idxs[pick]
+		warnings = id3.WarnBehind(warnings, d.id3)
 		for k, i := range id3Idxs {
 			if k != pick {
 				d.chunks[i].dupTag, d.chunks[i].dupID3 = true, digests[k]
@@ -226,7 +227,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	if d.infoTail > 0 && !infoTailClamped {
 		warnings = core.Warn(warnings, core.WarnMalformedTagEntry,
-			fmt.Sprintf("%d byte(s) of the LIST/INFO chunk could not be read as items; a rewrite drops them", d.infoTail))
+			fmt.Sprintf("%d byte(s) of the LIST/INFO chunk could not be read as items; a rewrite of the chunk drops them", d.infoTail))
 	}
 
 	d.track = buildTrack(d.fmtCfg, d.dataLen, d.factSamples, d.hasFact)

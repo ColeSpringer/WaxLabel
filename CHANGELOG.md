@@ -101,9 +101,10 @@ All notable changes to this project are documented here.
   instead of reporting no audio when the frame lay past the first 64 KiB; a gap before it is
   reported (`leading-bytes`) and kept after the tag, as ADTS keeps it.
 - An MP3 whose VBR header's byte count ends where the same stream goes on, right there or behind
-  the ID3 tags a file joined there opens with, takes its duration from its bytes at the first
-  frame's bitrate instead of the header's frame count, which doubled the bitrate of a joined pair;
-  the second stream and the tags between stay audio.
+  the ID3 tags a file joined there opens with, no longer takes its duration from the header's
+  frame count, which doubled the bitrate of a joined pair: its frames are counted where their
+  bitrates vary, and its bytes taken at their bitrate where they do not. The second stream and
+  the tags between stay audio.
 - An MP3 whose VBR byte count runs past the tags keeps the declared duration and is reported
   `truncated-audio` when it claims at least the shortest frame of the stream more than the file
   holds, where only an average below 8 kbps was. A byte count that ends where no frame ends
@@ -160,6 +161,37 @@ All notable changes to this project are documented here.
   canonical view does not carry (a rating, private data, a frame of a non-standard ID) is legacy
   content a strip cannot prove redundant: `--legacy strip` warns `legacy-strip-dropped`
   (`--strict` refuses) and `lint --fix` keeps the tag.
+- An MP3's duration leaves out the delay and padding its encoder states behind the Xing or Info
+  header (LAME, libav), the length a decoder plays and ffmpeg 8 reports, and a trailing ID3
+  chapter ends there: a file that read 2.04 s reads 2.00 s. An MP3 of mixed bitrates that no Xing
+  or VBRI header counts reports the length and average bitrate of its frames, less the header's
+  own frame and stated delay where there is one, instead of an estimate at the first frame's
+  bitrate; counting them reads the whole stream at parse, the one case that does. A Xing header
+  is read from its own frame only.
+- Clearing the last frame of an MP3 or ADTS ID3v2 tag that bytes separate from the first audio
+  frame leaves an empty tag (`ID3v2 emptied`), padded as the policy sizes any front tag, so the
+  file still reads as its format; the write was refused as `invalid-data`.
+- A WAV or AIFF edit copies each tag chunk it does not change whole and in place: an AIFF text
+  chunk is no longer moved up to the first one or cut at a NUL, a LIST/INFO chunk keeps a tail
+  its items do not account for, and an id3 chunk whose frames stay, one without frames included,
+  keeps its padding and reports no rewrite. A new AIFF text chunk goes behind the last one ahead
+  of the sound. A rewritten id3 chunk keeps its identifier (`ID3 ` in WAV, `id3 ` in AIFF) and,
+  where its tag had padding the new frames fit in, its size; like an Opus comment packet's, that
+  padding is not the caller's to set, so `--padding` and `--no-padding` leave it alone.
+- Bytes after the NUL that ends an AIFF text value, and bytes that follow the ID3v2 tag inside a
+  WAV or AIFF id3 chunk, are reported (`malformed-tag-entry`) and warned
+  `malformed-tag-entry-dropped` (`--strict` refuses) when an edit of that chunk or a strip drops
+  them, which went unsaid; behind a duplicate chunk's tag they count among what
+  `duplicate-tag-block-dropped` names.
+- WAV `--legacy strip` warns `legacy-strip-dropped`, naming the key, when the LIST/INFO chunk it
+  removes holds a value the id3 chunk disagrees with, as AIFF does (`--strict` refuses); setting
+  that value in the same run keeps it. Under `--legacy strip` or `--preset minimal` a WAV or AIFF
+  without tags takes new ones in the ID3 chunk alone, not in a native chunk the next strip
+  removed. The warning names `--legacy preserve` as the remedy instead of telling a
+  `--preset minimal` run to omit a `--legacy strip` it never passed.
+- `--id3-multi` help, `WithID3MultiValue` and the README state the rule the writer follows: it
+  shapes an ID3v2.3 tag, which a new MP3 gets and a WAV, AIFF or ADTS file may hold, and ID3v2.4
+  ignores it. `--legacy` help and the README describe what strip does to WAV and AIFF.
 - `copy` writes an ID3 comment's or lyric's language as the source holds it instead of
   resetting it to `eng`. An ID3 write of several LYRICS values keeps each one a description or
   language tells apart and warns `value-dropped` for the rest, instead of writing only the

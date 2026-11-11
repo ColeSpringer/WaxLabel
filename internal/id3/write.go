@@ -420,54 +420,79 @@ func ContainerOps(picturesChanged bool, pictureCount int, chaptersChanged bool, 
 	return ops
 }
 
+// FrontTagEdit is what [RenderFrontTag] renders a front tag from.
+type FrontTagEdit struct {
+	SrcTag  *Tag // the tag the frames were rebuilt from
+	Front   *Tag // the front tag as parsed, nil with none
+	Version byte
+	Frames  []Frame
+	Info    RebuildInfo
+	Padding core.PaddingPolicy
+	// SrcTagLen is the source tag's byte length, the room in-place padding reuse has. Gap counts
+	// the bytes between the front tags and the first frame.
+	SrcTagLen, Gap int64
+	// The change flags and model counts feed the operation lines.
+	TagsChanged         bool
+	PicturesChanged     bool
+	Pictures            int
+	ChaptersChanged     bool
+	Chapters            int
+	SyncedLyricsChanged bool
+	SyncedLyrics        int
+}
+
 // RenderFrontTag sizes and renders the leading ID3v2 tag for a codec that stores tags only
 // as a front tag (MP3, AAC). It emits the tag only when at least one frame survives; an
 // edit or --legacy strip that leaves none drops the tag instead of writing an empty,
-// padding-only container, matching WAV/AIFF's len(frames)>0 chunk guard. front is the front
-// tag as parsed, nil with none: dropping it records an "ID3v2 removal" op, an ignored one
-// ([Tag.Ignored]) too, and a tag written where none, or only an ignored one, stood records its
-// creation. srcTag is the tag the frames were rebuilt from and srcTagLen the source tag's byte
-// length for in-place padding reuse; the counts feed the container operation lines.
-func RenderFrontTag(srcTag *Tag, version byte, newFrames []Frame, info RebuildInfo, pad core.PaddingPolicy,
-	srcTagLen int64, front *Tag, tagsChanged, picturesChanged bool, pictureCount int,
-	chaptersChanged bool, chapterCount int, syncedLyricsChanged bool, syncedLyricsCount int) FrontTag {
+// padding-only container, matching WAV/AIFF's len(frames)>0 chunk guard. Dropping the front
+// tag records an "ID3v2 removal" op, an ignored one ([Tag.Ignored]) too, and a tag written
+// where none, or only an ignored one, stood records its creation. When bytes sit between the
+// front tags and the first frame, a tag without frames is written all the same, padded as the
+// policy sizes any tag: the file would open with those bytes otherwise, and no longer read as
+// its format.
+func RenderFrontTag(e FrontTagEdit) FrontTag {
+	nonPad := RenderedSize(e.Frames)
+	// Size the tag and its padding. Reuse the original region in place when the new content
+	// fits, so the audio offset (and file size) need not change. Clamp here, not only inside
+	// Render: Report().PaddingAfter comes from ft.Padding, so a hidden clamp would overstate the
+	// written padding. The trigger is a reused tag region larger than the ID3v2 size field.
+	padSize, clamped := clampPadding(nonPad, e.Padding.ReuseOrTarget(e.SrcTagLen, nonPad))
 
-	if len(newFrames) == 0 {
+	if len(e.Frames) == 0 {
 		var ft FrontTag
-		if front != nil {
+		switch {
+		case e.Front == nil:
+		case e.Gap > 0:
+			ft.Bytes, ft.Tag, ft.Padding = Render(e.Version, nil, int(padSize)), e.SrcTag.WithFrames(nil), padSize
+			if len(e.Front.Frames()) > 0 || e.Front.Ignored() != "" {
+				ft.Operations = []string{fmt.Sprintf("ID3v2 emptied (kept: %d byte(s) precede the first frame)", e.Gap)}
+			}
+		default:
 			// A full clear of a tagged file: record the removal so it is not reported as a
 			// bare rewrite.
 			ft.Operations = []string{"ID3v2 removal"}
 		}
 		return ft
 	}
-	// Size the tag and its padding. Reuse the original region in place when the new content
-	// fits, so the audio offset (and file size) need not change.
-	nonPad := RenderedSize(newFrames)
-	padSize := pad.ReuseOrTarget(srcTagLen, nonPad)
-	// Clamp here, not only inside Render: Report().PaddingAfter comes from ft.Padding, so a
-	// hidden clamp would overstate the written padding. The trigger is a reused tag region
-	// larger than the ID3v2 size field.
-	padSize, clamped := clampPadding(nonPad, padSize)
 	ft := FrontTag{
-		Bytes:   Render(version, newFrames, int(padSize)),
-		Tag:     srcTag.WithFrames(newFrames),
+		Bytes:   Render(e.Version, e.Frames, int(padSize)),
+		Tag:     e.SrcTag.WithFrames(e.Frames),
 		Padding: padSize,
 	}
 	if clamped {
 		ft.Warnings = core.Warn(ft.Warnings, core.WarnPaddingClamped,
 			fmt.Sprintf("requested ID3v2 padding exceeded the 28-bit size field (max %d bytes) and was clamped to it", maxFrameSize))
 	}
-	if tagsChanged {
+	if e.TagsChanged {
 		ft.Operations = append(ft.Operations, "ID3v2 frame rewrite")
 	}
 	// The container op lines sit between the frame-rewrite and tag-creation ops.
-	ft.Operations = append(ft.Operations, ContainerOps(picturesChanged, pictureCount,
-		chaptersChanged, chapterCount, syncedLyricsChanged, syncedLyricsCount)...)
-	if front == nil || front.Ignored() != "" {
-		ft.Operations = append(ft.Operations, fmt.Sprintf("ID3v2.%d tag creation", version))
+	ft.Operations = append(ft.Operations, ContainerOps(e.PicturesChanged, e.Pictures,
+		e.ChaptersChanged, e.Chapters, e.SyncedLyricsChanged, e.SyncedLyrics)...)
+	if e.Front == nil || e.Front.Ignored() != "" {
+		ft.Operations = append(ft.Operations, fmt.Sprintf("ID3v2.%d tag creation", e.Version))
 	}
-	if info.UsedV23Multi {
+	if e.Info.UsedV23Multi {
 		ft.Operations = append(ft.Operations, "v2.3 multi-value NUL-separated storage")
 		ft.Warnings = core.Warn(ft.Warnings, core.WarnID3MultiValue,
 			"a multi-value field was written NUL-separated in ID3v2.3, a de-facto extension some readers do not split")

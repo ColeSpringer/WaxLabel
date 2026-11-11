@@ -80,26 +80,52 @@ func ChangedKeys(base, edited tag.TagSet, touched map[tag.Key]bool) map[tag.Key]
 	return changed
 }
 
-// StripDroppedMessage wording for LegacyStrip data loss. Names remedy (omit --legacy strip).
+// StripDroppedMessage words a LegacyStrip data loss. A preset strips too, so the remedy is the
+// flag that overrides both.
 func StripDroppedMessage(container string, lost []string) string {
-	return "--legacy strip removed the " + container + " along with " + strings.Join(lost, " and ") +
-		"; omit it to keep the " + container
+	return "the legacy strip removed the " + container + " along with " + strings.Join(lost, " and ") +
+		"; --legacy preserve keeps the " + container
 }
 
 // LegacyStripDroppedMessage is [StripDroppedMessage] for legacy containers.
 func LegacyStripDroppedMessage(keys []tag.Key, opaque bool) string {
 	var lost []string
 	if len(keys) > 0 {
-		names := make([]string, len(keys))
-		for i, k := range keys {
-			names[i] = string(k)
-		}
-		lost = append(lost, "values held only there ("+strings.Join(names, ", ")+")")
+		lost = append(lost, "values held only there ("+joinKeys(keys)+")")
 	}
 	if opaque {
 		lost = append(lost, "content the canonical view does not carry")
 	}
 	return StripDroppedMessage("legacy container", lost)
+}
+
+// StrippedValuesLost words the keys [StrippedFamilyKeys] returns for [StripDroppedMessage].
+func StrippedValuesLost(keys []tag.Key) string {
+	return "values the canonical set does not carry (" + joinKeys(keys) + ")"
+}
+
+func joinKeys(keys []tag.Key) string {
+	names := make([]string, len(keys))
+	for i, k := range keys {
+		names[i] = string(k)
+	}
+	return strings.Join(names, ", ")
+}
+
+// StrippedFamilyKeys lists the keys whose fam entry holds a value that dies with a stripped native
+// container: the projection did not select it (the ID3 chunk disagreed) and edited does not hold it.
+func StrippedFamilyKeys(fams []FamilyValue, fam Family, edited tag.TagSet) []tag.Key {
+	var out []tag.Key
+	seen := map[tag.Key]bool{}
+	kept := FamilySelector(edited)
+	for _, f := range fams {
+		if f.Family != fam || f.Selected || seen[f.Key] || len(f.Values) == 0 || kept(f.Key, f.Values[0]) {
+			continue
+		}
+		seen[f.Key] = true
+		out = append(out, f.Key)
+	}
+	return out
 }
 
 // LegacyOnlyKeys returns legacy-only keys not in auth. auth is caller-chosen authority

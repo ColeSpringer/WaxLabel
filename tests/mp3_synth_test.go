@@ -443,6 +443,105 @@ func mp3VBRStream(frames int, declared uint32) []byte {
 	return out
 }
 
+// mp3LAMEStream is mp3VBRStream with the extension LAME writes behind the Xing header, stating the
+// samples of delay and padding the encoder added.
+func mp3LAMEStream(frames, delay, padding int) []byte {
+	s := mp3VBRStream(frames, uint32(frames))
+	copy(s[48:57], "LAME3.100") // behind the tag, its flags and the frame count
+	v := delay<<12 | padding
+	s[69], s[70], s[71] = byte(v>>16), byte(v>>8), byte(v) // 21 bytes into the extension
+	return s
+}
+
+// mp3MixedStream is n MPEG-1 Layer III frames at 44.1 kHz, alternately 128 kbps (417 bytes) and
+// 192 kbps (626 bytes), with no VBR header: nothing but the frames says how long it plays.
+func mp3MixedStream(n int) []byte {
+	var out []byte
+	for i := range n {
+		size, rate := 417, byte(0x90)
+		if i%2 == 1 {
+			size, rate = 626, 0xB0
+		}
+		f := make([]byte, size)
+		f[0], f[1], f[2] = 0xFF, 0xFB, rate
+		out = append(out, f...)
+	}
+	return out
+}
+
+// An MP3 plays its frames' samples less the delay and padding the encoder states behind the Xing
+// header, which is the length a decoder plays, and a trailing chapter ends there.
+func TestMP3DurationTrimsEncoderDelayAndPadding(t *testing.T) {
+	const frames = 100
+	src := mp3LAMEStream(frames, 576, 1080)
+	doc := mustParseBytes(t, src)
+	want := uint64(frames*1152 - 576 - 1080)
+	if tr := doc.Properties().First(); tr.TotalSamples != want || tr.Duration != time.Duration(float64(want)/44100*float64(time.Second)) {
+		t.Errorf("TotalSamples %d, duration %v; want %d samples", tr.TotalSamples, tr.Duration, want)
+	}
+	plain := mustParseBytes(t, mp3VBRStream(frames, frames)).Properties().First()
+	if plain.TotalSamples != frames*1152 {
+		t.Errorf("without the extension: TotalSamples %d, want the untrimmed %d", plain.TotalSamples, frames*1152)
+	}
+	if got := doc.Properties().First().Bitrate; got != plain.Bitrate {
+		t.Errorf("bitrate %d, want the %d the frames average as encoded", got, plain.Bitrate)
+	}
+	plan, err := doc.Edit().SetChapters(wl.Chapter{Start: 0, Title: "A"}, wl.Chapter{Start: time.Second, Title: "B"}).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	chs := mustParseBytes(t, applyToBytes(t, src, plan)).Chapters()
+	if end := doc.Properties().Duration().Truncate(time.Millisecond); len(chs) != 2 || chs[1].End != end {
+		t.Errorf("chapters %+v, want the last to end at the trimmed %v", chs, end)
+	}
+}
+
+// A Xing header that states no frame count leaves the frames to be counted; its own frame is not
+// one of them, and the delay and padding it states still come off.
+func TestMP3HeaderWithoutAFrameCountIsWalkedAndTrimmed(t *testing.T) {
+	const frames = 100
+	head := mp3LAMEStream(1, 576, 1080)
+	head[43] = 0                 // no frame count: the extension moves up four bytes
+	copy(head[44:72], head[48:]) // the encoder name and the delays, 21 bytes in
+	var audio []byte
+	for range frames {
+		f := make([]byte, 626) // 192 kbps, where the header's frame is 128
+		f[0], f[1], f[2] = 0xFF, 0xFB, 0xB0
+		audio = append(audio, f...)
+	}
+	tr := mustParseBytes(t, slices.Concat(head, audio)).Properties().First()
+	if want := uint64(frames*1152 - 576 - 1080); tr.TotalSamples != want {
+		t.Errorf("TotalSamples %d, want %d: %d frames less the delay and padding", tr.TotalSamples, want, frames)
+	}
+}
+
+// A stream of mixed bitrates with no VBR header reports the length and average bitrate of the frames
+// it holds, past the first 64 KiB and whatever tags surround it, where one bitrate's estimate would
+// be far off. A stream of one bitrate is not walked: its bytes say the same.
+func TestMP3HeaderlessVBRReportsItsWalkedLength(t *testing.T) {
+	const frames = 400 // 208 KiB
+	stream := mp3MixedStream(frames)
+	samples := float64(frames * 1152)
+	wantDur := time.Duration(samples / 44100 * float64(time.Second))
+	for name, data := range map[string][]byte{
+		"bare":       stream,
+		"tagged":     slices.Concat(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T")), stream, testfile.ID3v1("V1", "", "", "", "", 255)),
+		"junk after": slices.Concat(stream, bytes.Repeat([]byte{0xA5}, 100<<10)),
+	} {
+		tr := mustParseBytes(t, data).Properties().First()
+		if tr.TotalSamples != frames*1152 || tr.Duration != wantDur {
+			t.Errorf("%s: TotalSamples %d, duration %v; want %d and %v", name, tr.TotalSamples, tr.Duration, frames*1152, wantDur)
+		}
+		if avg := int(float64(len(stream)) * 8 / wantDur.Seconds()); tr.Bitrate != avg {
+			t.Errorf("%s: bitrate %d, want the average %d", name, tr.Bitrate, avg)
+		}
+	}
+	src := &countingSource{ReaderAtSized: wl.BytesSource(mp3Frames(10000))}
+	if _, err := wl.Parse(context.Background(), src); err != nil || src.reads > 16 {
+		t.Errorf("a stream of one bitrate: %d reads (err %v), want a handful, not a walk", src.reads, err)
+	}
+}
+
 // A VBR MP3 whose Xing header survives but whose frames are mostly gone (a head -c truncation):
 // the declared frame count implies minutes of audio while only ~48 bytes are present, so the
 // average bitrate collapses below the MPEG floor and truncated-audio fires.
@@ -540,6 +639,80 @@ func TestMP3BehindID3WithGapStaysMP3(t *testing.T) {
 			}
 		})
 	}
+}
+
+// emptiedTagCase runs the last-frame clear on lead + gap + stream for each gap length: the output
+// keeps an empty tag ahead of the gap, padded as the policy sizes any front tag (the old tag's
+// room by default), reads as the same format with the bare stream's digest, and a second clear is a
+// no-op. With no gap the tag goes.
+func emptiedTagCase(t *testing.T, format wl.Format, stream []byte) {
+	t.Helper()
+	lead := testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Old Title"))
+	essence := essenceOf(t, stream)
+	for _, n := range []int{1, 2, 64} {
+		gap := bytes.Repeat([]byte{1}, n)
+		src := slices.Concat(lead, gap, stream)
+		plan, err := mustParseBytes(t, src).Edit().Clear(tag.Title).Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		op := fmt.Sprintf("ID3v2 emptied (kept: %d byte(s) precede the first frame)", n)
+		if ops := plan.Report().Operations; !slices.Equal(ops, []string{op}) {
+			t.Errorf("gap %d: operations %v, want %q", n, ops, op)
+		}
+		out := applyToBytes(t, src, plan)
+		if !bytes.Equal(out, slices.Concat(testfile.ID3v2(4, make([]byte, len(lead)-10)), gap, stream)) {
+			t.Fatalf("gap %d: output is not an empty tag of the old one's size, the gap and the stream", n)
+		}
+		re := mustParseBytes(t, out)
+		if re.Format() != format || !hasWarning(re, wl.WarnLeadingBytes) || re.Tags().Len() != 0 || !essenceOf(t, out).Equal(essence) {
+			t.Errorf("gap %d: format %v, warnings %v, %d key(s); want %v, the gap reported, no tags and the stream's digest",
+				n, re.Format(), re.Warnings(), re.Tags().Len(), format)
+		}
+		if again, err := re.Edit().Clear(tag.Title).Prepare(); err != nil || !again.IsNoOp() {
+			t.Errorf("gap %d: a second clear is not a no-op (err %v)", n, err)
+		}
+	}
+	gap := []byte{1, 2, 3}
+	src := slices.Concat(lead, gap, stream)
+	for name, c := range map[string]struct {
+		policy wl.PaddingPolicy
+		pad    int
+	}{
+		"no padding asked for": {wl.PaddingPolicy{}, 0},
+		"padding asked for":    {wl.PaddingPolicy{Target: 100, Min: 100, ReuseInPlace: true}, 100},
+	} {
+		plan, err := mustParseBytes(t, src).Edit().Clear(tag.Title).Prepare(wl.WithPadding(c.policy))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out := applyToBytes(t, src, plan); !bytes.Equal(out, slices.Concat(testfile.ID3v2(4, make([]byte, c.pad)), gap, stream)) || plan.Report().PaddingAfter != int64(c.pad) {
+			t.Errorf("%s: want an empty tag with %d bytes of padding, reported %d", name, c.pad, plan.Report().PaddingAfter)
+		}
+	}
+	// A tag already empty keeps its padding through a strip of the tags behind the stream.
+	padded := slices.Concat(testfile.ID3v2(4, make([]byte, 1024)), gap, stream)
+	strip, err := mustParseBytes(t, slices.Concat(padded, testfile.ID3v1("V1", "", "", "", "", 255))).Edit().Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := applyToBytes(t, slices.Concat(padded, testfile.ID3v1("V1", "", "", "", "", 255)), strip); !bytes.Equal(out, padded) {
+		t.Error("the strip did not leave the empty padded tag, the gap and the stream as they were")
+	}
+	src = slices.Concat(lead, stream)
+	plan, err := mustParseBytes(t, src).Edit().Clear(tag.Title).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := applyToBytes(t, src, plan); !bytes.Equal(out, stream) {
+		t.Error("with no gap the emptied tag should be removed")
+	}
+}
+
+// Clearing the last frame of an ID3v2 tag that bytes separate from the first MPEG frame keeps an
+// empty tag: without it the file would open with those bytes and no longer read as MP3.
+func TestMP3ClearingTheLastFrameKeepsAHeaderAheadOfLeadingBytes(t *testing.T) {
+	emptiedTagCase(t, wl.FormatMP3, mp3Audio(t))
 }
 
 // coverWithFrameHeader is a cover item's value, a file name and a JPEG whose comment segment opens
@@ -691,9 +864,10 @@ func TestMP3ByteCountOffByAByte(t *testing.T) {
 }
 
 // A VBR header whose byte count ends where the same stream goes on, as a stream joined after it does,
-// counts only part of the stream, so it gives no duration either: the stream reads as one without the
-// header does, its duration estimated from the bytes at the first frame's bitrate, however the tags
-// sit between them, the joined file's own tag included. That is no truncation.
+// counts only part of the stream, so it gives no duration either: the frames are counted (the
+// header's frame is of another bitrate than the rest), however the tags sit between them, the joined
+// file's own tag included, and the header still takes its own frame and the delay and padding it
+// states off that count. That is no truncation.
 func TestMP3JoinedStreamGivesNoHeaderDuration(t *testing.T) {
 	audio := mp3Audio(t)
 	if string(audio[21:25]) != "Info" {
@@ -706,6 +880,11 @@ func TestMP3JoinedStreamGivesNoHeaderDuration(t *testing.T) {
 	}
 	ape := headedAPETag(t, "Title", "Coda")
 	lead := ffmpegTag()
+	// What the header takes off a count of every frame, its own included.
+	header := mustParseBytes(t, blank(audio, 21)).Properties().First().TotalSamples - mustParseBytes(t, audio).Properties().First().TotalSamples
+	if header <= 1152 {
+		t.Fatalf("setup: the header takes %d samples off, want its frame and a delay", header)
+	}
 	for _, c := range []struct {
 		name       string
 		data       []byte
@@ -718,8 +897,8 @@ func TestMP3JoinedStreamGivesNoHeaderDuration(t *testing.T) {
 			blank(slices.Concat(lead, audio, lead, audio), len(lead)+21)},
 	} {
 		doc := mustParseBytes(t, c.data)
-		if got, want := doc.Properties(), mustParseBytes(t, c.headerless).Properties(); !reflect.DeepEqual(got, want) {
-			t.Errorf("%s: properties %+v, want the header-less stream's %+v", c.name, got, want)
+		if got, all := doc.Properties().First().TotalSamples, mustParseBytes(t, c.headerless).Properties().First().TotalSamples; got != all-header {
+			t.Errorf("%s: %d samples, want the header-less stream's %d less the header's %d", c.name, got, all, header)
 		}
 		if hasWarning(doc, wl.WarnTruncatedAudio) {
 			t.Errorf("%s: a joined stream reads as truncated", c.name)

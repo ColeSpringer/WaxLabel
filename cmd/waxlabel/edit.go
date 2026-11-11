@@ -108,10 +108,10 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.Var(&e.lyricsLang, "lyrics-lang", "language code for the LYRICS values this invocation sets or adds, as --comment-lang")
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear ENCODER, the software stamp an encoder or transcoder leaves behind, wherever the format stores it (a WAV ISFT item and a FLAC/Ogg vendor string included)")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|minimal")
-	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip. strip removes ID3v1/Lyrics3/APEv2/stray-ID3 containers unconditionally, warning when one holds the only copy of a value (--strict then refuses)")
-	f.StringVar(&e.id3Multi, "id3-multi", "", "how an ID3v2.3 tag (MP3) stores a multi-valued field: null (NUL-separated, the default, a de-facto extension some readers do not split), repeat (one frame per value), or slash (values joined with a slash). ID3v2.4 tags (WAV/AIFF/AAC) separate values natively and ignore it")
+	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip. strip removes ID3v1/Lyrics3/APEv2/stray-ID3 containers unconditionally, warning when one holds the only copy of a value (--strict then refuses)"+legacyIFFHelp)
+	f.StringVar(&e.id3Multi, "id3-multi", "", id3MultiHelp)
 	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata, with the same size suffixes as --max-size (e.g. 8KiB; FLAC default 8192; MP3/AAC/MP4 reuse the existing region; 0 writes none, like --no-padding)")
-	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (no effect on Ogg/WAV/AIFF/Matroska, which have no padding region)")
+	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (no effect on Ogg, WAV, AIFF and Matroska, where padding is not the caller's to set: an Opus comment packet and a WAV or AIFF id3 chunk keep what they have)")
 	f.BoolVar(&e.numericGenre, "numeric-genre", false, "write a recognized genre as its numeric reference instead of its name: ID3's TCON on MP3/AAC/AIFF, MP4's gnre atom, and on WAV only where an 'id3 ' chunk exists or the same edit creates one (LIST/INFO IGNR stores the name literally). FLAC, Ogg, and Matroska have no numeric genre representation, so it has no effect there")
 	f.StringVar(&e.outputGain, "output-gain", "", "set the decoder-applied output gain the stream header declares, in decibels (e.g. -3.5), rounded to the Q7.8 step the field stores. Only Ogg Opus has one; elsewhere it is dropped with a warning (--strict then refuses) and a read-only file fails. RFC 7845 applies R128_TRACK_GAIN and R128_ALBUM_GAIN on top of it, so they are rebased by the same change unless this invocation sets or clears them (--keep-r128 leaves them and warns)")
 	f.BoolVar(&e.keepR128, "keep-r128", false, "with --output-gain, leave R128_TRACK_GAIN and R128_ALBUM_GAIN as they are instead of rebasing them by the same change, and warn for each one kept. Use it when the stored values are stale and will be replaced separately")
@@ -603,6 +603,12 @@ func resolvePaddingFlag(padding string, noPadding bool) (opt wl.WriteOption, fla
 		return wl.WithPadding(wl.PaddingPolicy{Target: 0, Max: 0}), true, nil
 	}
 }
+
+// Help shared by set, plan and copy.
+const (
+	id3MultiHelp  = "how an ID3v2.3 tag stores a multi-valued field: null (NUL-separated, the default, a de-facto extension some readers do not split), repeat (one frame per value), or slash (values joined with a slash). A new MP3 tag is ID3v2.3, and an existing v2.3 tag in any container (WAV/AIFF/AAC too) follows the flag; ID3v2.4 tags separate values natively and ignore it"
+	legacyIFFHelp = ". On WAV and AIFF, strip moves the values of LIST/INFO and the native text chunks into the ID3 chunk and removes them, warning likewise about what cannot move"
+)
 
 // resolveWriteFlags turns preset/legacy/id3-multi into write options (preset, then legacy).
 // Shared by plan, set, and copy.

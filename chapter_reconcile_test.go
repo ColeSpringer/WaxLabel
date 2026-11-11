@@ -41,7 +41,7 @@ func TestChapterOverlapReconciledID3EndToEnd(t *testing.T) {
 	ms := time.Millisecond
 	ctx := context.Background()
 
-	// Ended chapters [0-500][500-1500][1500-2000]; notags.mp3 is 2.04s.
+	// Ended chapters [0-500][500-1500][1500-2000]; notags.mp3 plays 2.00s.
 	base0, err := ParseFile(ctx, "testdata/notags.mp3")
 	if err != nil {
 		t.Fatalf("parse notags.mp3: %v", err)

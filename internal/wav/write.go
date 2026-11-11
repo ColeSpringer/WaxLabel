@@ -33,8 +33,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
 	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
 	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
-	// LegacyStrip consolidates tags into the id3 chunk by dropping LIST/INFO.
-	stripINFO := opts.Legacy == core.LegacyStrip && infoPresent
+	// LegacyStrip consolidates tags into the id3 chunk: it drops LIST/INFO and never creates one.
+	legacyStrip := opts.Legacy == core.LegacyStrip
+	stripINFO := legacyStrip && infoPresent
 	// Keys whose INFO items this write re-renders: those whose value moved plus those the
 	// edit named outright. Setting the already-projected value is how a caller resolves
 	// an INFO item the id3 chunk disagrees with. Track number and total share one item.
@@ -57,7 +58,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// or lyrics' description and language force an id3 chunk because LIST/INFO cannot store
 	// them (they are ID3 CHAP/CTOC and SYLT frames and COMM/USLT fields).
 	needID3 := id3Present || len(edited.Pictures) > 0 || len(edited.Chapters) > 0 || len(edited.SyncedLyrics) > 0 ||
-		id3.NeedsTextFrames(edited) || !infoRepresentable(edited.Tags, changed) || stripINFO
+		id3.NeedsTextFrames(edited) || !infoRepresentable(edited.Tags, changed) || legacyStrip
 	writeINFO := (infoPresent && !stripINFO) || !needID3
 
 	// Build the new INFO items (changed keys re-rendered; everything else kept verbatim).
@@ -120,6 +121,13 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// id3 tag); this also lets a full clear drop the container.
 	emitINFO := writeINFO && len(newInfo) > 0
 	emitID3 := needID3 && newID3 != nil && len(newID3.Frames()) > 0
+	// A container the edit leaves alone is copied whole: a LIST/INFO with the tail its item walk
+	// could not read, an id3 chunk with its padding.
+	infoKept := writeINFO && infoPresent && !infoRewrite
+	id3Kept := id3.ChunkKept(d.id3, newID3)
+	if id3Kept {
+		newID3 = d.id3
+	}
 
 	// When both LIST/INFO and ID3 are emitted, a multi-valued key keeps its full set only
 	// in ID3.
@@ -127,15 +135,15 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags, changed)...)
 	}
 
-	outs, ops, dropped, staleDropped := planChunks(d, newInfo, newID3, emitINFO, emitID3, stripINFO, infoBytesChange(d, newInfo))
+	outs, ops, dropped, staleDropped := planChunks(d, newInfo, newID3, emitINFO, emitID3, infoKept, id3Kept, stripINFO)
 
 	segs, lay, err := assemble(d, outs)
 	if err != nil {
 		return nil, err
 	}
 	report.Operations = ops
-	// Only a chunk this plan writes can have a conflict resolved in it; a strip or a full
-	// clear drops the LIST outright.
+	// A conflict is resolved only in a chunk the output holds, whichever side the edit moved;
+	// a strip or a full clear drops the LIST outright.
 	if emitINFO {
 		for _, k := range infoConflictKeys(base.Families, changed) {
 			report.Operations = append(report.Operations, "LIST/INFO conflict resolved ("+string(k)+")")
@@ -149,15 +157,23 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			syncedLyricsChanged, len(edited.SyncedLyrics))...)
 	}
 	if stripINFO {
-		// LegacyStrip moves the mapped items into the id3 chunk, but an unmapped item has no
-		// canonical key and so no frame to move into: dropping the chunk destroys it. doc.go
-		// requires a warning for such a loss.
+		// LegacyStrip moves the mapped items into the id3 chunk. A value the projection did not
+		// select and an item with no canonical key have no frame to move into, so dropping the
+		// chunk destroys them. doc.go requires a warning for such a loss.
+		var lost []string
+		keys := core.StrippedFamilyKeys(base.Families, core.FamilyRIFF, edited.Tags)
+		if len(keys) > 0 {
+			lost = append(lost, core.StrippedValuesLost(keys))
+		}
 		if ids := unmappedInfoIDs(d.info); len(ids) > 0 {
-			report.Warnings = core.Warn(report.Warnings, core.WarnLegacyStripDropped,
-				core.StripDroppedMessage("LIST/INFO chunk", []string{"items no canonical key can hold (" + strings.Join(ids, ", ") + ")"}))
+			lost = append(lost, "items no canonical key can hold ("+strings.Join(ids, ", ")+")")
+		}
+		if len(lost) > 0 {
+			report.Warnings = core.WarnKeyed(report.Warnings, core.WarnLegacyStripDropped,
+				core.StripDroppedMessage("LIST/INFO chunk", lost), keys...)
 		}
 	}
-	if d.infoIdx >= 0 && d.infoTail > 0 {
+	if d.infoTail > 0 && !infoKept {
 		// rebuildInfo re-renders the chunk from the items alone, so bytes the parser could
 		// not read as items are lost. Under --legacy strip this fires alongside
 		// legacy-strip-dropped; the two losses are distinct.
@@ -193,7 +209,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Report ID3 rebuild losses only when the file as a whole loses them: RecordingDate
 	// can survive verbatim in LIST/INFO ICRD, and the helper checks the re-projected output.
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, id3Info, result.Tags)
-	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3, emitID3)
+	if !id3Kept {
+		report.Warnings = id3.AppendChunkDropped(report.Warnings, d.id3, emitID3)
+	}
 	// Collapse to a no-op when the containers re-projected to base's values (a numeric
 	// genre, a dropped empty). DowngradeNoOp carries the value-dropped warning forward.
 	if np := core.DowngradeNoOp(core.FormatWAV, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripINFO || stampToStrip || encodingRewrite || infoRewrite, report.Warnings); np != nil {
@@ -230,43 +248,41 @@ func id3Tags(edited tag.TagSet, id3Present, encoderAuthored bool) tag.TagSet {
 	return out
 }
 
-// planChunks builds the output chunk list in source order, re-rendering or dropping the
-// tag containers and copying everything else (including the data chunk) verbatim, then
-// inserting any newly created tag container before the data chunk. It returns the duplicate
-// tag chunks the rewrite drops and whether it drops a stale id3 chunk, one that could not be
-// read, that a fresh one replaces.
-func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, stripINFO, infoBytesChange bool) (outs []outChunk, ops []string, dropped []chunk, staleDropped bool) {
-	infoRewritten, id3Rewritten := false, false
+// planChunks builds the output chunk list in source order: each tag container kept whole,
+// re-rendered where it stands or dropped, and everything else (including the data chunk) copied
+// verbatim; a newly created container goes before the data chunk. It returns the duplicate tag
+// chunks the rewrite drops and whether it drops a stale id3 chunk, one that could not be read,
+// that a fresh one replaces.
+func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, infoKept, id3Kept, stripINFO bool) (outs []outChunk, ops []string, dropped []chunk, staleDropped bool) {
+	infoPlaced, id3Placed := false, false
 
 	for i, ch := range d.chunks {
 		switch i {
 		case d.infoIdx:
-			if stripINFO {
+			switch {
+			case stripINFO:
 				ops = append(ops, "LIST/INFO strip")
-				continue
-			}
-			if emitINFO {
+			case infoKept:
+				outs = append(outs, outChunk{id: ch.id, role: roleINFO, srcOff: ch.bodyOff, bodyLen: ch.bodyLen})
+			case emitINFO:
 				outs = append(outs, infoOut(newInfo))
-				infoRewritten = true
-				// A present chunk is always re-emitted as a literal; the op reports a rewrite
-				// only when the bytes change.
-				if infoBytesChange {
-					ops = append(ops, "LIST/INFO rewrite")
-				}
-				continue
+				ops = append(ops, "LIST/INFO rewrite")
+			default:
+				// The edit emptied the chunk, so Execute deletes one the file had.
+				ops = append(ops, "LIST/INFO drop")
 			}
-			// The edit emptied the chunk, so Execute deletes one the file had.
-			ops = append(ops, "LIST/INFO drop")
-			continue
+			infoPlaced = emitINFO
 		case d.id3Idx:
-			if emitID3 {
-				outs = append(outs, id3Out(newID3))
-				id3Rewritten = true
+			switch {
+			case id3Kept:
+				outs = append(outs, outChunk{id: ch.id, role: roleID3, srcOff: ch.bodyOff, bodyLen: ch.bodyLen})
+			case emitID3:
+				outs = append(outs, id3Out(newID3, ch.id, d.id3, ch.bodyLen))
 				ops = append(ops, "id3 chunk rewrite")
-				continue
+			default:
+				ops = append(ops, "id3 chunk drop")
 			}
-			ops = append(ops, "id3 chunk drop")
-			continue
+			id3Placed = emitID3
 		default:
 			if ch.dupTag {
 				// A second LIST/INFO or id3 chunk: dropped so the output carries one copy.
@@ -292,12 +308,12 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 	// Insert newly created containers (INFO then id3) just before the data chunk,
 	// the conventional, always-read position.
 	var created []outChunk
-	if emitINFO && !infoRewritten {
+	if emitINFO && !infoPlaced {
 		created = append(created, infoOut(newInfo))
 		ops = append(ops, "LIST/INFO creation")
 	}
-	if emitID3 && !id3Rewritten {
-		created = append(created, id3Out(newID3))
+	if emitID3 && !id3Placed {
+		created = append(created, id3Out(newID3, [4]byte{'i', 'd', '3', ' '}, nil, 0))
 		ops = append(ops, "id3 chunk creation")
 	}
 	if len(created) > 0 {
@@ -326,19 +342,11 @@ func infoOut(items []infoItem) outChunk {
 	return outChunk{id: [4]byte{'L', 'I', 'S', 'T'}, role: roleINFO, body: body, bodyLen: int64(len(body))}
 }
 
-// infoBytesChange reports whether re-emitting the LIST/INFO chunk from the item model
-// will change the chunk's bytes.
-func infoBytesChange(d *doc, newInfo []infoItem) bool {
-	if d.infoIdx < 0 {
-		return true
-	}
-	return !equalInfoItems(newInfo, d.info) || int64(len(renderInfo(newInfo))) != d.chunks[d.infoIdx].bodyLen
-}
-
-// id3Out builds the "id3 " output chunk from a rendered ID3v2 tag.
-func id3Out(t *id3.Tag) outChunk {
-	body := id3.Render(t.WriteVersion(), t.Frames(), 0)
-	return outChunk{id: [4]byte{'i', 'd', '3', ' '}, role: roleID3, body: body, bodyLen: int64(len(body))}
+// id3Out builds the id3 output chunk under id from t, rendered in place of src, the tag the chunk
+// held in srcLen bytes (nil for a new chunk).
+func id3Out(t *id3.Tag, id [4]byte, src *id3.Tag, srcLen int64) outChunk {
+	body := id3.RenderChunk(t, src, srcLen)
+	return outChunk{id: id, role: roleID3, body: body, bodyLen: int64(len(body))}
 }
 
 // insertBeforeData inserts created chunks just before the data chunk, or at the

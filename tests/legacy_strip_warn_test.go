@@ -3,6 +3,7 @@ package waxlabel_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -427,11 +428,15 @@ func TestMP3EveryLegacyShape(t *testing.T) {
 // file, so an APE tag between two concatenated streams leaves the second in the essence, kept around
 // the tag, and a tag filling the MP3 resync window hides nothing from it. Each shape parses, strips
 // under the essence check and re-reads to the digest of the stripped file, which a plain edit, which
-// keeps the tags, shares; a long second stream costs a few reads, not a walk of its frames. The ID3
-// tags between two joined files are no tail tags: they stay in the audio with both streams, reported
-// by their count, whether or not the last tag is stripped.
+// keeps the tags, shares; a long second stream costs a few reads, not a walk of its frames, which
+// only the length of a stream of mixed bitrates takes, so the long rows open with a headed stream
+// of one bitrate. The ID3 tags between two joined files are no tail tags: they stay in the audio
+// with both streams, reported by their count, whether or not the last tag is stripped.
 func TestLegacyStripKeepsTheAudioEnd(t *testing.T) {
 	mp3, aac := readFixture(t, notagsMP3), readFixture(t, notagsAAC)
+	headed := mp3VBRStream(40, 40)
+	headed[43] = 3 // frame count and byte count present
+	binary.BigEndian.PutUint32(headed[48:52], uint32(len(headed)))
 	ape := headedAPETag(t, "Title", "Coda")
 	v1 := testfile.ID3v1("V1", "", "", "", "", 255)
 	long := mp3Frames(10000)
@@ -450,7 +455,7 @@ func TestLegacyStripKeepsTheAudioEnd(t *testing.T) {
 			[]string{"MPEG audio", "APEv2", "MPEG audio", "ID3v1"}, []string{"16482 byte(s) after an APE tag are audio"}},
 		{"aac: a tag between two streams", slices.Concat(aac, ape, aac, v1), slices.Concat(aac, aac), slices.Concat(aac, aac), true, 0,
 			[]string{"ADTS audio", "APEv2", "ADTS audio", "ID3v1"}, []string{"23548 byte(s) after an APE tag are audio"}},
-		{"mp3: a tag before a long second stream", slices.Concat(mp3, ape, long, v1), slices.Concat(mp3, long), slices.Concat(mp3, long), true, 64,
+		{"mp3: a tag before a long second stream", slices.Concat(headed, ape, long, v1), slices.Concat(headed, long), slices.Concat(headed, long), true, 64,
 			[]string{"MPEG audio", "APEv2", "MPEG audio", "ID3v1"}, []string{fmt.Sprintf("%d byte(s) after an APE tag are audio", len(long))}},
 		{"mp3: a tag filling the resync window", slices.Concat(mp3Frames(40), apeTag(map[string]string{"Title": strings.Repeat("x", 100<<10)}), trailerJunk(10)),
 			mp3Frames(40), slices.Concat(mp3Frames(40), trailerJunk(10)), true, 0,
@@ -463,8 +468,8 @@ func TestLegacyStripKeepsTheAudioEnd(t *testing.T) {
 		{"mp3: two ffmpeg-made files", slices.Concat(lead, mp3, lead, mp3, v1), slices.Concat(mp3, lead, mp3),
 			slices.Concat(lead, mp3, lead, mp3), false, 0,
 			[]string{"ID3v2.4", "MPEG audio", "ID3v1"}, []string{"1 ID3 tag(s) between joined MPEG streams"}},
-		{"mp3: two ffmpeg-made files, the second long", slices.Concat(lead, mp3, lead, long, v1), slices.Concat(mp3, lead, long),
-			slices.Concat(lead, mp3, lead, long), false, 64,
+		{"mp3: two ffmpeg-made files, the second long", slices.Concat(lead, headed, lead, long, v1), slices.Concat(headed, lead, long),
+			slices.Concat(lead, headed, lead, long), false, 64,
 			[]string{"ID3v2.4", "MPEG audio", "ID3v1"}, []string{"1 ID3 tag(s) between joined MPEG streams"}},
 		// The resync window opens 34 bytes before the tag, inside the first stream's last frame.
 		{"mp3: two ffmpeg-made files, the join at the window's start", slices.Concat(lead, mp3, lead, mp3Frames(157)),

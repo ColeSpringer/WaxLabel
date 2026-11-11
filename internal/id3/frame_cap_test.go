@@ -51,8 +51,8 @@ func TestRenderFrontTagClampsPadding(t *testing.T) {
 		t.Fatalf("setup: requested padding %d should have exceeded the field", requested)
 	}
 
-	ft := RenderFrontTag(NewEmpty(4), 4, frames, RebuildInfo{}, pol, srcTagLen,
-		NewEmpty(4), true, false, 0, false, 0, false, 0)
+	ft := RenderFrontTag(FrontTagEdit{SrcTag: NewEmpty(4), Front: NewEmpty(4), Version: 4, Frames: frames,
+		Padding: pol, SrcTagLen: srcTagLen, TagsChanged: true})
 
 	if ft.Padding >= requested {
 		t.Errorf("ft.Padding = %d was not clamped below the requested %d", ft.Padding, requested)

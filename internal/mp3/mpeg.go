@@ -1,6 +1,13 @@
 package mp3
 
-import "encoding/binary"
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+
+	"github.com/colespringer/waxlabel/internal/bits"
+	"github.com/colespringer/waxlabel/internal/core"
+)
 
 // mpegInfo is the decoded technical detail of the MPEG audio stream, derived
 // from the first audio frame header and any VBR header inside it.
@@ -12,9 +19,13 @@ type mpegInfo struct {
 	channels        int
 	frameBitrate    int // the first frame's bitrate (bps); 0 for "free"
 	samplesPerFrame int
+	vbrHeader       bool   // the frame holds a Xing/Info/VBRI header, so no audio
 	vbrFrames       uint32 // frame count from a Xing/Info/VBRI header, else 0
 	vbrBytes        uint32 // stream bytes from a Xing/Info/VBRI header, this frame included, else 0
-	codec           string
+	// encDelay and encPadding are the samples the encoder added before and after the audio, as
+	// the extension LAME and libav write behind a Xing/Info header states them, else 0.
+	encDelay, encPadding int
+	codec                string
 }
 
 // MPEG version field (bits 4-3 of the second header byte).
@@ -54,7 +65,12 @@ var sampleRateTable = [3][4]int{
 func parseMPEG(window []byte) (int, mpegInfo, bool) {
 	i, info, ok := firstFrame(window, confirmNextFrame)
 	if ok {
-		readVBR(window[i:], &info)
+		// The header lies inside its frame; a free-format frame's length is unknown.
+		frame := window[i:]
+		if n := frameLength(info); n > 0 && n < len(frame) {
+			frame = frame[:n]
+		}
+		readVBR(frame, &info)
 	}
 	return i, info, ok
 }
@@ -182,15 +198,22 @@ func samplesPerFrame(version, layer int) int {
 }
 
 func codecName(version, layer int) string {
-	v := "MPEG-1"
+	names := &mpeg1Names
 	switch version {
 	case 2:
-		v = "MPEG-2"
+		names = &mpeg2Names
 	case 25:
-		v = "MPEG-2.5"
+		names = &mpeg25Names
 	}
-	return v + " Layer " + string(rune('0'+layer))
+	return names[layer-1]
 }
+
+// The codec names by layer, held whole so that decoding a header allocates nothing.
+var (
+	mpeg1Names  = [3]string{"MPEG-1 Layer 1", "MPEG-1 Layer 2", "MPEG-1 Layer 3"}
+	mpeg2Names  = [3]string{"MPEG-2 Layer 1", "MPEG-2 Layer 2", "MPEG-2 Layer 3"}
+	mpeg25Names = [3]string{"MPEG-2.5 Layer 1", "MPEG-2.5 Layer 2", "MPEG-2.5 Layer 3"}
+)
 
 // readVBR looks for a Xing/Info or VBRI header inside the first frame and records
 // the total frame count, which gives an accurate duration for variable-bitrate
@@ -207,23 +230,160 @@ func readVBR(frame []byte, info *mpegInfo) {
 			continue
 		}
 		if tag := string(frame[off : off+4]); tag == "Xing" || tag == "Info" {
+			info.vbrHeader = true
 			flags := binary.BigEndian.Uint32(frame[off+4 : off+8])
 			field := off + 8
 			if flags&0x1 != 0 { // frame count present
 				info.vbrFrames = binary.BigEndian.Uint32(frame[field : field+4])
 				field += 4
 			}
-			if flags&0x2 != 0 && field+4 <= len(frame) { // byte count present
+			if flags&0x2 != 0 { // byte count present
+				if field+4 > len(frame) {
+					return
+				}
 				info.vbrBytes = binary.BigEndian.Uint32(frame[field : field+4])
+				field += 4
+			}
+			if flags&0x4 != 0 {
+				field += 100 // seek table
+			}
+			if flags&0x8 != 0 {
+				field += 4 // quality
+			}
+			if field < len(frame) {
+				readEncoderDelays(frame[field:], info)
 			}
 			return
 		}
 	}
 	// VBRI sits at a fixed offset of 32 bytes after the header.
 	if off := 4 + 32; off+18 <= len(frame) && string(frame[off:off+4]) == "VBRI" {
+		info.vbrHeader = true
 		info.vbrBytes = binary.BigEndian.Uint32(frame[off+10 : off+14])
 		info.vbrFrames = binary.BigEndian.Uint32(frame[off+14 : off+18])
 	}
+}
+
+// encoderDelaysOff is where the delays sit in the extension an encoder writes behind the Xing
+// fields: past its 9-byte name, the revision and lowpass bytes, 8 of ReplayGain, the encoding
+// flags and the bitrate.
+const encoderDelaysOff = 21
+
+// readEncoderDelays reads the encoder delay and padding, 12 bits each, from that extension. Only
+// LAME and libav names are believed, the ones ffmpeg trims by.
+func readEncoderDelays(ext []byte, info *mpegInfo) {
+	if len(ext) < encoderDelaysOff+3 {
+		return
+	}
+	switch string(ext[:4]) {
+	case "LAME", "Lavf", "Lavc":
+		v := int(ext[encoderDelaysOff])<<16 | int(ext[encoderDelaysOff+1])<<8 | int(ext[encoderDelaysOff+2])
+		info.encDelay, info.encPadding = v>>12, v&0xFFF
+	}
+}
+
+// mixedBitrates reports whether the frames of f's stream that follow one another from the start
+// of window, where f's frame opens, hold more than one bitrate: a variable-bitrate stream.
+func mixedBitrates(window []byte, f mpegInfo) bool {
+	for i := 0; i+4 <= len(window); {
+		h, ok := decodeHeader(window[i:])
+		if !ok || !sameStream(f, h) || frameLength(h) == 0 {
+			return false
+		}
+		if h.frameBitrate != f.frameBitrate {
+			return true
+		}
+		i += frameLength(h)
+	}
+	return false
+}
+
+// walkBuffer is how much of the stream [walkMPEGFrames] reads at a time.
+const walkBuffer = 64 << 10
+
+// frameRun is what [walkMPEGFrames] counts: frames, and the bytes they hold.
+type frameRun struct {
+	frames uint64
+	bytes  int64
+}
+
+// walkMPEGFrames counts the whole frames of f's stream in ranges, the first of which opens with
+// f's frame. Past bytes that are no frame of the stream (the tags between joined streams, junk) it
+// goes on at the next frame a second one confirms or that ends its range, as [chainEnd] does, so a
+// stream counts the same however it was joined. It reads every byte it walks, walkBuffer at a time
+// into one buffer, and nothing past the end of src.
+func walkMPEGFrames(ctx context.Context, src core.ReaderAtSized, f mpegInfo, ranges [][2]int64, limit int64) (frameRun, error) {
+	var longest int64
+	for _, r := range ranges {
+		longest = max(longest, r[1]-r[0])
+	}
+	if err := bits.CheckAlloc(min(longest, walkBuffer), limit); err != nil {
+		return frameRun{}, err
+	}
+	buf := make([]byte, min(longest, walkBuffer))
+	var (
+		run         frameRun
+		held        []byte // the bytes of buf read, which lie at bufOff
+		bufOff, end int64
+	)
+	// frameAt reads the header at pos as a frame of the stream, 0 for its length when it is none.
+	frameAt := func(pos int64) (int64, error) {
+		if pos+4 > end {
+			return 0, nil
+		}
+		if pos < bufOff || pos+4 > bufOff+int64(len(held)) {
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
+			held, bufOff = buf[:min(end-pos, int64(len(buf)))], pos
+			if ok, err := bits.FillWithin(src, held, pos); err != nil || !ok {
+				held, end = nil, pos
+				return 0, err
+			}
+		}
+		if h, ok := decodeHeader(held[pos-bufOff:]); ok && sameStream(f, h) {
+			return int64(frameLength(h)), nil
+		}
+		return 0, nil
+	}
+	confirmed := true // the frame at pos is the stream's: f's own, or one that followed a frame
+	for _, r := range ranges {
+		held, end = nil, min(r[1], src.Size())
+		for pos := r[0]; pos+4 <= end; {
+			n, err := frameAt(pos)
+			if err != nil {
+				return frameRun{}, err
+			}
+			if n > 0 && !confirmed && pos+n != end {
+				// A header found in bytes that are no frame counts only when a frame follows it.
+				next, err := frameAt(pos + n)
+				if err != nil {
+					return frameRun{}, err
+				}
+				if next == 0 {
+					n = 0
+				}
+			}
+			switch {
+			case n == 0:
+				// Go on at the next byte that can open a header, where the buffer shows one.
+				pos, confirmed = pos+1, false
+				if at := pos - bufOff; at >= 0 && at < int64(len(held)) {
+					if skip := bytes.IndexByte(held[at:], 0xFF); skip >= 0 {
+						pos += int64(skip)
+					} else {
+						pos = bufOff + int64(len(held))
+					}
+				}
+			case pos+n > end:
+				pos = end // the frame the range cuts
+			default:
+				run.frames, run.bytes, pos, confirmed = run.frames+1, run.bytes+n, pos+n, true
+			}
+		}
+		confirmed = false
+	}
+	return run, nil
 }
 
 // sideInfoSize returns the MPEG layer-3 side-information size that precedes a

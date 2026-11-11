@@ -1,6 +1,7 @@
 package id3
 
 import (
+	"bytes"
 	"fmt"
 	"slices"
 	"strings"
@@ -356,8 +357,7 @@ func Render(writeVersion byte, frames []Frame, padding int) []byte {
 		fb = append(fb, renderFrame(writeVersion, f)...)
 	}
 	// Clamp for direct Render callers: padding must not push frames+padding past the
-	// 28-bit size field. RenderFrontTag clamps earlier, WAV/AIFF pass padding=0, and
-	// CheckSize checks the frame bytes.
+	// 28-bit size field. RenderFrontTag clamps earlier and CheckSize checks the frame bytes.
 	if clamped, _ := clampPadding(int64(len(fb))+10, int64(padding)); clamped < int64(padding) {
 		padding = int(clamped)
 	}
@@ -370,6 +370,27 @@ func Render(writeVersion byte, frames []Frame, padding int) []byte {
 	out = append(out, fb...)
 	out = append(out, make([]byte, padding)...)
 	return out
+}
+
+// RenderChunk renders t for a WAV or AIFF chunk in place of src, the tag the chunk held in srcLen
+// bytes, nil for a new chunk. A tag that had padding keeps its size while the frames fit; padding
+// in these chunks is not the caller's to set, so no other tag gets any and no option removes it.
+func RenderChunk(t, src *Tag, srcLen int64) []byte {
+	var pad int64
+	if src != nil && src.Padding() > 0 {
+		if region, n := srcLen-src.behind, RenderedSize(t.Frames()); n <= region {
+			pad = region - n
+		}
+	}
+	return Render(t.WriteVersion(), t.Frames(), int(pad))
+}
+
+// FramesEqual reports whether a and b hold the same frames in the same order.
+func FramesEqual(a, b []Frame) bool {
+	return slices.EqualFunc(a, b, func(x, y Frame) bool {
+		return x.ID == y.ID && x.Flags == y.Flags && x.Opaque == y.Opaque && x.Status == y.Status &&
+			x.Group == y.Group && x.HasGroup == y.HasGroup && bytes.Equal(x.Body, y.Body)
+	})
 }
 
 // RenderedSize returns the on-disk length [Render] would emit for frames with no padding:

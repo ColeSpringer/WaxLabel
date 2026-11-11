@@ -199,6 +199,29 @@ func TestWAVStripInfoConsolidatesToId3(t *testing.T) {
 	}
 }
 
+// Under a strip policy a tagless WAV takes its tags in an id3 chunk alone: a LIST/INFO chunk
+// written now is one the next strip would remove.
+func TestWAVStripOnATaglessFileWritesId3Only(t *testing.T) {
+	data := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVData(400))
+	for name, opt := range map[string]wl.WriteOption{"strip": wl.WithLegacyPolicy(wl.LegacyStrip), "minimal": wl.Minimal} {
+		plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "T").Prepare(opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, data, plan)
+		if bytes.Contains(out, []byte("LIST")) || !bytes.Contains(out, []byte("id3 ")) {
+			t.Errorf("%s: want an id3 chunk and no LIST/INFO; operations %v", name, plan.Report().Operations)
+		}
+		re := mustParseBytes(t, out)
+		if re.Fields().Title != "T" {
+			t.Errorf("%s: title = %q", name, re.Fields().Title)
+		}
+		if again, err := re.Edit().Prepare(opt); err != nil || !again.IsNoOp() {
+			t.Errorf("%s: a second strip is not a no-op (err %v)", name, err)
+		}
+	}
+}
+
 func TestWAVStripInfoConsolidatesToId3WithExistingId3(t *testing.T) {
 	// Source shape: an id3 chunk holds TITLE, while LIST/INFO holds keys not present in id3 (ARTIST,
 	// COPYRIGHT). When --legacy strip removes INFO, those native-only values must be emitted into id3.
@@ -1205,6 +1228,101 @@ func TestWAVStrippedInfoReportsNoConflictResolution(t *testing.T) {
 	}
 }
 
+// --legacy strip moves the LIST/INFO items into the id3 chunk, but a value the id3 chunk disagrees
+// with has no frame to move into, and neither has an item no canonical key holds.
+func TestWAVLegacyStripWarnsAboutDestroyedInfoValues(t *testing.T) {
+	id3 := wavID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Id3 Title")))
+	file := func(items ...[2]string) []byte {
+		return testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo(items...), id3, testfile.WAVData(400))
+	}
+	data := file([2]string{"INAM", "Riff Title"}, [2]string{"IKEY", "Alice"})
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Album, "Z").Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(applyToBytes(t, data, plan), []byte("Riff Title")) {
+		t.Fatal("the strip was expected to destroy the unselected INAM value")
+	}
+	w, ok := warningFor(plan, wl.WarnLegacyStripDropped)
+	if !ok {
+		t.Fatalf("the strip destroyed a value and reported nothing: %v", plan.Report().Warnings)
+	}
+	if !slices.Equal(w.Keys, []tag.Key{tag.Title}) {
+		t.Errorf("warning keys = %v, want TITLE", w.Keys)
+	}
+	for _, want := range []string{"TITLE", "IKEY"} {
+		if !strings.Contains(w.Message, want) {
+			t.Errorf("the warning should name %s, got %q", want, w.Message)
+		}
+	}
+
+	// An edit that writes the value the item held loses nothing: the id3 chunk takes it.
+	data = file([2]string{"INAM", "Riff Title"})
+	rescue, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Riff Title").Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := warningFor(rescue, wl.WarnLegacyStripDropped); ok {
+		t.Errorf("an edit that writes the INFO value must not report it lost: %v", rescue.Report().Warnings)
+	}
+}
+
+// An id3 chunk whose frames an edit leaves alone is copied whole, padding and identifier included,
+// and reports no rewrite.
+func TestWAVUnchangedId3ChunkIsCopiedWhole(t *testing.T) {
+	id3 := testfile.WAVChunk("ID3 ", testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Id3 Title"), make([]byte, 64)))
+	data := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"INAM", "Riff Title"}), id3, testfile.WAVData(400))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Id3 Title").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := applyToBytes(t, data, plan); !bytes.Contains(out, id3) || !bytes.Contains(out, []byte("INAM")) {
+		t.Error("the id3 chunk was not copied whole beside the rewritten LIST/INFO")
+	}
+	if ops := plan.Report().Operations; slices.Contains(ops, "id3 chunk rewrite") || !slices.Contains(ops, "LIST/INFO rewrite") {
+		t.Errorf("operations %v, want the LIST/INFO rewrite and no id3 rewrite", ops)
+	}
+}
+
+// A rewritten id3 chunk keeps its identifier, and its size while the tag had padding the new frames
+// fit in; a tag without padding gains none. No padding option changes that.
+func TestWAVRewrittenId3ChunkKeepsItsIdAndPadding(t *testing.T) {
+	padded := testfile.WAVChunk("ID3 ", testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T"), make([]byte, 64)))
+	bare := testfile.WAVChunk("ID3 ", testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Title")))
+	for _, c := range []struct {
+		name  string
+		chunk []byte
+		title string
+		want  int // the rewritten chunk's body length
+		opts  []wl.WriteOption
+	}{
+		{"padding absorbs the growth", padded, "A Longer Title", len(padded) - 8, nil},
+		{"the frames outgrow the padding", padded, strings.Repeat("x", 200), 10 + 10 + 1 + 200, nil},
+		{"no padding to keep", bare, "T", 10 + 10 + 1 + 1, nil},
+		// The padding is not the caller's to set, as an Opus comment packet's is not.
+		{"the caller asks for none", padded, "Title", len(padded) - 8, []wl.WriteOption{wl.WithPadding(wl.PaddingPolicy{})}},
+		{"the minimal preset", padded, "Title", len(padded) - 8, []wl.WriteOption{wl.Minimal}},
+		{"the caller asks for more", padded, "Title", len(padded) - 8, []wl.WriteOption{wl.WithPadding(wl.PaddingPolicy{Target: 4096, Min: 4096, ReuseInPlace: true})}},
+	} {
+		data := testfile.WAV(testfile.WAVFmtPCM(), c.chunk, testfile.WAVData(400))
+		plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, c.title).Prepare(c.opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, data, plan)
+		_, chunk, found := bytes.Cut(out, []byte("ID3 "))
+		if !found || bytes.Contains(out, []byte("id3 ")) {
+			t.Fatalf("%s: the chunk did not keep its identifier", c.name)
+		}
+		if got := int(binary.LittleEndian.Uint32(chunk)); got != c.want {
+			t.Errorf("%s: chunk body is %d bytes, want %d", c.name, got, c.want)
+		}
+		if got := mustParseBytes(t, out).Fields().Title; got != c.title {
+			t.Errorf("%s: title %q", c.name, got)
+		}
+	}
+}
+
 // ITCH is ffmpeg's encoded_by; both it and IENG have canonical keys and read, copy and write like
 // the other INFO items.
 func TestWAVTechnicianAndEngineerItemsProject(t *testing.T) {
@@ -1240,6 +1358,7 @@ func TestWAVDroppedId3ChunkNamesWhatItLoses(t *testing.T) {
 	}{
 		{"a duplicate holding a POPM frame", [][]byte{front, popm}, `1 "POPM" frame(s)`},
 		{"an unreadable duplicate", [][]byte{front, unreadable}, "1 unreadable id3 chunk(s)"},
+		{"a duplicate with bytes behind its tag", [][]byte{front, wavID3(slices.Concat(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Primary")), []byte("JUNKJUNK")))}, "8 unreadable byte(s)"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			data := testfile.WAV(slices.Concat([][]byte{testfile.WAVFmtPCM()}, c.chunks, [][]byte{testfile.WAVData(400)})...)

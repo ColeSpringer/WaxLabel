@@ -167,7 +167,9 @@ func (p Properties) First() AudioTrack {
 	return p.Tracks[0]
 }
 
-// Duration returns the longest track duration (playable length).
+// Duration returns the longest track duration (playable length). An MP3 of mixed bitrates
+// that no Xing or VBRI header counts states its length nowhere, so its parse counts the
+// frames, reading the whole stream.
 func (p Properties) Duration() time.Duration {
 	var max time.Duration
 	for _, t := range p.Tracks {

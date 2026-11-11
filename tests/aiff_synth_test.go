@@ -480,6 +480,29 @@ func TestAIFFStripNativeConsolidatesToId3(t *testing.T) {
 	}
 }
 
+// Under a strip policy a tagless AIFF takes its tags in an ID3 chunk alone: a native text chunk
+// written now is one the next strip would remove.
+func TestAIFFStripOnATaglessFileWritesId3Only(t *testing.T) {
+	data := testfile.AIFF("AIFF", stdCOMM(), stdSSND())
+	for name, opt := range map[string]wl.WriteOption{"strip": wl.WithLegacyPolicy(wl.LegacyStrip), "minimal": wl.Minimal} {
+		plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "T").Prepare(opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, data, plan)
+		if bytes.Contains(out, []byte("NAME")) || !bytes.Contains(out, []byte("ID3 ")) {
+			t.Errorf("%s: want an ID3 chunk and no NAME; operations %v", name, plan.Report().Operations)
+		}
+		re := mustParseBytes(t, out)
+		if re.Fields().Title != "T" {
+			t.Errorf("%s: title = %q", name, re.Fields().Title)
+		}
+		if again, err := re.Edit().Prepare(opt); err != nil || !again.IsNoOp() {
+			t.Errorf("%s: a second strip is not a no-op (err %v)", name, err)
+		}
+	}
+}
+
 func TestAIFFStripNativeConsolidatesToId3WithExistingId3(t *testing.T) {
 	// An ID3 chunk holds TITLE; native text chunks hold keys ID3 lacks (AUTH -> Artist, "(c) " ->
 	// Copyright). When --legacy strip removes the native chunks, those values must move into ID3.
@@ -850,8 +873,8 @@ func TestAIFFLegacyStripWarnsAboutDestroyedTextValues(t *testing.T) {
 	if !ok {
 		t.Fatalf("the strip destroyed a value and reported nothing: %v", plan.Report().Warnings)
 	}
-	if !strings.Contains(w.Message, "TITLE") {
-		t.Errorf("the warning should name the key that was lost, got %q", w.Message)
+	if !strings.Contains(w.Message, "TITLE") || !slices.Equal(w.Keys, []tag.Key{tag.Title}) {
+		t.Errorf("the warning should name the key that was lost, got %q keyed %v", w.Message, w.Keys)
 	}
 
 	// The control: an edit that writes the value the chunk held loses nothing, because the
@@ -862,6 +885,197 @@ func TestAIFFLegacyStripWarnsAboutDestroyedTextValues(t *testing.T) {
 	}
 	if _, ok := warningFor(rescue, wl.WarnLegacyStripDropped); ok {
 		t.Errorf("an edit that writes the native value must not report it lost: %v", rescue.Report().Warnings)
+	}
+}
+
+// A native text chunk an edit does not touch is copied where it stands, whole: one behind the
+// sound chunk stays there, and the NUL a value ends with stays with it.
+func TestAIFFUntouchedTextChunksStayInPlace(t *testing.T) {
+	name, anno := aiffText("NAME", "T"), testfile.AIFFChunk("ANNO", []byte("hello world\x00"))
+	data := testfile.AIFF("AIFF", stdCOMM(), name, stdSSND(), anno)
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Album, "Z").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	ssnd := bytes.Index(out, []byte("SSND"))
+	if i := bytes.Index(out, name); i < 0 || i > ssnd {
+		t.Errorf("NAME at %d, want it whole ahead of SSND at %d", i, ssnd)
+	}
+	if i := bytes.Index(out, anno); i < ssnd {
+		t.Errorf("ANNO at %d, want all 12 bytes of it behind SSND at %d", i, ssnd)
+	}
+	if ops := plan.Report().Operations; slices.Contains(ops, "native text chunk rewrite") {
+		t.Errorf("operations %v, want no native rewrite", ops)
+	}
+	if got := mustParseBytes(t, out).Fields(); got.Title != "T" || got.Album != "Z" {
+		t.Errorf("title %q album %q after the edit", got.Title, got.Album)
+	}
+}
+
+// Bytes behind the NUL that ends a text chunk's value are reported, survive an edit of another
+// key, and die, warned, with an edit, a clear or a strip of the chunk that holds them.
+func TestAIFFBytesPastTheTerminator(t *testing.T) {
+	name := testfile.AIFFChunk("NAME", []byte("Hello\x00World!"))
+	data := testfile.AIFF("AIFF", stdCOMM(), name, stdSSND())
+	doc := mustParseBytes(t, data)
+	if doc.Fields().Title != "Hello" || !hasWarning(doc, wl.WarnMalformedTagEntry) {
+		t.Errorf("title %q, warnings %v; want Hello and the hidden bytes reported", doc.Fields().Title, doc.Warnings())
+	}
+	plan, err := doc.Edit().Set(tag.Composer, "Stravinsky").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planWarns(t, plan, wl.WarnMalformedTagEntryDropped) || !bytes.Contains(applyToBytes(t, data, plan), name) {
+		t.Errorf("an edit of another key must keep the chunk whole and silent: %v", plan.Report().Warnings)
+	}
+	for what, edit := range map[string]func(*wl.Editor) *wl.Editor{
+		"an edit":  func(e *wl.Editor) *wl.Editor { return e.Set(tag.Title, "New") },
+		"a clear":  func(e *wl.Editor) *wl.Editor { return e.Clear(tag.Title) },
+		"a resave": func(e *wl.Editor) *wl.Editor { return e.Set(tag.Title, "Hello") },
+	} {
+		plan, err := edit(doc.Edit()).Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := what != "a resave"; planWarns(t, plan, wl.WarnMalformedTagEntryDropped) != want {
+			t.Errorf("%s of the chunk: dropped warning present = %v, want %v", what, !want, want)
+		}
+	}
+	strip, err := doc.Edit().Set(tag.Composer, "Stravinsky").Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !planWarns(t, strip, wl.WarnMalformedTagEntryDropped) {
+		t.Errorf("a strip destroys the hidden bytes and must say so: %v", strip.Report().Warnings)
+	}
+	// Zeros behind the NUL are padding a rewrite loses nothing by dropping.
+	padded := mustParseBytes(t, testfile.AIFF("AIFF", stdCOMM(), testfile.AIFFChunk("NAME", []byte("Hello\x00\x00\x00")), stdSSND()))
+	if hasWarning(padded, wl.WarnMalformedTagEntry) {
+		t.Errorf("NUL padding reported: %v", padded.Warnings())
+	}
+}
+
+// A comment edit that leaves the ANNO chunks' values as they are changes nothing: each chunk stays
+// where it stands with the bytes behind its NUL, and saving the same comments again is a no-op.
+func TestAIFFCommentsSetToWhatTheChunksHoldIsANoOp(t *testing.T) {
+	x, y := testfile.AIFFChunk("ANNO", []byte("x\x00junk")), aiffText("ANNO", "y")
+	data := testfile.AIFF("AIFF", stdCOMM(), aiffText("NAME", "T"), x, stdSSND(), y)
+	doc := mustParseBytes(t, data)
+	plan, err := doc.Edit().Set(tag.Comment, "x", "y").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.IsNoOp() || planWarns(t, plan, wl.WarnMalformedTagEntryDropped) {
+		t.Errorf("operations %v, warnings %v; want a no-op that loses nothing", plan.Report().Operations, plan.Report().Warnings)
+	}
+
+	// One value changed: its chunk alone is re-rendered, where it stands.
+	plan, err = doc.Edit().Set(tag.Comment, "x", "z").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if i := bytes.Index(out, aiffText("ANNO", "z")); !bytes.Contains(out, x) || i < bytes.Index(out, []byte("SSND")) {
+		t.Errorf("want the first ANNO whole and the changed one still behind SSND (found at %d)", i)
+	}
+	re := mustParseBytes(t, out)
+	if again, err := re.Edit().Set(tag.Comment, "x", "z").Prepare(); err != nil || !again.IsNoOp() {
+		t.Errorf("saving the same comments again is not a no-op (err %v)", err)
+	}
+
+	// A third value follows the chunks the file holds; a dropped one takes its chunk with it.
+	grown, err := doc.Edit().Set(tag.Comment, "x", "y", "w").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := applyToBytes(t, data, grown); !bytes.Contains(out, x) || !bytes.Contains(out, slices.Concat(y, aiffText("ANNO", "w"))) {
+		t.Error("want both ANNO chunks whole and the new one right behind the second")
+	}
+	shrunk, err := doc.Edit().Set(tag.Comment, "x").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := applyToBytes(t, data, shrunk); !bytes.Contains(out, x) || bytes.Contains(out, y) {
+		t.Error("want the first ANNO whole and the second gone")
+	}
+}
+
+// A text chunk an edit creates goes ahead of the sound, behind the last text chunk there, so a
+// reader that stops at SSND finds it; chunks behind the sound stay where they are.
+func TestAIFFCreatedTextChunkGoesAheadOfTheSound(t *testing.T) {
+	name, anno, auth := aiffText("NAME", "T"), aiffText("ANNO", "c"), aiffText("AUTH", "Someone")
+	for what, c := range map[string]struct{ data, want []byte }{
+		"a text chunk on each side": {testfile.AIFF("AIFF", stdCOMM(), name, stdSSND(), anno), slices.Concat(name, auth, stdSSND(), anno)},
+		"text chunks behind only":   {testfile.AIFF("AIFF", stdCOMM(), stdSSND(), anno), slices.Concat(auth, stdSSND(), anno)},
+	} {
+		plan, err := mustParseBytes(t, c.data).Edit().Set(tag.Artist, "Someone").Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out := applyToBytes(t, c.data, plan); !bytes.Contains(out, c.want) {
+			t.Errorf("%s: AUTH is not ahead of SSND behind the text chunks there; operations %v", what, plan.Report().Operations)
+		}
+	}
+}
+
+// Setting a key to the value the ID3 chunk already gives it is how a caller asks for the native
+// chunk too: the chunk is created and the ID3 chunk, whose frames do not change, is copied whole.
+func TestAIFFSameValueSetCreatesTheNativeChunk(t *testing.T) {
+	id3 := aiffID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T"), testfile.TextFrame(3, "TPE1", "A"), make([]byte, 64)))
+	data := testfile.AIFF("AIFF", stdCOMM(), aiffText("NAME", "T"), id3, stdSSND())
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Artist, "A").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if !bytes.Contains(out, aiffText("AUTH", "A")) {
+		t.Error("an explicit set of the projected value did not create AUTH")
+	}
+	if !bytes.Contains(out, id3) {
+		t.Error("the ID3 chunk, whose frames did not change, was not copied whole with its padding")
+	}
+	if ops := plan.Report().Operations; !slices.Equal(ops, []string{"native text chunk rewrite"}) {
+		t.Errorf("operations %v, want the native rewrite alone", ops)
+	}
+}
+
+// A rewritten ID3 chunk keeps its identifier, and its size while the tag had padding the new frames
+// fit in; a tag without padding gains none. No padding option changes that.
+func TestAIFFRewrittenId3ChunkKeepsItsIdAndPadding(t *testing.T) {
+	padded := testfile.AIFFChunk("id3 ", testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T"), make([]byte, 64)))
+	bare := testfile.AIFFChunk("id3 ", testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Title")))
+	for _, c := range []struct {
+		name  string
+		chunk []byte
+		title string
+		want  int // the rewritten chunk's body length
+		opts  []wl.WriteOption
+	}{
+		{"padding absorbs the growth", padded, "A Longer Title", len(padded) - 8, nil},
+		{"the frames outgrow the padding", padded, strings.Repeat("x", 200), 10 + 10 + 1 + 200, nil},
+		{"no padding to keep", bare, "T", 10 + 10 + 1 + 1, nil},
+		// The padding is not the caller's to set, as an Opus comment packet's is not.
+		{"the caller asks for none", padded, "Title", len(padded) - 8, []wl.WriteOption{wl.WithPadding(wl.PaddingPolicy{})}},
+		{"the minimal preset", padded, "Title", len(padded) - 8, []wl.WriteOption{wl.Minimal}},
+		{"the caller asks for more", padded, "Title", len(padded) - 8, []wl.WriteOption{wl.WithPadding(wl.PaddingPolicy{Target: 4096, Min: 4096, ReuseInPlace: true})}},
+	} {
+		data := testfile.AIFF("AIFF", stdCOMM(), c.chunk, stdSSND())
+		plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, c.title).Prepare(c.opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, data, plan)
+		_, chunk, found := bytes.Cut(out, []byte("id3 "))
+		if !found || bytes.Contains(out, []byte("ID3 ")) {
+			t.Fatalf("%s: the chunk did not keep its identifier", c.name)
+		}
+		if got := int(binary.BigEndian.Uint32(chunk)); got != c.want {
+			t.Errorf("%s: chunk body is %d bytes, want %d", c.name, got, c.want)
+		}
+		if got := mustParseBytes(t, out).Fields().Title; got != c.title {
+			t.Errorf("%s: title %q", c.name, got)
+		}
 	}
 }
 
@@ -878,6 +1092,7 @@ func TestAIFFDroppedId3ChunkNamesWhatItLoses(t *testing.T) {
 	}{
 		{"a duplicate holding a POPM frame", [][]byte{front, popm}, `1 "POPM" frame(s)`},
 		{"an unreadable duplicate", [][]byte{front, unreadable}, "1 unreadable ID3 chunk(s)"},
+		{"a duplicate with bytes behind its tag", [][]byte{front, aiffID3(slices.Concat(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Primary")), []byte("JUNKJUNK")))}, "8 unreadable byte(s)"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			data := testfile.AIFF("AIFF", slices.Concat([][]byte{stdCOMM(), stdSSND()}, c.chunks)...)

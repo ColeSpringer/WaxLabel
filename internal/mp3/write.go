@@ -82,9 +82,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	// Render front tag; drop empty (shared id3.RenderFrontTag policy).
 
-	ft := id3.RenderFrontTag(srcTag, version, newFrames, info, opts.Padding, d.id3Len,
-		d.id3, tagsChanged, picturesChanged, len(edited.Pictures), chaptersChanged, len(edited.Chapters),
-		syncedLyricsChanged, len(edited.SyncedLyrics))
+	ft := id3.RenderFrontTag(id3.FrontTagEdit{
+		SrcTag: srcTag, Front: d.id3, Version: version, Frames: newFrames, Info: info, Padding: opts.Padding,
+		SrcTagLen: d.id3Len, Gap: d.firstFrameOff - d.frontEnd,
+		TagsChanged:     tagsChanged,
+		PicturesChanged: picturesChanged, Pictures: len(edited.Pictures),
+		ChaptersChanged: chaptersChanged, Chapters: len(edited.Chapters),
+		SyncedLyricsChanged: syncedLyricsChanged, SyncedLyrics: len(edited.SyncedLyrics),
+	})
 	report.PaddingAfter = ft.Padding
 	report.Operations = append(report.Operations, ft.Operations...)
 	report.Warnings = append(report.Warnings, ft.Warnings...)

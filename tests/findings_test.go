@@ -210,7 +210,7 @@ func TestCopyChaptersDestinationFitWarnings(t *testing.T) {
 // normalization.
 func TestCopyRunToEOFChapterStaysEqual(t *testing.T) {
 	src := mustParseFile(t, chaptersMKA)  // ~0.6s, Finale runs 0.400 -> 0.600 (source EOF)
-	dstBytes := readFixture(t, notagsMP3) // ~2.04s, longer than the source
+	dstBytes := readFixture(t, notagsMP3) // 2.00s, longer than the source
 	dst := mustParseBytes(t, dstBytes)
 
 	plan, _, err := src.PrepareTransfer(dst)

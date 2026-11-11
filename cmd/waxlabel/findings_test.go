@@ -818,15 +818,16 @@ func TestSetVerifyConfirmation(t *testing.T) {
 	}
 }
 
-// Clearing the only ID3v2 frame of an MP3 with a zero byte before its first frame drops the tag and
-// leaves the zero byte first, so the output no longer reads as MP3: the save refuses as invalid data,
-// with or without --verify, and leaves the file as it was with no temp behind.
-func TestSetRefusesOutputThatNoLongerIdentifies(t *testing.T) {
+// Clearing the only ID3v2 frame of an MP3 with a zero byte before its first frame keeps an empty
+// tag, so the output still reads as MP3: the save succeeds, with or without --verify, and dump
+// reads the result.
+func TestSetClearingTheLastFrameKeepsTheFileReadable(t *testing.T) {
 	audio, err := os.ReadFile(notagsMP3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := slices.Concat(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Old Title")), []byte{0}, audio)
+	lead := testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "Old Title"))
+	src := slices.Concat(lead, []byte{0}, audio)
 	for _, args := range [][]string{{"set", "--clear", "TITLE", "--verify"}, {"set", "--clear", "TITLE"}, {"--json", "set", "--clear", "TITLE", "--verify"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			dir := t.TempDir()
@@ -835,18 +836,17 @@ func TestSetRefusesOutputThatNoLongerIdentifies(t *testing.T) {
 				t.Fatal(err)
 			}
 			out, stderr, code := runCLI(t, append(args, file)...)
-			if code != 4 {
-				t.Fatalf("exit = %d, want 4 (invalid-data); stdout=%s stderr=%s", code, out, stderr)
+			if code != 0 {
+				t.Fatalf("exit = %d, want 0; stdout=%s stderr=%s", code, out, stderr)
 			}
-			if args[0] == "--json" {
-				if elems := decodeJSONList[jsonErrorEntry](t, out); len(elems) != 1 || elems[0].Error.Code != "invalid-data" {
-					t.Errorf("JSON = %s, want one invalid-data error", out)
-				}
-			} else if !strings.Contains(stderr, "invalid data") || !strings.Contains(stderr, "MP3") {
-				t.Errorf("stderr should say the written file no longer reads as MP3:\n%s", stderr)
+			if args[0] != "--json" && !strings.Contains(out, "ID3v2 emptied (kept: 1 byte(s) precede the first frame)") {
+				t.Errorf("the plan should say the tag header is kept:\n%s", out)
 			}
-			if got, _ := os.ReadFile(file); !bytes.Equal(got, src) {
-				t.Error("the refused save changed the file")
+			if got, _ := os.ReadFile(file); !bytes.Equal(got, slices.Concat(testfile.ID3v2(4, make([]byte, len(lead)-10)), []byte{0}, audio)) {
+				t.Error("the file is not an empty tag of the old one's size, the zero byte and the audio")
+			}
+			if dumped, _, code := runCLI(t, "dump", file); code != 0 || strings.Contains(dumped, "TITLE") {
+				t.Errorf("dump exit = %d, want 0 and no TITLE:\n%s", code, dumped)
 			}
 			assertNoTempsIn(t, dir)
 		})

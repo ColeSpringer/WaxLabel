@@ -74,9 +74,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	var info mpegInfo
 	var end measure
 	found := false
+	frameAt, mixed := int64(0), false            // where the first frame opens, and whether the frames after it vary in bitrate
 	first, peeled := measure{end: -1}, int64(-1) // the first measure, over the file, and where its tags begin
 	d.layout, err = tail.ScanLegacy(src, size, floor, limit, opts.Limits.MaxElements, func(in core.ReaderAtSized, boundary int64) (int64, error) {
-		info, end, found = mpegInfo{}, measure{}, false
+		info, end, found, mixed = mpegInfo{}, measure{}, false, false
 		if !stream {
 			return -1, nil
 		}
@@ -90,7 +91,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			return -1, nil
 		}
 		info, found = f, true
-		end, err = audioEnd(ctx, in, f, d.firstFrameOff+int64(i), boundary, limit)
+		frameAt, mixed = d.firstFrameOff+int64(i), mixedBitrates(window[i:], f)
+		end, err = audioEnd(ctx, in, f, frameAt, boundary, limit)
 		if peeled < 0 {
 			first, peeled = end, boundary
 		}
@@ -132,7 +134,15 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 		warnings = id3.WarnJoinedTags(warnings, end.tags, "MPEG")
 		d.firstHeader = info.header
-		d.track = buildTrack(info, audioBytes)
+		// A stream of mixed bitrates with no VBR header states its length nowhere, so its
+		// frames are counted: the one case that reads the whole stream.
+		var walked frameRun
+		if info.vbrFrames == 0 && mixed {
+			if walked, err = walkMPEGFrames(ctx, src, info, d.layout.Essence(frameAt), limit); err != nil {
+				return nil, err
+			}
+		}
+		d.track = buildTrack(info, audioBytes, walked)
 		// A header's byte count past the tags by a frame or more is a truncation, and so is a byte
 		// count or a frame that claims audio past a tag found before them, where the audio ends, unless
 		// the stream goes on after the tag. Where frames follow the tag, the measure over the file
@@ -204,15 +214,27 @@ func lenientStart(src core.ReaderAtSized, from, limit int64, maxElements int) (i
 	return from + int64(i), ok, nil
 }
 
-// buildTrack assembles the audio properties, computing an accurate duration from
-// a VBR frame count when present, else from the (constant) frame bitrate.
-func buildTrack(info mpegInfo, audioBytes int64) core.AudioTrack {
+// buildTrack assembles the audio properties. The length is the frame count's less the encoder's
+// delay and padding: the count a VBR header states, else walked's, the frames of a stream of mixed
+// bitrates without one, less the header's own frame; with neither, the (constant) frame bitrate's.
+// The average bitrate is over the frames as encoded, delay and padding included.
+func buildTrack(info mpegInfo, audioBytes int64, walked frameRun) core.AudioTrack {
 	t := core.AudioTrack{Codec: info.codec, SampleRate: info.sampleRate, Channels: info.channels}
-	switch {
-	case info.vbrFrames > 0 && info.sampleRate > 0:
-		t.TotalSamples = uint64(info.vbrFrames) * uint64(info.samplesPerFrame)
+	frames := uint64(info.vbrFrames)
+	if frames == 0 && walked.frames > 0 {
+		frames, audioBytes = walked.frames, walked.bytes
+		if info.vbrHeader {
+			frames, audioBytes = frames-1, audioBytes-int64(frameLength(info))
+		}
+	}
+	switch encoded := frames * uint64(info.samplesPerFrame); {
+	case encoded > 0 && info.sampleRate > 0:
+		t.TotalSamples = encoded
+		if trim := uint64(info.encDelay + info.encPadding); trim < encoded {
+			t.TotalSamples -= trim
+		}
 		t.Duration = core.SamplesToDuration(t.TotalSamples, info.sampleRate)
-		t.Bitrate = core.AverageBitrate(audioBytes, t.Duration.Seconds())
+		t.Bitrate = core.AverageBitrate(audioBytes, core.SamplesToDuration(encoded, info.sampleRate).Seconds())
 	case info.frameBitrate > 0:
 		t.Bitrate = info.frameBitrate
 		secs := float64(audioBytes) * 8 / float64(info.frameBitrate)

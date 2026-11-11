@@ -69,82 +69,98 @@ func textRepresentable(ts tag.TagSet, changed map[tag.Key]bool) bool {
 	return true
 }
 
-// rebuildText re-renders only the chunks whose canonical key this edit changed and
-// copies every other chunk verbatim, so a duplicate NAME and a value the ID3 chunk
-// disagrees with both survive an unrelated edit.
-func rebuildText(orig []textItem, edited tag.TagSet, changed map[tag.Key]bool) []outChunk {
-	var out []outChunk
-	emitted := map[tag.Key]bool{}
+// textPlan is what a rewrite does with the native text chunks: the fate of each one the file
+// holds, in file order, and the chunks created for keys it held none for.
+type textPlan struct {
+	at      []textDecision
+	created []textItem
+}
 
-	emit := func(id [4]byte, key tag.Key) {
-		if emitted[key] {
-			return
+// textDecision is one chunk's fate: copied whole when keep is set, and followed, or else replaced,
+// by out. Neither drops it.
+type textDecision struct {
+	keep bool
+	out  []textItem
+}
+
+// rebuildText re-renders only the chunks whose canonical key this edit changed and keeps every
+// other chunk whole where it stands, so a duplicate NAME and a value the ID3 chunk disagrees
+// with both survive an unrelated edit. A changed key's chunks take its edited values in order:
+// one already holding its value is kept too, values past the chunks follow the last of them,
+// and chunks past the values go.
+func rebuildText(orig []textItem, edited tag.TagSet, changed map[tag.Key]bool) textPlan {
+	p := textPlan{at: make([]textDecision, len(orig))}
+	// A present-empty value is a zero-length chunk. Only ANNO repeats.
+	values := func(key tag.Key) []string {
+		vals, _ := edited.Get(key)
+		if key != tag.Comment && len(vals) > 1 {
+			vals = vals[:1]
 		}
-		emitted[key] = true
-		if key == tag.Comment {
-			vals, _ := edited.Get(key)
-			for _, v := range vals {
-				out = append(out, textOut(id, v)) // emit each value, including a present-empty (zero-length) ANNO
-			}
-			return
+		return vals
+	}
+	taken := map[tag.Key]int{} // how many of a changed key's values its chunks hold so far
+	last := map[tag.Key]int{}  // the last chunk holding one
+
+	for i, it := range orig {
+		// parse collects a chunk into texts only when it maps.
+		key, _ := mapping.AIFFTextKey(it.id4())
+		if !changed[key] {
+			p.at[i].keep = true
+			continue
 		}
-		if v, ok := edited.First(key); ok {
-			out = append(out, textOut(id, v)) // present (even empty) -> a chunk; a present-empty is zero-length
+		vals, n := values(key), taken[key]
+		taken[key] = n + 1
+		if n >= len(vals) {
+			continue
+		}
+		last[key] = i
+		if v := []byte(vals[n]); bytes.Equal(v, it.raw) {
+			p.at[i].keep = true
+		} else {
+			p.at[i].out = []textItem{{id: it.id, raw: v}}
 		}
 	}
-
-	for _, it := range orig {
-		key, ok := mapping.AIFFTextKey(it.id4())
-		if !ok {
-			// Unreachable: parse collects a chunk into texts only when it maps. An unmapped
-			// chunk is an ordinary chunk that planChunks preserves verbatim.
-			continue
+	for key, i := range last {
+		vals := values(key)
+		for _, v := range vals[min(taken[key], len(vals)):] {
+			p.at[i].out = append(p.at[i].out, textItem{id: orig[i].id, raw: []byte(v)})
 		}
-		if !changed[key] {
-			// Untouched: the file's own bytes, whatever the projection holds.
-			out = append(out, outChunk{id: it.id, body: it.raw, bodyLen: int64(len(it.raw))})
-			continue
-		}
-		emit(it.id, key)
 	}
 	for _, k := range edited.Keys() {
 		// The changed gate keeps a no-op a no-op: without it, an AIFF whose text chunks do
 		// not mirror its ID3 chunk would gain a chunk on every write.
-		if !changed[k] || emitted[k] {
+		if _, held := taken[k]; !changed[k] || held {
 			continue
 		}
 		if id, ok := mapping.AIFFKeyText(k); ok {
 			var id4 [4]byte
 			copy(id4[:], id)
-			emit(id4, k)
+			for _, v := range values(k) {
+				p.created = append(p.created, textItem{id: id4, raw: []byte(v)})
+			}
 		}
 	}
-	return out
+	return p
 }
 
-// equalTextChunks reports whether the rebuilt chunks carry the same identifiers and bytes,
-// in the same order, as the ones the file already holds.
-func equalTextChunks(out []outChunk, orig []textItem) bool {
-	return slices.EqualFunc(out, orig, func(x outChunk, y textItem) bool {
-		return x.id == y.id && bytes.Equal(x.body, y.raw)
-	})
+// holds reports whether the output holds any text chunk.
+func (p textPlan) holds() bool {
+	return len(p.created) > 0 || slices.ContainsFunc(p.at, func(d textDecision) bool { return d.keep || len(d.out) > 0 })
 }
 
-// textBytesChange reports whether re-emitting the native text chunks will change the
-// bytes they occupy.
-func textBytesChange(d *doc, newText []outChunk) bool {
-	if !equalTextChunks(newText, d.texts) {
-		return true
-	}
-	for j, idx := range d.textIdx {
-		if d.chunks[idx].bodyLen != int64(len(d.texts[j].raw)) {
-			return true // bytes past an interior NUL have nowhere to go
-		}
-		if j > 0 && idx != d.textIdx[j-1]+1 {
-			return true // the group is not contiguous, so regrouping moves chunks
+// rewrites reports whether the plan replaces, drops or adds a chunk.
+func (p textPlan) rewrites() bool {
+	return len(p.created) > 0 || slices.ContainsFunc(p.at, func(d textDecision) bool { return !d.keep || len(d.out) > 0 })
+}
+
+// lostTail counts the bytes behind a value's NUL in the chunks the plan does not keep.
+func (p textPlan) lostTail(orig []textItem) (n int64) {
+	for i, d := range p.at {
+		if !d.keep {
+			n += orig[i].tail
 		}
 	}
-	return false
+	return n
 }
 
 // textConflictKeys lists the keys this write re-renders whose AIFF family entry
@@ -162,30 +178,10 @@ func textConflictKeys(fams []core.FamilyValue, changed map[tag.Key]bool) []tag.K
 	return out
 }
 
-// strippedTextKeys lists the canonical keys whose native text chunk holds a value no
-// ID3 frame will hold: the projection did not select it (the ID3 chunk disagreed, or
-// it duplicates a value the canonical set lacks) and this edit did not write it.
-func strippedTextKeys(fams []core.FamilyValue, edited tag.TagSet) []tag.Key {
-	var out []tag.Key
-	seen := map[tag.Key]bool{}
-	kept := core.FamilySelector(edited)
-	for _, f := range fams {
-		if f.Family != core.FamilyAIFF || f.Selected || seen[f.Key] || len(f.Values) == 0 {
-			continue
-		}
-		if kept(f.Key, f.Values[0]) {
-			continue // this edit wrote the value the chunk held; the ID3 chunk takes it
-		}
-		seen[f.Key] = true
-		out = append(out, f.Key)
-	}
-	return out
-}
-
 // textOut builds one native text output chunk: the value bytes verbatim, with no NUL
 // terminator; assemble word-aligns it.
-func textOut(id [4]byte, value string) outChunk {
-	return outChunk{id: id, body: []byte(value), bodyLen: int64(len(value))}
+func textOut(it textItem) outChunk {
+	return outChunk{id: it.id, body: it.raw, bodyLen: int64(len(it.raw)), text: &it}
 }
 
 // nativeReducedWarnings notes each multi-valued key reduced to its first value in a

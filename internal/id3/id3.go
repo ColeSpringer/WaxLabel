@@ -12,6 +12,7 @@
 package id3
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"slices"
@@ -61,6 +62,45 @@ type Tag struct {
 	// unbounded records an ignored front tag that declares more bytes than the file holds,
 	// so its extent past the header is unknown ([Tag.Unbounded]).
 	unbounded bool
+	// behind counts the bytes of the region [ParseTag] read that lie past the tag, unless they
+	// are all zero: what a WAV or AIFF chunk longer than its tag holds ([Tag.Behind]).
+	behind int64
+}
+
+// Behind reports the bytes that follow the tag in the region it was parsed from, 0 when they are
+// all zero. A rewrite of that region does not carry them.
+func (t *Tag) Behind() int64 {
+	if t == nil {
+		return 0
+	}
+	return t.behind
+}
+
+// WarnBehind appends the read warning for the bytes a WAV or AIFF chunk holds behind t.
+func WarnBehind(ws []core.Warning, t *Tag) []core.Warning {
+	if n := t.Behind(); n > 0 {
+		ws = core.Warn(ws, core.WarnMalformedTagEntry, fmt.Sprintf(
+			"%d byte(s) follow the ID3v2 tag inside its chunk; kept until an edit rewrites the chunk", n))
+	}
+	return ws
+}
+
+// ChunkKept reports whether a rewrite leaves the WAV or AIFF chunk holding src alone: rebuilt,
+// the tag rebuilt from it, holds the same frames, so the chunk is copied whole, with its padding
+// and whatever its tag could not read.
+func ChunkKept(src, rebuilt *Tag) bool {
+	return src != nil && rebuilt != nil && FramesEqual(rebuilt.Frames(), src.Frames())
+}
+
+// AppendChunkDropped appends the warnings for what a rewrite of src's chunk, or its removal,
+// loses: the unreadable tail of its tag ([AppendMalformedTailDropped]) and the bytes behind it.
+func AppendChunkDropped(ws []core.Warning, src *Tag, written bool) []core.Warning {
+	ws = AppendMalformedTailDropped(ws, src, written)
+	if n := src.Behind(); n > 0 {
+		ws = core.Warn(ws, core.WarnMalformedTagEntryDropped, fmt.Sprintf(
+			"%d byte(s) that follow the ID3v2 tag inside its chunk are not carried into the rewritten file", n))
+	}
+	return ws
 }
 
 // Unbounded reports an ignored front tag that declares more bytes than the file holds: its
@@ -166,6 +206,7 @@ func (t *Tag) WithFrames(frames []Frame) *Tag {
 	c.malformedID, c.malformedTail, c.tailCause = "", 0, 0 // a rewritten tag has no unreadable tail
 	c.ignored = ""
 	c.plainSizes, c.unbounded = false, false
+	c.behind = 0
 	return &c
 }
 
@@ -499,7 +540,9 @@ func digest(t *Tag) DupDigest {
 	for _, f := range t.uncarried() {
 		d.frames = append(d.frames, frameDigest{id: f.ID, hash: frameHash(f)})
 	}
+	// What the tag could not read, and what its chunk holds behind it.
 	_, d.unread = t.MalformedTail()
+	d.unread += t.behind
 	return d
 }
 
@@ -757,6 +800,9 @@ func ParseTag(data []byte, maxElements int) (*Tag, error) {
 	body := data[10:end]
 
 	t := &Tag{srcVersion: major, revision: data[4]}
+	if rest := data[min(size, int64(len(data))):]; len(bytes.TrimRight(rest, "\x00")) > 0 {
+		t.behind = int64(len(rest))
+	}
 	t.writeVersion = major
 	if major == 2 {
 		t.writeVersion = 3 // modernise obsolete v2.2 on write

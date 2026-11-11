@@ -63,8 +63,9 @@ func WithPadding(p PaddingPolicy) WriteOption {
 }
 
 // WithLegacyPolicy sets legacy-container handling. [LegacyStrip] removes them
-// unconditionally; the plan warns [WarnLegacyStripDropped]. [Document.PlanLintFix]
-// never chooses strip when that would destroy unique data.
+// unconditionally; the plan warns [WarnLegacyStripDropped]. On WAV and AIFF it moves
+// the LIST/INFO and native text chunk values into the ID3 chunk and removes those
+// chunks. [Document.PlanLintFix] never chooses strip when that would destroy unique data.
 func WithLegacyPolicy(p LegacyPolicy) WriteOption {
 	return func(o *core.WriteOptions) { o.Legacy = p }
 }
@@ -136,7 +137,8 @@ func WithKeepR128Gains() WriteOption {
 	return func(o *core.WriteOptions) { o.KeepR128Gains = true }
 }
 
-// WithID3MultiValue selects ID3v2.3 multi-value storage. ID3v2.4 always NUL-separates.
+// WithID3MultiValue selects how an ID3v2.3 tag stores a multi-valued field: the tag a
+// new MP3 gets, and an existing v2.3 tag in any container. ID3v2.4 always NUL-separates.
 func WithID3MultiValue(p ID3MultiValuePolicy) WriteOption {
 	return func(o *core.WriteOptions) { o.ID3Multi = p }
 }
@@ -156,7 +158,8 @@ var (
 		o.Padding = core.PaddingPolicy{Target: 4096, Max: 1 << 20, ReuseInPlace: true}
 		o.PaddingExplicit = true
 	}
-	// Minimal: no padding, strip legacy (unconditional; warns if unique data lost).
+	// Minimal: no padding where the caller sets it, strip legacy (unconditional; warns if
+	// unique data lost).
 	Minimal WriteOption = func(o *core.WriteOptions) {
 		o.Legacy = core.LegacyStrip
 		o.Padding = core.PaddingPolicy{Target: 0, Max: 0}
