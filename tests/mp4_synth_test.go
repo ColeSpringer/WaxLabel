@@ -39,33 +39,6 @@ func mp4MetaBare(children ...[]byte) []byte {
 	return testfile.MP4Atom("meta", slices.Concat(children...))
 }
 
-// mp4HdlrMdta builds the metadata handler an ffmpeg "+use_metadata_tags" file carries: the
-// ilst items under it are keyed by index into a sibling "keys" box, not by four-cc name.
-func mp4HdlrMdta() []byte {
-	return testfile.MP4Atom("hdlr", slices.Concat(make([]byte, 8), []byte("mdta"), make([]byte, 12)))
-}
-
-// mp4Keys builds a "keys" box indexing the given key names under the "mdta" namespace. Entry i is
-// ilst index i+1.
-func mp4Keys(names ...string) []byte {
-	body := slices.Concat([]byte{0, 0, 0, 0}, testfile.BE32(len(names)))
-	for _, n := range names {
-		body = slices.Concat(body, testfile.BE32(8+len(n)), []byte("mdta"), []byte(n))
-	}
-	return testfile.MP4Atom("keys", body)
-}
-
-// mp4KeyItem builds an mdta ilst item keyed by a 1-based keys index: its four-byte atom
-// name is the index itself.
-func mp4KeyItem(index int, value string) []byte {
-	return slices.Concat(testfile.BE32(8+len(testfile.MP4Data(1, []byte(value)))), testfile.BE32(index), testfile.MP4Data(1, []byte(value)))
-}
-
-// mp4KeyItemData builds an mdta ilst item from pre-rendered data sub-atoms (cover art, say).
-func mp4KeyItemData(index int, data []byte) []byte {
-	return slices.Concat(testfile.BE32(8+len(data)), testfile.BE32(index), data)
-}
-
 // mp4QTTextEntry builds one [uint16 size][uint16 language]<text> entry of a classic QuickTime udta
 // text atom.
 func mp4QTTextEntry(lang uint16, text string) []byte {
@@ -793,6 +766,85 @@ func TestMP4PaddingFloorGrowsRegion(t *testing.T) {
 	}
 	if got := reusePlan.Report().PaddingAfter; got < 40000 {
 		t.Errorf("PaddingAfter on reuse = %d, want the ~50 KB region reused, not shrunk", got)
+	}
+}
+
+// A policy that reuses nothing takes the padding out of the region; the report names the shrink
+// with one sign.
+func TestMP4PaddingRemovedOnRequest(t *testing.T) {
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
+	seedPlan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Seeded").
+		Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 50000, Max: 1 << 20, ReuseInPlace: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded := applyToBytes(t, data, seedPlan)
+	for name, opt := range map[string]wl.WriteOption{"minimal": wl.Minimal, "no padding": wl.WithPadding(wl.PaddingPolicy{})} {
+		plan, err := mustParseBytes(t, seeded).Edit().Prepare(opt, wl.WithVerifyEssence())
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, seeded, plan)
+		if got := plan.Report().PaddingAfter; got != 0 || len(out) != len(seeded)-50008 || bytes.Contains(out, []byte("free")) {
+			t.Errorf("%s: PaddingAfter %d, size %d -> %d, want the 50 KB free atom gone", name, got, len(seeded), len(out))
+		}
+		if ops := plan.Report().Operations; len(ops) == 0 || ops[0] != "ilst rewrite (-50008 bytes metadata)" {
+			t.Errorf("%s: operations = %q", name, ops)
+		}
+		if again, err := mustParseBytes(t, out).Edit().Prepare(opt); err != nil || !again.IsNoOp() {
+			t.Errorf("%s: a second run is not a no-op (%v)", name, err)
+		}
+	}
+	// The default policy and a preset that reuses keep the region.
+	for name, opts := range map[string][]wl.WriteOption{"default": nil, "compatible": {wl.Compatible}} {
+		plan, err := mustParseBytes(t, seeded).Edit().Set(tag.Title, "Hi").Prepare(opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := plan.Report().PaddingAfter; got < 40000 || len(applyToBytes(t, seeded, plan)) != len(seeded) {
+			t.Errorf("%s: PaddingAfter %d, want the region reused in place", name, got)
+		}
+	}
+}
+
+// A file with no ilst and nothing to put in one gains no empty one: not from a padding policy
+// that reserves nothing by right, and not from an edit whose only value cannot be stored. An
+// explicit floor reserves the space.
+func TestMP4NoEmptyIlstCreated(t *testing.T) {
+	tagless := testfile.MP4TracksFile(nil, func(audio, _, _ uint32) []byte { return testfile.MP4SoundTrak(1, audio) })
+	bareMeta := testfile.MP4Assemble(testfile.MP4HdlrMdir())
+	for name, data := range map[string][]byte{"no udta": tagless, "meta with no ilst": bareMeta} {
+		for policy, opt := range map[string]wl.WriteOption{
+			"minimal": wl.Minimal, "compatible": wl.Compatible, "no padding": wl.WithPadding(wl.PaddingPolicy{}),
+			"a target with no floor": wl.WithPadding(wl.PaddingPolicy{Target: 4096, ReuseInPlace: true}),
+		} {
+			plan, err := mustParseBytes(t, data).Edit().Prepare(opt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !plan.IsNoOp() {
+				t.Errorf("%s, %s: operations %q, want a no-op", name, policy, plan.Report().Operations)
+			}
+		}
+		plan, err := mustParseBytes(t, data).Edit().Set(tag.BPM, "abc").Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !plan.IsNoOp() || !reportHasWarning(plan.Report().Warnings, wl.WarnValueDropped) {
+			t.Errorf("%s: a value that cannot be stored planned %q with warnings %v", name, plan.Report().Operations, plan.Report().Warnings)
+		}
+
+		plan, err = mustParseBytes(t, data).Edit().Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 4096, Min: 4096, ReuseInPlace: true}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, data, plan)
+		if plan.Report().PaddingAfter != 4096 || !bytes.Contains(out, []byte("ilst")) || !bytes.Contains(out, testfile.MP4Atom("free", make([]byte, 4096))) {
+			t.Errorf("%s: an explicit floor did not reserve the padding (PaddingAfter %d)", name, plan.Report().PaddingAfter)
+		}
+		if re := mustParseBytes(t, out); re.Tags().Len() != 0 || len(re.Lint()) != 0 {
+			t.Errorf("%s: after reserving: keys %v, lint %v", name, re.Tags().Keys(), re.Lint())
+		}
 	}
 }
 

@@ -19,15 +19,16 @@ import (
 // planChaptersQT computes the rewrite when chapters change and the file has a chapter
 // text track or a track to reference a new one from. It writes the chpl and rebuilds
 // the QuickTime chapter track (or removes both when chapters are cleared).
-func planChaptersQT(d *doc, base, edited *core.Media, needIlst, picturesChanged bool, opts core.WriteOptions, report core.WriteReport) (*core.WritePlan, error) {
+func planChaptersQT(d *doc, base, edited *core.Media, needIlst, picturesChanged bool, cf conflicts, opts core.WriteOptions, report core.WriteReport) (*core.WritePlan, error) {
 	if d.udta != nil && d.udtaRaw == nil {
 		return nil, fmt.Errorf("%w: MP4 udta bytes were not captured for a chapter rewrite", waxerr.ErrInvalidData)
 	}
 
-	newItems, reg, textDups, err := buildChapterUdta(d, edited, needIlst, picturesChanged, opts)
+	cu, err := buildChapterUdta(d, edited, needIlst, picturesChanged, cf, opts)
 	if err != nil {
 		return nil, err
 	}
+	reg := cu.reg
 
 	clearing := len(edited.Chapters) == 0
 	// The QuickTime chapter track is written at a fixed fine media timescale, decoupled
@@ -37,12 +38,12 @@ func planChaptersQT(d *doc, base, edited *core.Media, needIlst, picturesChanged 
 	// Build the moov-internal edits (with a 32-bit stco placeholder first), then,
 	// once the combined delta and thus the appended mdat's offset are known, retry
 	// with a 64-bit table only if that offset overflows 4 GiB.
-	plan, err := assembleQT(d, edited, reg, clearing, mts, false)
+	plan, err := assembleQT(d, edited, cu, clearing, mts, false)
 	if err != nil {
 		return nil, err
 	}
 	if !clearing && plan.mdatPayloadOff > math.MaxUint32 {
-		if plan, err = assembleQT(d, edited, reg, clearing, mts, true); err != nil {
+		if plan, err = assembleQT(d, edited, cu, clearing, mts, true); err != nil {
 			return nil, err
 		}
 	}
@@ -64,7 +65,8 @@ func planChaptersQT(d *doc, base, edited *core.Media, needIlst, picturesChanged 
 
 	report.BytesAfter = total
 	report.PaddingAfter = reg.freeContent
-	report.Operations = qtChapterOps(d, edited, needIlst, clearing, plan.moovDelta)
+	report.Warnings = reducedTextWarnings(report.Warnings, cu.reduced)
+	report.Operations = append(qtChapterOps(d, edited, needIlst, clearing, plan.moovDelta), cu.ops...)
 	if n := truncatedTitleCount(edited.Chapters); n > 0 {
 		report.Warnings = core.Warn(report.Warnings, core.WarnChapterTitleTruncated,
 			fmt.Sprintf("%d chapter title(s) trimmed to %d bytes (the chapter-title length limit)", n, titleByteMax))
@@ -74,12 +76,8 @@ func planChaptersQT(d *doc, base, edited *core.Media, needIlst, picturesChanged 
 			"a chapter start or the total chapter span exceeds the QuickTime track's 32-bit duration field (~13.25 h at the 90 kHz media timescale) and was clamped; the Nero chpl keeps the exact values")
 	}
 
-	plan.resultItems = d.items
-	if needIlst {
-		plan.resultItems = newItems
-	}
-	result := buildQTChapterResult(edited, d, plan, reg)
-	report.Warnings = droppedDupWarnings(report.Warnings, d, base, result, textDups, true)
+	result := buildQTChapterResult(edited, d, plan, cu.stores(d, needIlst))
+	report.Warnings = droppedDupWarnings(report.Warnings, d, base, result, cu.textDups, true)
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 
@@ -102,8 +100,6 @@ type qtPlan struct {
 	reclaimed *atomRef
 	freed     []int64
 
-	resultItems []item
-
 	mdatPayloadOff int64 // absolute offset the new chapter track's stco points at
 
 	// For the result's chapter view.
@@ -119,11 +115,11 @@ type qtPlan struct {
 
 // assembleQT builds the full edit list for one stco width. It is called at most
 // twice (32- then 64-bit), so the offset backpatch needs no fixpoint.
-func assembleQT(d *doc, edited *core.Media, reg udtaRegion, clearing bool, mts uint32, co64 bool) (*qtPlan, error) {
+func assembleQT(d *doc, edited *core.Media, cu chapterUdta, clearing bool, mts uint32, co64 bool) (*qtPlan, error) {
 	p := &qtPlan{mts: mts, chplChapters: chplRoundTrip(edited.Chapters)}
-	udtaEdit := edit{off: reg.regionStart, oldLen: reg.regionEnd - reg.regionStart, lit: reg.regionBytes}
+	reg, udtaEdit := cu.reg, cu.reg.edit()
 
-	var edits []edit
+	edits := slices.Clone(cu.extra)
 	var stcoOffInTrak int
 	chapEditIdx := -1 // index of the edit whose lit holds the new chapter track
 
@@ -234,11 +230,12 @@ func closeFinalMdat(d *doc, reclaimed *atomRef) ([]edit, error) {
 }
 
 // buildQTChapterResult constructs the plan's result for a QuickTime-chapter rewrite.
-func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan, reg udtaRegion) *core.Media {
-	nd := &doc{items: p.resultItems, udtaTexts: udtaTextsIn(reg)}
+func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan, st stores) *core.Media {
+	nd := st.doc()
 	// The replaced chapter track's table is gone from the output and the new track's table
 	// points at chapter samples only, so the relocated tables are the ones that place essence.
 	moved := newShifts(p.edits)
+	shiftSoundChunks(nd, base, moved)
 	nd.offTables = relocateTables(base.offTables, moved, func(t offsetTable) bool { return withinChapTrak(base, t) })
 	for _, m := range base.mdats {
 		if p.reclaimed != nil && m[0] == p.reclaimed.payloadOff() {
@@ -423,24 +420,38 @@ func sumDelta(edits []edit) int64 {
 // the edits for each offset asked: a file can hold a great many of both.
 type shifts struct {
 	offs []int64 // the edits' offsets, ascending
+	ends []int64 // where each edit's replaced bytes end
 	sums []int64 // the summed length change of the edits up to and including each
 }
 
 func newShifts(edits []edit) shifts {
 	sorted := slices.Clone(edits)
-	slices.SortFunc(sorted, func(a, b edit) int { return cmp.Compare(a.off, b.off) })
-	s := shifts{offs: make([]int64, len(sorted)), sums: make([]int64, len(sorted))}
+	// An insertion sorts ahead of a replacement at its offset, as assemble emits them, which
+	// keeps the ends ascending.
+	slices.SortStableFunc(sorted, func(a, b edit) int { return cmp.Or(cmp.Compare(a.off, b.off), cmp.Compare(a.oldLen, b.oldLen)) })
+	n := len(sorted)
+	s := shifts{offs: make([]int64, n), ends: make([]int64, n), sums: make([]int64, n)}
 	var sum int64
 	for i, e := range sorted {
 		sum += int64(len(e.lit)) - e.oldLen
-		s.offs[i], s.sums[i] = e.off, sum
+		s.offs[i], s.ends[i], s.sums[i] = e.off, e.off+e.oldLen, sum
 	}
 	return s
 }
 
-// at returns the summed length change of every edit that begins strictly before pos.
+// at returns the summed length change of every edit that begins strictly before pos: how far the
+// byte a chunk offset names moves.
 func (s shifts) at(pos int64) int64 {
 	if i, _ := slices.BinarySearch(s.offs, pos); i > 0 {
+		return s.sums[i-1]
+	}
+	return 0
+}
+
+// past returns the summed length change of every edit that ends at or before pos: how far an
+// atom starting there moves, an insertion at pos going ahead of it.
+func (s shifts) past(pos int64) int64 {
+	if i, _ := slices.BinarySearch(s.ends, pos+1); i > 0 {
 		return s.sums[i-1]
 	}
 	return 0

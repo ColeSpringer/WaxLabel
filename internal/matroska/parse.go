@@ -1008,6 +1008,12 @@ func codecName(id string) string {
 		return "AC-3"
 	case strings.HasPrefix(id, "A_PCM"):
 		return "PCM"
+	case id == "A_TRUEHD":
+		return "TrueHD"
+	case id == "A_DTS/EXPRESS":
+		return "DTS Express"
+	case id == "A_DTS/LOSSLESS":
+		return "DTS-HD Master Audio"
 	case strings.HasPrefix(id, "A_"):
 		return id[2:]
 	default:

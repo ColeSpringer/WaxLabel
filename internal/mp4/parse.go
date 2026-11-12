@@ -1,6 +1,7 @@
 package mp4
 
 import (
+	"cmp"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -136,8 +137,13 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		return nil, err
 	}
 	// Bytes behind the last whole atom that a table names cannot move unpatched, so a new atom
-	// goes after them.
+	// goes after them. Where a size field that forms no atom stopped the walk there, they are
+	// media the walk never reached, not a tail.
 	if d.appendAt < size && tablesReach(d.appendAt, d.offTables, d.auxTables) {
+		if size-last.end() >= 8 {
+			return nil, fmt.Errorf("%w: the bytes at %d form no atom, and the chunk offsets point behind them",
+				waxerr.ErrInvalidData, last.end())
+		}
 		d.appendAt = size
 	}
 	d.hasIloc = hasIlocBox(top, moov)
@@ -148,10 +154,15 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if err := parseProperties(src, moov, tracks, d, limit); err != nil {
 		return nil, err
 	}
+	audioBytes, err := readSoundChunks(src, moov, tracks, d, limit)
+	if err != nil {
+		return nil, err
+	}
 
-	// Tag path: moov.udta.meta.ilst. Each level is optional; record what exists so
-	// the writer can either rewrite the ilst or create the missing wrappers.
+	// Tag path: moov.udta.meta.ilst, or a meta directly under moov. Each level is optional; record
+	// what exists so the writer can either rewrite the ilst or create the missing wrappers.
 	var chpls []node
+	var udtaStore, moovStore *metaStore
 	if udta, ok := moov.find("udta"); ok {
 		d.udta = refPtr(udta)
 		// Capture the udta payload verbatim so a chapter rewrite can splice the new ilst/chpl
@@ -174,28 +185,14 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			return nil, err
 		}
 		if meta, ok := udta.find("meta"); ok {
-			ilst, hasIlst := meta.find("ilst")
-			// The handler decides how the ilst items are keyed: "mdta" makes them 1-based
-			// indices into a sibling "keys" box, anything else the four-character iTunes names.
-			if hdlr, ok := meta.find("hdlr"); ok {
-				if d.metaHandler, err = handlerType(src, hdlr, limit); err != nil {
-					return nil, err
-				}
-			}
-			if keys, ok := meta.find("keys"); ok {
-				d.keys = refPtr(keys)
-				b, err := readPayloadWhole(src, keys, maxMetaChunk, limit)
-				if bits.Fatal(err) != nil {
-					return nil, err
-				}
-				if err == nil {
-					d.keyNames = parseKeys(b)
-				}
+			st, err := readMetaStore(ctx, src, meta, limit)
+			if err != nil {
+				return nil, err
 			}
 			// A gap between meta's last child and meta.end() corrupts a create-ilst edit:
 			// buildCreated appends the new ilst at meta.end(), but a re-parse resolves the
 			// first child at childStart/last-child-end (earlier), so the ilst is misaligned.
-			if !hasIlst {
+			if st.ilst == nil {
 				gap, err := trailingGap(src, meta, limit)
 				if err != nil {
 					return nil, err
@@ -205,15 +202,27 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 						waxerr.ErrInvalidData, gap)
 				}
 			}
-			d.meta = refPtr(meta)
-			if hasIlst {
-				d.ilst = refPtr(ilst)
-				if err := decodeIlst(ctx, src, ilst, d, limit); err != nil {
-					return nil, err
-				}
-				d.free = adjacentFree(meta, ilst)
-			}
+			udtaStore = &st
 		}
+	}
+	if meta, ok := moov.find("meta"); ok {
+		st, err := readMetaStore(ctx, src, meta, limit)
+		if err != nil {
+			return nil, err
+		}
+		if st.ilst != nil {
+			moovStore = &st
+		}
+	}
+	switch {
+	case udtaStore != nil && udtaStore.ilst != nil:
+		d.setStore(*udtaStore)
+		d.second = moovStore
+	case moovStore != nil:
+		d.setStore(*moovStore)
+		d.metaAtMoov = true
+	case udtaStore != nil:
+		d.setStore(*udtaStore)
 	}
 
 	// Chapters: a Nero chpl list and/or a QuickTime chapter text track project
@@ -240,6 +249,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if extraMoov {
 		media.Warnings = core.Warn(media.Warnings, core.WarnDuplicateTagBlock,
 			"more than one moov atom; the first is read and the rest are kept as they are")
+	}
+	if tail := size - last.end(); tail > 0 {
+		media.Warnings = core.Warn(media.Warnings, core.WarnTrailingBytes,
+			fmt.Sprintf("%d byte(s) after the last atom form no atom; preserved verbatim", tail))
 	}
 	if d.oversizedAtom != "" {
 		media.Warnings = core.Warn(media.Warnings, core.WarnOversizedChunk,
@@ -273,11 +286,12 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	media.Properties = core.Properties{Container: "MP4", Tracks: []core.AudioTrack{d.track}}
 	setEssence(d, media)
-	// Average bitrate from the audio-essence byte total and the track duration. Computed
-	// after setEssence so it uses the same essence extent the digest covers.
-	var audioBytes int64
-	for _, r := range media.EssenceRanges() {
-		audioBytes += r[1] - r[0]
+	// Average bitrate from the track's sample bytes and its duration. Without readable sample
+	// tables the essence is all there is to count.
+	if !d.sampleExtent {
+		for _, r := range media.EssenceRanges() {
+			audioBytes += r[1] - r[0]
+		}
 	}
 	media.Properties.Tracks[0].Bitrate = core.AverageBitrate(audioBytes, d.track.Duration.Seconds())
 	if err := core.SetIdentity(src, media); err != nil {
@@ -481,28 +495,60 @@ func parseOffsetTable(src core.ReaderAtSized, a node, limit int64) (offsetTable,
 	return t, nil
 }
 
-// decodeIlst reads each ilst child atom's payload into the doc's item list, resolving an
-// mdta-handler item's index against the keys box read just above. An index the keys table
-// does not cover leaves key empty, so the item is preserved verbatim rather than dropped.
-func decodeIlst(ctx context.Context, src core.ReaderAtSized, ilst node, d *doc, limit int64) error {
+// readMetaStore reads a meta box's tag store. The handler decides how the ilst items are keyed:
+// "mdta" makes them 1-based indices into a sibling "keys" box, anything else the four-character
+// iTunes names.
+func readMetaStore(ctx context.Context, src core.ReaderAtSized, meta node, limit int64) (metaStore, error) {
+	s := metaStore{meta: refPtr(meta)}
+	var err error
+	if hdlr, ok := meta.find("hdlr"); ok {
+		if s.handler, err = handlerType(src, hdlr, limit); err != nil {
+			return s, err
+		}
+	}
+	if keys, ok := meta.find("keys"); ok {
+		s.keys = refPtr(keys)
+		b, err := readPayloadWhole(src, keys, maxMetaChunk, limit)
+		if bits.Fatal(err) != nil {
+			return s, err
+		}
+		if err == nil {
+			s.keyNames = parseKeys(b)
+		}
+	}
+	if ilst, ok := meta.find("ilst"); ok {
+		s.ilst = refPtr(ilst)
+		if s.items, err = decodeIlst(ctx, src, ilst, s.handler, s.keyNames, limit); err != nil {
+			return s, err
+		}
+		s.free = adjacentFree(meta, ilst)
+	}
+	return s, nil
+}
+
+// decodeIlst reads each ilst child atom's payload, resolving an mdta-handler item's index against
+// the keys box. An index the keys table does not cover leaves key empty, so the item is preserved
+// verbatim rather than dropped.
+func decodeIlst(ctx context.Context, src core.ReaderAtSized, ilst node, handler string, keyNames []string, limit int64) ([]item, error) {
+	var items []item
 	for _, c := range ilst.children {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		// ilst/covr items are the legitimately large reads (high-res cover art), so they get
 		// the configurable MaxAllocBytes ceiling, not the 64 MiB structural cap, and fail
 		// past it instead of truncating.
 		payload, err := readPayloadWhole(src, c, limit, limit)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		it := item{name: c.name, payload: payload}
-		if d.metaHandler == mdtaHandler {
-			it.key = resolveMdtaKey(c.name, d.keyNames)
+		if handler == mdtaHandler {
+			it.key = resolveMdtaKey(c.name, keyNames)
 		}
-		d.items = append(d.items, it)
+		items = append(items, it)
 	}
-	return nil
+	return items, nil
 }
 
 // decodeUdtaTexts decodes the classic QuickTime text atoms sitting directly under udta into
@@ -594,14 +640,334 @@ func parseProperties(src core.ReaderAtSized, moov node, tracks movieTracks, d *d
 			d.track.Duration = edited
 		}
 	}
-	if minf, ok := mdia.find("minf"); ok {
-		if stbl, ok := minf.find("stbl"); ok {
-			if stsd, ok := stbl.find("stsd"); ok {
-				return parseStsd(src, stsd, d, timescale, limit)
+	if stbl, ok := sampleTableOf(trak); ok {
+		if stsd, ok := stbl.find("stsd"); ok {
+			if err := parseStsd(src, stsd, d, timescale, limit); err != nil {
+				return err
 			}
+			return refineFromFirstSample(src, stbl, d, limit)
 		}
 	}
 	return nil
+}
+
+// refineFromFirstSample settles what the sample entry leaves open and the stream itself states:
+// the layer of MPEG audio, and the rate and word length of TrueHD.
+func refineFromFirstSample(src core.ReaderAtSized, stbl node, d *doc, limit int64) error {
+	switch fourcc := string(d.cfg.codec[:]); {
+	case fourcc == "mp4a" && d.track.Codec == "MP3":
+		head, err := firstSample(src, stbl, d, 4, limit)
+		if err != nil {
+			return err
+		}
+		if name := mpegAudioLayer(head); name != "" {
+			d.track.Codec = name
+		}
+	case fourcc == "mlpa":
+		head, err := firstSample(src, stbl, d, trueHDSyncLen, limit)
+		if err != nil {
+			return err
+		}
+		// The sample entry's own width is the 16 every writer stores there.
+		d.track.BitsPerSample = 0
+		sync, ok := parseTrueHDMajorSync(head)
+		if !ok {
+			return nil
+		}
+		d.track.BitsPerSample = sync.bits
+		if sync.rate > 0 {
+			d.track.SampleRate = sync.rate
+		}
+		if sync.mlp {
+			d.track.Codec = "MLP"
+		}
+	}
+	return nil
+}
+
+// firstSample reads up to n bytes of the track's first sample, which opens its first chunk, and
+// nothing when the chunk table places none inside the file.
+func firstSample(src core.ReaderAtSized, stbl node, d *doc, n, limit int64) ([]byte, error) {
+	t, ok := d.chunkTable(stbl)
+	if !ok || len(t.entries) == 0 || t.entries[0] >= uint64(src.Size()) {
+		return nil, nil
+	}
+	off := int64(t.entries[0])
+	b, err := bits.ReadSlice(src, off, min(n, src.Size()-off), limit)
+	return b, bits.Fatal(err)
+}
+
+// sampleTableOf returns a trak's sample table: trak > mdia > minf > stbl.
+func sampleTableOf(trak node) (node, bool) {
+	mdia, _ := trak.find("mdia")
+	minf, _ := mdia.find("minf")
+	return minf.find("stbl")
+}
+
+// readSoundChunks sets the audio essence from the sample tables of moov's sound tracks: the bytes
+// of each chunk, as the sizes of its samples sum. It returns the summed sample size of the first
+// sound track, which the bitrate is of. A table that cannot be read, or tables that place nothing
+// in the file, leave the essence to the mdats.
+func readSoundChunks(src core.ReaderAtSized, moov node, tr movieTracks, d *doc, limit int64) (int64, error) {
+	var ranges [][2]int64
+	var first int64
+	for i, trak := range tr.traks {
+		if tr.handlers[i] != "soun" || !ownTrak(moov, trak) {
+			continue
+		}
+		stbl, ok := sampleTableOf(trak)
+		if !ok {
+			return 0, nil
+		}
+		chunks, total, ok, err := trackChunks(src, stbl, d, limit)
+		if err != nil || !ok {
+			return 0, err
+		}
+		if i == tr.audio {
+			first = total
+		}
+		ranges = append(ranges, chunks...)
+	}
+	if ranges = mergeRanges(ranges); len(ranges) == 0 {
+		return 0, nil
+	}
+	d.soundChunks, d.sampleExtent = ranges, true
+	return first, nil
+}
+
+// trackChunks returns the byte range of each chunk of a track, cut to the file, and the summed size
+// of its samples. ok is false when a table is missing or does not hold what it declares.
+func trackChunks(src core.ReaderAtSized, stbl node, d *doc, limit int64) (ranges [][2]int64, total int64, ok bool, err error) {
+	table, found := d.chunkTable(stbl)
+	if !found {
+		return nil, 0, false, nil
+	}
+	runs, ok, err := openChunkRuns(src, stbl, limit)
+	if err != nil || !ok {
+		return nil, 0, false, err
+	}
+	stsz, found := stbl.find("stsz")
+	if !found {
+		return nil, 0, false, nil
+	}
+	head, err := readPayloadPrefix(src, stsz, 12, limit)
+	if err != nil || len(head) < 12 {
+		return nil, 0, false, bits.Fatal(err)
+	}
+	shared := int64(binary.BigEndian.Uint32(head[4:8]))
+	count := int64(binary.BigEndian.Uint32(head[8:12]))
+	if shared == 0 && !boundedCount(count, 12, 4, stsz.size-stsz.headerLen) {
+		return nil, 0, false, nil
+	}
+	sizes := tableReader{src: src, off: stsz.payloadOff() + 12, left: count, width: 4, limit: limit}
+	// One size for every sample is a byte size, or the mark of a track that counts frames.
+	ratio := frameRatio{samples: 1, bytes: shared}
+	if shared != 0 {
+		if ratio, ok, err = frameCounted(src, stbl, ratio, limit); err != nil || !ok {
+			return nil, 0, false, err
+		}
+	}
+	size := src.Size()
+	next := int64(0) // the first sample of the chunk
+	for c := range table.entries {
+		n, ok, err := runs.samples(c + 1)
+		if err != nil || !ok {
+			return nil, 0, false, err
+		}
+		samples := min(int64(n), count-next)
+		// Both factors are 32 bits, so their product can pass an int64.
+		length := samples / ratio.samples * ratio.bytes
+		if ratio.bytes > 0 && samples/ratio.samples > math.MaxInt64/ratio.bytes {
+			length = math.MaxInt64
+		}
+		if shared == 0 {
+			if length, ok, err = sumSizes(&sizes, samples); err != nil || !ok {
+				return nil, 0, false, err
+			}
+		}
+		next += samples
+		if total += length; total < 0 {
+			total = math.MaxInt64
+		}
+		if e := table.entries[c]; e < uint64(size) && length > 0 {
+			// A chunk lies in an mdat and ends with it, whatever its sizes say: past it are
+			// bytes a write may move or change. One that starts in none places no audio this
+			// can vouch for.
+			start := int64(e)
+			i := mdatAt(d.mdats, start)
+			if i < 0 {
+				return nil, 0, false, nil
+			}
+			ranges = append(ranges, [2]int64{start, start + min(length, d.mdats[i][0]+d.mdats[i][1]-start)})
+		}
+	}
+	return ranges, total, true, nil
+}
+
+// tableBlock is how much of a sample table a tableReader reads at once.
+const tableBlock = 64 << 10
+
+// tableReader reads the fixed-width entries of a sample table in order, a block at a time: a
+// long track's stsz and stsc run to megabytes, and only what they add up to is kept. The
+// allocation limit bounds a block, not the table.
+type tableReader struct {
+	src   core.ReaderAtSized
+	off   int64 // where the next block starts
+	left  int64 // entries not yet read
+	width int64
+	limit int64
+	buf   []byte
+}
+
+// fill makes buf hold at least one entry, reading the next block when it holds none. more is
+// false at the table's end; ok is false when the source ends inside the table.
+func (t *tableReader) fill() (more, ok bool, err error) {
+	if int64(len(t.buf)) >= t.width {
+		return true, true, nil
+	}
+	if t.left == 0 {
+		return false, true, nil
+	}
+	// At least one entry: a limit under an entry's width refuses the read.
+	want := min(t.left*t.width, max(min(t.limit, tableBlock)/t.width*t.width, t.width))
+	b, err := bits.ReadSlice(t.src, t.off, want, t.limit)
+	if err != nil || int64(len(b)) < want {
+		return false, false, bits.Fatal(err)
+	}
+	t.buf, t.off, t.left = b, t.off+want, t.left-want/t.width
+	return true, true, nil
+}
+
+// sumSizes adds up the next n entries of an stsz, of the count the caller holds it to.
+func sumSizes(t *tableReader, n int64) (total int64, ok bool, err error) {
+	for n > 0 {
+		if more, ok, err := t.fill(); err != nil || !ok || !more {
+			return 0, false, err
+		}
+		k := min(n, int64(len(t.buf))/4)
+		for i := range k {
+			total += int64(binary.BigEndian.Uint32(t.buf[i*4:]))
+		}
+		t.buf, n = t.buf[k*4:], n-k
+	}
+	return total, true, nil
+}
+
+// chunkRuns walks an stsc: how many samples each chunk holds, asked in chunk order.
+type chunkRuns struct {
+	table     tableReader
+	cur, next stscEntry
+	haveNext  bool
+}
+
+// openChunkRuns reads an stsc's header. ok is false when the table is missing or does not hold
+// the entries it declares.
+func openChunkRuns(src core.ReaderAtSized, stbl node, limit int64) (*chunkRuns, bool, error) {
+	stsc, found := stbl.find("stsc")
+	if !found {
+		return nil, false, nil
+	}
+	head, err := readPayloadPrefix(src, stsc, 8, limit)
+	if err != nil || len(head) < 8 {
+		return nil, false, bits.Fatal(err)
+	}
+	count := int64(binary.BigEndian.Uint32(head[4:8]))
+	if !boundedCount(count, 8, 12, stsc.size-stsc.headerLen) {
+		return nil, false, nil
+	}
+	return &chunkRuns{table: tableReader{src: src, off: stsc.payloadOff() + 8, left: count, width: 12, limit: limit}}, true, nil
+}
+
+// samples returns how many samples the 1-based chunk holds: the count of the last run that
+// starts at or before it, none ahead of the first run. Chunks are asked in ascending order.
+func (r *chunkRuns) samples(chunk int) (n uint32, ok bool, err error) {
+	for {
+		if !r.haveNext {
+			more, ok, err := r.table.fill()
+			if err != nil || !ok {
+				return 0, false, err
+			}
+			if !more {
+				break
+			}
+			b := r.table.buf
+			r.next = stscEntry{firstChunk: binary.BigEndian.Uint32(b[0:4]), samplesPerChunk: binary.BigEndian.Uint32(b[4:8])}
+			r.table.buf, r.haveNext = b[12:], true
+		}
+		if int64(r.next.firstChunk) > int64(chunk) {
+			break
+		}
+		r.cur, r.haveNext = r.next, false
+	}
+	return r.cur.samplesPerChunk, true, nil
+}
+
+// frameRatio sizes the samples of a track whose stsz gives one size for all: every `samples` of
+// them span `bytes`.
+type frameRatio struct{ samples, bytes int64 }
+
+// frameCounted settles what a shared stsz size means. A track whose one stts entry gives each
+// sample a duration of 1 counts audio frames, as QuickTime writes uncompressed and fixed-ratio
+// audio, and its stsz size is no byte count (often 1): the sample entry sizes a frame, or the
+// packet a run of frames makes, as ffmpeg's demuxer takes it. Any other track keeps asStored. ok is
+// false for a frame-counted track of a codec whose packets the entry does not size.
+func frameCounted(src core.ReaderAtSized, stbl node, asStored frameRatio, limit int64) (frameRatio, bool, error) {
+	stts, found := stbl.find("stts")
+	if !found {
+		return asStored, true, nil
+	}
+	t, err := readPayloadPrefix(src, stts, 16, limit)
+	if err != nil || len(t) < 16 || binary.BigEndian.Uint32(t[4:8]) != 1 || binary.BigEndian.Uint32(t[12:16]) != 1 {
+		return asStored, true, bits.Fatal(err)
+	}
+	stsd, found := stbl.find("stsd")
+	if !found {
+		return asStored, asStored.bytes != 1, nil
+	}
+	// The entry as the track's own properties read it: a width can lie in a pcmC box or a
+	// version 2 entry's fields.
+	var entry doc
+	if err := parseStsd(src, stsd, &entry, 0, limit); err != nil {
+		return asStored, false, err
+	}
+	b, err := readPayloadPrefix(src, stsd, 60, limit)
+	if err != nil || len(b) < 44 {
+		return asStored, asStored.bytes != 1, bits.Fatal(err)
+	}
+	// A version 1 entry states its packet: samples per packet, and the bytes a packet of every
+	// channel takes.
+	var stated frameRatio
+	if binary.BigEndian.Uint16(b[24:26]) == 1 && len(b) >= 60 {
+		stated = frameRatio{int64(binary.BigEndian.Uint32(b[44:48])), int64(binary.BigEndian.Uint32(b[52:56]))}
+	}
+	channels := int64(entry.track.Channels)
+	layout, known := core.FourccSampleLayout(string(entry.cfg.codec[:]))
+	switch {
+	case known && layout.PacketBytes == 0:
+		// Uncompressed: a frame is a sample of the track's width for each channel.
+		if frame := channels * int64((entry.track.BitsPerSample+7)/8); frame > 0 {
+			return frameRatio{1, frame}, true, nil
+		}
+	case stated.samples > 1 && stated.bytes > 0:
+		return stated, true, nil
+	case known && channels > 0:
+		return frameRatio{int64(layout.FramesPerPacket), int64(layout.PacketBytes) * channels}, true, nil
+	}
+	return asStored, asStored.bytes != 1, nil
+}
+
+// mergeRanges sorts [start, end) ranges and merges those that touch or overlap.
+func mergeRanges(ranges [][2]int64) [][2]int64 {
+	slices.SortFunc(ranges, func(a, b [2]int64) int { return cmp.Or(cmp.Compare(a[0], b[0]), cmp.Compare(a[1], b[1])) })
+	out := ranges[:0]
+	for _, r := range ranges {
+		if n := len(out); n > 0 && r[0] <= out[n-1][1] {
+			out[n-1][1] = max(out[n-1][1], r[1])
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // handlerType returns a hdlr atom's 4-character handler type (e.g. "soun").
@@ -663,9 +1029,14 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, timescale uint32, limi
 	}
 	var cfg entryConfig
 	switch fourcc {
-	case "alac", "fLaC", "mp4a", "ipcm", "fpcm":
+	case "alac", "fLaC", "mp4a", "ipcm", "fpcm", "mlpa":
 		cfg = scanEntryConfig(b, extOff, end, fourcc)
 		applyEntryConfig(d, cfg)
+	}
+	// ffmpeg stores a TrueHD rate as a whole 32-bit number, which the 16.16 field above reads
+	// as none; the stream's own major sync settles it later, where one is found.
+	if fourcc == "mlpa" && d.track.SampleRate == 0 && timescale > 0 && timescale < math.MaxInt32 {
+		d.track.SampleRate = int(timescale)
 	}
 	if fixedLayout {
 		if fourcc == "fpcm" && cfg.bitDepth == 0 {
@@ -746,17 +1117,23 @@ func scanEntryConfig(b []byte, off, end int, fourcc string) entryConfig {
 			// bounded prefix read returned is still usable. The size still has to be large
 			// enough to hold one, or the read would take its geometry from the next box.
 			return entryConfig{streamInfo: dfLaStreamInfo(b, off, size, end)}
+		case name == "esds" && fourcc == "mp4a" && size > end-off:
+			// Cut by the prefix read, as an esds holding a whole Vorbis header set is. The
+			// object type sits ahead of what is missing.
+			return esdsConfig(b, off, end, true)
 		case size < 8 || size > end-off:
 			return entryConfig{} // malformed or truncated by the prefix read: keep the entry values
 		case name == "esds" && fourcc == "mp4a":
 			// Matched on the box name, never the four-cc: a QuickTime v1 entry wraps its esds
 			// in a wave box beside a 12-byte child literally named "mp4a", and the recursion
 			// below has to find the real one inside.
-			return esdsConfig(b, off, off+size)
+			return esdsConfig(b, off, off+size, false)
 		case name == "alac" && fourcc == "alac":
 			return alacCookieConfig(b, off, size)
 		case name == "pcmC" && (fourcc == "ipcm" || fourcc == "fpcm"):
 			return pcmCConfig(b, off, size, fourcc)
+		case name == "dmlp" && fourcc == "mlpa" && size >= 9:
+			return entryConfig{sampleRate: mlpSampleRate(b[off+8] >> 4)}
 		case name == "wave":
 			if cfg := scanEntryConfig(b, off+8, off+size, fourcc); !cfg.empty() {
 				return cfg
@@ -885,9 +1262,13 @@ func applyAACConfig(d *doc, asc mpeg4audio.Config) {
 	}
 }
 
-// setEssence records the audio-essence byte ranges from the mdat atoms.
+// setEssence records the audio-essence byte ranges: the sound tracks' chunks, or the mdats when
+// their sample tables do not give them.
 func setEssence(d *doc, media *core.Media) {
-	ranges := essenceMdats(d)
+	ranges := d.soundChunks
+	if !d.sampleExtent {
+		ranges = essenceMdats(d)
+	}
 	switch len(ranges) {
 	case 0:
 		// metadata-only file: no essence (the fingerprint then hashes it whole).

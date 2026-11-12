@@ -1,6 +1,10 @@
 package waxlabel_test
 
 import (
+	"bytes"
+	"cmp"
+	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"os"
 	"os/exec"
@@ -8,6 +12,7 @@ import (
 	"slices"
 	"testing"
 
+	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
@@ -61,7 +66,7 @@ func TestMP4AACSampleRateFromConfig(t *testing.T) {
 
 	digest := essenceOf(t, build("1010"))
 	if digest.ExtentVersion != "mp4-mdat-v3" {
-		t.Errorf("extent = %q, want mp4-mdat-v3", digest.ExtentVersion)
+		t.Errorf("extent = %q, want mp4-mdat-v3: the file holds no sample tables", digest.ExtentVersion)
 	}
 	if other := essenceOf(t, build("1190")); !digest.Equal(other) {
 		t.Errorf("digest changed with the config: %s vs %s (the config is outside the salt)", digest, other)
@@ -189,7 +194,6 @@ func TestMP4EsdsMalformedKeepsEntry(t *testing.T) {
 		{"box too small for its FullBox header", testfile.MP4Atom("esds", make([]byte, 3))},
 		{"DecoderConfig body too short", esds(testfile.MP4DescrShort(0x03,
 			slices.Concat([]byte{0, 1, 0}, testfile.MP4DescrShort(0x04, make([]byte, 12)))))},
-		{"object type indication carrying no config", testfile.MP4EsdsRaw(0xE1, asc, testfile.MP4DescrShort)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -251,8 +255,8 @@ func TestMP4ExistingAACFixturesUnchanged(t *testing.T) {
 				t.Errorf("codec = %q/%q, want AAC with profile AAC LC", tr.Codec, tr.CodecProfile)
 			}
 			digest := essenceOf(t, data)
-			if digest.ExtentVersion != "mp4-mdat-v3" {
-				t.Errorf("extent = %q, want mp4-mdat-v3", digest.ExtentVersion)
+			if digest.ExtentVersion != "mp4-samples-v4" {
+				t.Errorf("extent = %q, want mp4-samples-v4", digest.ExtentVersion)
 			}
 			if other := essenceOf(t, mp4ZeroConfig(t, data)); !digest.Equal(other) {
 				t.Errorf("digest changed with the config bytes: %s vs %s (the salt is the raw entry)", digest, other)
@@ -426,6 +430,124 @@ func TestMP4DifferentialImplicitRemux(t *testing.T) {
 			srcRate, srcChannels, _ := ffprobeAudio(t, tc.src)
 			if src.SampleRate != srcRate || src.Channels != srcChannels {
 				t.Errorf("the ADTS source reads %d Hz / %d ch, but ffprobe says %d/%d", src.SampleRate, src.Channels, srcRate, srcChannels)
+			}
+		})
+	}
+}
+
+// An mp4a entry is MPEG-4 Systems' wrapper, not a codec: the esds object type names what it holds.
+// The digest does not follow the name: it salts with the entry's own fields.
+func TestMP4EsdsObjectTypeNamesTheCodec(t *testing.T) {
+	t.Parallel()
+	hash := func(data []byte) string {
+		d, err := mustParseBytes(t, data).HashAudioEssence(context.Background(), wl.WithHashSource(wl.BytesSource(data)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d.String()
+	}
+	aac := hash(mp4AACFile(48000, 2, 48000, testfile.MP4EsdsShort(mp4ASC(t, "1190"))))
+	for _, c := range []struct {
+		oti            byte
+		codec, profile string
+	}{
+		{0xDD, "Vorbis", ""}, {0xAD, "Opus", ""}, {0xA5, "AC-3", ""}, {0xA6, "E-AC-3", ""},
+		{0xA9, "DTS", ""}, {0xAA, "DTS", "DTS-HD High Resolution"}, {0xAB, "DTS", "DTS-HD Master Audio"},
+		{0xAC, "DTS", "DTS Express"}, {0xE1, "QCELP", ""},
+		{0x21, "MPEG-4 object type 0x21", ""}, {0x00, "MPEG-4 object type 0x00", ""},
+	} {
+		data := mp4AACFile(48000, 2, 48000, testfile.MP4EsdsRaw(c.oti, []byte{1, 2, 3, 4}, testfile.MP4DescrShort))
+		tr := mustParseBytes(t, data).Properties().Tracks[0]
+		if tr.Codec != c.codec || tr.CodecProfile != c.profile {
+			t.Errorf("oti %#x: codec = %q/%q, want %q/%q", c.oti, tr.Codec, tr.CodecProfile, c.codec, c.profile)
+		}
+		if tr.SampleRate != 48000 || tr.Channels != 2 {
+			t.Errorf("oti %#x: track = %d Hz / %d ch, want the entry's 48000/2", c.oti, tr.SampleRate, tr.Channels)
+		}
+		if got := hash(data); got != aac {
+			t.Errorf("oti %#x: digest %s, want the AAC file's %s", c.oti, got, aac)
+		}
+	}
+}
+
+// A Vorbis esds holds the codec's whole header set, more than the sample-entry read takes in; the
+// object type sits ahead of it. An AAC config cut the same way leaves the entry standing.
+func TestMP4EsdsLongerThanTheEntryRead(t *testing.T) {
+	t.Parallel()
+	headers := bytes.Repeat([]byte{0x5A}, 4000)
+	for _, c := range []struct {
+		oti            byte
+		codec, profile string
+	}{{0xDD, "Vorbis", ""}, {0x40, "AAC", "mp4a"}} {
+		data := mp4AACFile(48000, 2, 48000, testfile.MP4EsdsRaw(c.oti, headers, mp4DescrLong))
+		tr := mustParseBytes(t, data).Properties().Tracks[0]
+		if tr.Codec != c.codec || tr.CodecProfile != c.profile || tr.SampleRate != 48000 || tr.Channels != 2 {
+			t.Errorf("oti %#x: %q/%q at %d Hz / %d ch, want %q/%q at the entry's 48000/2", c.oti, tr.Codec, tr.CodecProfile, tr.SampleRate, tr.Channels, c.codec, c.profile)
+		}
+	}
+}
+
+// The MPEG audio object types name no layer; the first frame's header does.
+func TestMP4EsdsMPEGAudioLayerFromTheFirstFrame(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name   string
+		header []byte
+		codec  string
+	}{
+		{"layer I", []byte{0xFF, 0xFF, 0x90, 0x00}, "MP1"},
+		{"layer II", []byte{0xFF, 0xFD, 0x90, 0x00}, "MP2"},
+		{"layer III", []byte{0xFF, 0xFB, 0x90, 0x00}, "MP3"},
+		{"MPEG-2 layer II", []byte{0xFF, 0xF5, 0x90, 0x00}, "MP2"},
+		{"no frame", []byte{0xA7, 0xA7, 0xA7, 0xA7}, "MP3"},
+		{"reserved layer", []byte{0xFF, 0xF9, 0x90, 0x00}, "MP3"},
+		{"reserved bitrate", []byte{0xFF, 0xFD, 0xF0, 0x00}, "MP3"},
+		{"reserved version", []byte{0xFF, 0xED, 0x90, 0x00}, "MP3"},
+		{"reserved sample rate", []byte{0xFF, 0xFD, 0x9C, 0x00}, "MP3"},
+	} {
+		for _, oti := range []byte{0x69, 0x6B} {
+			data := mp4AACFile(44100, 2, 44100, testfile.MP4EsdsRaw(oti, nil, testfile.MP4DescrShort))
+			at, _ := mp4Index(t, data)
+			copy(data[at:], c.header)
+			if tr := mustParseBytes(t, data).Properties().Tracks[0]; tr.Codec != c.codec || tr.CodecProfile != "" {
+				t.Errorf("%s, oti %#x: codec = %q/%q, want %s", c.name, oti, tr.Codec, tr.CodecProfile, c.codec)
+			}
+		}
+	}
+	// A chunk offset past the file names no frame.
+	data := mp4AACFile(44100, 2, 44100, testfile.MP4EsdsRaw(0x6B, nil, testfile.MP4DescrShort))
+	stco := bytes.Index(data, []byte("stco"))
+	binary.BigEndian.PutUint32(data[stco+12:], uint32(len(data)-2))
+	if tr := mustParseBytes(t, data).Properties().Tracks[0]; tr.Codec != "MP3" {
+		t.Errorf("chunk at the end of the file: codec = %q, want MP3", tr.Codec)
+	}
+}
+
+// ffmpeg's own files: what it muxes into mp4a, and the fourccs it gives the others.
+func TestMP4DifferentialCodecNames(t *testing.T) {
+	requireTool(t, "ffmpeg")
+	requireTool(t, "ffprobe")
+	dir := t.TempDir()
+	// ffprobe leaves an MPEG layer II stream in MP4 named mp3; the frames say otherwise.
+	names := map[string]string{"vorbis": "Vorbis", "mp3": "MP3", "dts": "DTS", "ac3": "AC-3", "eac3": "E-AC-3", "opus": "Opus"}
+	for _, c := range []struct {
+		encoder, want string
+	}{
+		{"libvorbis", ""}, {"libmp3lame", ""}, {"dca", ""}, {"ac3", ""}, {"eac3", ""}, {"libopus", ""}, {"mp2", "MP2"},
+	} {
+		t.Run(c.encoder, func(t *testing.T) {
+			path := ffmpegSine(t, filepath.Join(dir, c.encoder+".mp4"), 2, 48000, "-c:a", c.encoder, "-strict", "-2")
+			probe := ffprobeStream(t, path)
+			want := cmp.Or(c.want, names[probe.CodecName])
+			if want == "" {
+				t.Fatalf("ffprobe names the codec %q", probe.CodecName)
+			}
+			tr := mustParseFile(t, path).Properties().Tracks[0]
+			if tr.Codec != want {
+				t.Errorf("codec = %q (profile %q), want %s; ffprobe says %s", tr.Codec, tr.CodecProfile, want, probe.CodecName)
+			}
+			if tr.SampleRate != probe.SampleRate || tr.Channels != probe.Channels {
+				t.Errorf("track = %d Hz / %d ch, ffprobe %d / %d", tr.SampleRate, tr.Channels, probe.SampleRate, probe.Channels)
 			}
 		})
 	}

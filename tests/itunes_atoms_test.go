@@ -2,7 +2,10 @@ package waxlabel_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -92,14 +95,79 @@ func TestMP4ITunesAtomDecodeFidelity(t *testing.T) {
 		{"implicit type accepted", testfile.MP4Atom("rtng", testfile.MP4Data(0, []byte{2})), tag.ITunesAdvisory, "2"},
 		{"tmpo one byte", testfile.MP4Atom("tmpo", testfile.MP4Data(21, []byte{128})), tag.BPM, "128"},
 		{"tmpo four bytes", testfile.MP4Atom("tmpo", testfile.MP4Data(21, []byte{0, 0, 0, 200})), tag.BPM, "200"},
+		{"trkn of a number alone", testfile.MP4Atom("trkn", testfile.MP4Data(0, []byte{0, 0, 0, 7})), tag.TrackNumber, "7"},
+		{"disk of a number alone", testfile.MP4Atom("disk", testfile.MP4Data(0, []byte{0, 0, 0, 2})), tag.DiscNumber, "2"},
+		{"disk with a trailing pad", testfile.MP4Atom("disk", testfile.MP4Data(0, []byte{0, 0, 0, 1, 0, 2, 0, 0})), tag.DiscTotal, "2"},
+		{"stik typed unsigned", testfile.MP4Atom("stik", testfile.MP4Data(22, []byte{2})), tag.MediaType, "2"},
+		{"cpil typed unsigned", testfile.MP4Atom("cpil", testfile.MP4Data(22, []byte{1})), tag.Compilation, "1"},
+		{"title typed implicit", testfile.MP4Atom("\xa9alb", testfile.MP4Data(0, []byte("Album"))), tag.Album, "Album"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			doc := mustParseBytes(t, testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"), c.item))
+			data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"), c.item)
+			doc := mustParseBytes(t, data)
 			if v, ok := doc.Get(c.key); !ok || len(v) != 1 || v[0] != c.want {
 				t.Errorf("%s = %v (ok=%v), want %q", c.key, v, ok, c.want)
 			}
+			// An edit elsewhere keeps the item in the form the file gave it.
+			plan, err := doc.Edit().Set(tag.Title, "A Longer Title").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out := applyToBytes(t, data, plan); !bytes.Contains(out, c.item) {
+				t.Error("an edit of the title re-encoded the item")
+			}
+			// An edit that stores nothing writes nothing.
+			plan, err = doc.Edit().Set(tag.Movement, "abc").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !plan.IsNoOp() {
+				t.Errorf("a discarded value planned %q", plan.Report().Operations)
+			}
 		})
+	}
+}
+
+// A discarded edit of a file ffmpeg tagged writes nothing: its disk atom is two bytes longer than
+// the one a rebuild renders.
+func TestMP4DifferentialDiscardedEditWritesNothing(t *testing.T) {
+	requireTool(t, "ffmpeg")
+	path := filepath.Join(t.TempDir(), "tagged.m4a")
+	ffmpegEncode(t, path, "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "aac",
+		"-metadata", "title=T", "-metadata", "track=3/12", "-metadata", "disc=1/2", "-metadata", "genre=Rock")
+	doc := mustParseFile(t, path)
+	if v, _ := doc.Get(tag.DiscTotal); !slices.Equal(v, []string{"2"}) {
+		t.Fatalf("DISCTOTAL = %v", v)
+	}
+	plan, err := doc.Edit().Set(tag.BPM, "abc").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.IsNoOp() || !reportHasWarning(plan.Report().Warnings, wl.WarnValueDropped) {
+		t.Errorf("planned %q with warnings %v, want nothing written and the drop reported", plan.Report().Operations, plan.Report().Warnings)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err = doc.Edit().Set(tag.Album, "A").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"trkn", "disk", "\xa9nam", "\xa9gen"} {
+		at := bytes.Index(before, []byte(name)) - 4
+		item := before[at : at+int(binary.BigEndian.Uint32(before[at:]))]
+		if !bytes.Contains(after, item) {
+			t.Errorf("an edit of the album re-encoded ffmpeg's %q item", name)
+		}
 	}
 }
 
@@ -238,9 +306,8 @@ func TestMP4ITunesDropAndCoerceWarnings(t *testing.T) {
 	}
 }
 
-// A file holding both the structured rtng and a freeform ITUNESADVISORY: both project; distinct
-// values leave the family unselected and lint flags the single-valued key; identical values stay
-// selected.
+// A file holding both the structured rtng and a freeform ITUNESADVISORY: the first is read and the
+// other shows in the families, unselected when it disagrees.
 func TestMP4ITunesAdvisoryDualRepresentation(t *testing.T) {
 	build := func(freeformVal string) []byte {
 		return testfile.MP4Tagged(
@@ -249,12 +316,13 @@ func TestMP4ITunesAdvisoryDualRepresentation(t *testing.T) {
 			mp4Freeform("com.apple.iTunes", "ITUNESADVISORY", freeformVal),
 		)
 	}
-	doc := mustParseBytes(t, build("2"))
-	if got, _ := doc.Tags().Get(tag.ITunesAdvisory); len(got) != 2 {
-		t.Fatalf("ITUNESADVISORY = %v, want both representations to project", got)
+	data := build("2")
+	doc := mustParseBytes(t, data)
+	if got, _ := doc.Tags().Get(tag.ITunesAdvisory); !slices.Equal(got, []string{"1"}) {
+		t.Fatalf("ITUNESADVISORY = %v, want [1], the first atom's", got)
 	}
-	if !hasLintCode(doc, "single-valued-multi") {
-		t.Errorf("expected a single-valued-multi finding; got %v", doc.Lint())
+	if !hasLintCode(doc, "conflicting-families") || hasLintCode(doc, "single-valued-multi") {
+		t.Errorf("lint = %v, want conflicting-families and no single-valued-multi", doc.Lint())
 	}
 	if selected, ok := familySelected(doc, tag.ITunesAdvisory); !ok || selected {
 		t.Errorf("distinct values: family Selected = %v (found=%v), want false", selected, ok)
@@ -262,6 +330,94 @@ func TestMP4ITunesAdvisoryDualRepresentation(t *testing.T) {
 	same := mustParseBytes(t, build("1"))
 	if selected, ok := familySelected(same, tag.ITunesAdvisory); !ok || !selected {
 		t.Errorf("identical values: family Selected = %v (found=%v), want true", selected, ok)
+	}
+
+	// An edit elsewhere keeps both atoms, a freeform first as well, which no rebuild would write.
+	for _, d := range [][]byte{data, testfile.MP4Tagged(
+		mp4Freeform("com.apple.iTunes", "ITUNESADVISORY", "2"),
+		testfile.MP4Atom("rtng", testfile.MP4Data(21, []byte{1})),
+	)} {
+		plan, err := mustParseBytes(t, d).Edit().Set(tag.Album, "A").Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, d, plan)
+		if !bytes.Contains(out, testfile.MP4Atom("rtng", testfile.MP4Data(21, []byte{1}))) ||
+			!bytes.Contains(out, mp4Freeform("com.apple.iTunes", "ITUNESADVISORY", "2")) {
+			t.Error("an edit of the album dropped or rewrote an advisory atom")
+		}
+		before, _ := mustParseBytes(t, d).Get(tag.ITunesAdvisory)
+		if after, _ := mustParseBytes(t, out).Get(tag.ITunesAdvisory); !slices.Equal(after, before) {
+			t.Errorf("ITUNESADVISORY = %v after the edit, was %v", after, before)
+		}
+	}
+	plan, err := doc.Edit().Set(tag.ITunesAdvisory, "0").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if bytes.Contains(out, []byte("ITUNESADVISORY")) || !bytes.Contains(out, testfile.MP4Atom("rtng", testfile.MP4Data(21, []byte{0}))) {
+		t.Error("an edit of the advisory did not leave the rtng atom alone holding it")
+	}
+}
+
+// A numeric gnre beside a text genre atom: the first is read, an edit elsewhere keeps both where
+// ffprobe reads them, and an edit of the genre leaves one atom.
+func TestMP4GnreBesideTextGenre(t *testing.T) {
+	gnre := testfile.MP4Atom("gnre", testfile.MP4Data(0, []byte{0, 18})) // Rock
+	text := testfile.MP4Text("\xa9gen", "Custom")
+	for _, c := range []struct {
+		name  string
+		items [][]byte
+		want  string
+	}{
+		{"gnre first", [][]byte{gnre, text}, "Rock"},
+		{"text first", [][]byte{text, gnre}, "Custom"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := testfile.MP4Tagged(c.items...)
+			doc := mustParseBytes(t, data)
+			if g := doc.Fields().Genres; !slices.Equal(g, []string{c.want}) {
+				t.Fatalf("GENRE = %v, want [%s]", g, c.want)
+			}
+			if selected, ok := familySelected(doc, tag.Genre); !ok || selected {
+				t.Errorf("family selected = %v (found %v), want an unselected entry", selected, ok)
+			}
+			// Only the genre read is reported as resolved from a number.
+			if got := hasWarning(doc, wl.WarnNumericGenre); got != (c.want == "Rock") {
+				t.Errorf("numeric-genre warned = %v with GENRE read as %s", got, c.want)
+			}
+			plan, err := doc.Edit().Set(tag.Title, "T").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := applyToBytes(t, data, plan)
+			if !bytes.Contains(out, gnre) || !bytes.Contains(out, text) {
+				t.Error("an edit of the title dropped or rewrote a genre atom")
+			}
+			if g := mustParseBytes(t, out).Fields().Genres; !slices.Equal(g, []string{c.want}) {
+				t.Errorf("GENRE = %v after the edit, want [%s]", g, c.want)
+			}
+			if got, want := ffprobeTagsIfPresent(t, out), ffprobeTagsIfPresent(t, data); got != nil && got["genre"] != want["genre"] {
+				t.Errorf("ffprobe genre = %q after the edit, was %q", got["genre"], want["genre"])
+			}
+
+			plan, err = doc.Edit().Set(tag.Genre, "Jazz").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = applyToBytes(t, data, plan)
+			if n := bytes.Count(out, []byte("gnre")) + bytes.Count(out, []byte("\xa9gen")); n != 1 {
+				t.Errorf("%d genre atoms after an edit of the genre, want 1", n)
+			}
+			re := mustParseBytes(t, out)
+			if g := re.Fields().Genres; !slices.Equal(g, []string{"Jazz"}) {
+				t.Errorf("GENRE = %v, want [Jazz]", g)
+			}
+			if got := ffprobeTagsIfPresent(t, out); got != nil && got["genre"] != "Jazz" {
+				t.Errorf("ffprobe genre = %q, want Jazz", got["genre"])
+			}
+		})
 	}
 }
 
@@ -287,6 +443,200 @@ func TestMP4ITunesAdvisoryFreeformMigration(t *testing.T) {
 	}
 	if v, _ := mustParseBytes(t, out).Get(tag.ITunesAdvisory); len(v) != 1 || v[0] != "2" {
 		t.Errorf("advisory after migration = %v, want [2]", v)
+	}
+}
+
+// The iTunes TV atoms read as the TV keys, and a new value of one goes to its atom. A number the
+// integer atom cannot hold as written goes to a freeform, which loses nothing.
+func TestMP4ITunesTVAtoms(t *testing.T) {
+	u32 := func(name string, n byte) []byte {
+		return testfile.MP4Atom(name, testfile.MP4Data(21, []byte{0, 0, 0, n}))
+	}
+	atoms := [][]byte{
+		testfile.MP4Text("tvsh", "The Show"), testfile.MP4Text("tven", "S01E02"), testfile.MP4Text("tvnn", "Net"),
+		testfile.MP4Text("sosn", "Show, The"), u32("tves", 2), u32("tvsn", 1),
+	}
+	want := map[tag.Key]string{
+		tag.Show: "The Show", tag.EpisodeID: "S01E02", tag.Network: "Net", tag.ShowSort: "Show, The",
+		tag.EpisodeNumber: "2", tag.SeasonNumber: "1",
+	}
+	data := testfile.MP4Tagged(atoms...)
+	doc := mustParseBytes(t, data)
+	for k, v := range want {
+		if got, _ := doc.Get(k); !slices.Equal(got, []string{v}) {
+			t.Errorf("%s = %v, want [%s]", k, got, v)
+		}
+	}
+	if len(doc.Warnings()) != 0 {
+		t.Errorf("warnings: %v", doc.Warnings())
+	}
+
+	ed := mustParseBytes(t, testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))).Edit()
+	for k, v := range want {
+		ed.Set(k, v)
+	}
+	plan, err := ed.Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T")), plan)
+	for _, a := range atoms {
+		if !bytes.Contains(out, a) {
+			t.Errorf("the write did not render %q as the atom iTunes writes", a[4:8])
+		}
+	}
+	if bytes.Contains(out, []byte("----")) {
+		t.Error("a TV key was written as a freeform")
+	}
+	if probe := ffprobeTagsIfPresent(t, out); probe != nil {
+		for k, v := range map[string]string{"show": "The Show", "episode_id": "S01E02", "network": "Net", "episode_sort": "2", "season_number": "1"} {
+			if probe[k] != v {
+				t.Errorf("ffprobe %s = %q, want %q", k, probe[k], v)
+			}
+		}
+	}
+
+	for _, vals := range [][]string{{"12a"}, {"07"}, {"4294967296"}, {"3", "4"}} {
+		plan, err := mustParseBytes(t, data).Edit().Set(tag.EpisodeNumber, vals...).Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, data, plan)
+		if got, _ := mustParseBytes(t, out).Get(tag.EpisodeNumber); !slices.Equal(got, vals) {
+			t.Errorf("EPISODENUMBER %q read back as %v", vals, got)
+		}
+		if bytes.Contains(out, []byte("tves")) || reportHasWarning(plan.Report().Warnings, wl.WarnValueDropped) {
+			t.Errorf("EPISODENUMBER %q: the integer atom stayed, or warnings %v", vals, plan.Report().Warnings)
+		}
+	}
+}
+
+// Picard writes an originalyear freeform beside originaldate, and the atom order puts the year
+// first. The date is the value read and the year its echo: no conflict, and both stay until the
+// date is edited.
+func TestMP4YearBesideItsDateIsAnEcho(t *testing.T) {
+	year := mp4Freeform("com.apple.iTunes", "originalyear", "1999")
+	date := mp4Freeform("com.apple.iTunes", "originaldate", "1999-05-01")
+	for name, items := range map[string][][]byte{"year first": {year, date}, "date first": {date, year}} {
+		t.Run(name, func(t *testing.T) {
+			data := testfile.MP4Tagged(slices.Concat([][]byte{testfile.MP4Text("\xa9nam", "T")}, items)...)
+			doc := mustParseBytes(t, data)
+			if v, _ := doc.Get(tag.OriginalDate); !slices.Equal(v, []string{"1999-05-01"}) {
+				t.Errorf("ORIGINALDATE = %v, want the full date", v)
+			}
+			if len(doc.Lint()) != 0 {
+				t.Errorf("lint: %v", doc.Lint())
+			}
+			plan, err := doc.Edit().Set(tag.Title, "Other").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out := applyToBytes(t, data, plan); !bytes.Contains(out, year) || !bytes.Contains(out, date) {
+				t.Error("an edit of the title dropped or rewrote a date atom")
+			}
+			plan, err = doc.Edit().Set(tag.OriginalDate, "2001-02-03").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := applyToBytes(t, data, plan)
+			re := mustParseBytes(t, out)
+			if v, _ := re.Get(tag.OriginalDate); !slices.Equal(v, []string{"2001-02-03"}) || bytes.Contains(out, []byte("originalyear")) || len(re.Lint()) != 0 {
+				t.Errorf("after an edit of the date: %v, lint %v, or the year atom stayed", v, re.Lint())
+			}
+		})
+	}
+	// A year that opens no date of the item read is a disagreement, the first read as ever.
+	for name, c := range map[string]struct {
+		items [][]byte
+		want  string
+	}{
+		"another year first":     {[][]byte{mp4Freeform("com.apple.iTunes", "originalyear", "1998"), date}, "1998"},
+		"another year second":    {[][]byte{date, mp4Freeform("com.apple.iTunes", "originalyear", "1998")}, "1999-05-01"},
+		"a year and a month":     {[][]byte{mp4Freeform("com.apple.iTunes", "originalyear", "1999-06"), date}, "1999-06"},
+		"a date in another form": {[][]byte{year, mp4Freeform("com.apple.iTunes", "originaldate", "1999/05/01")}, "1999"},
+	} {
+		doc := mustParseBytes(t, testfile.MP4Tagged(c.items...))
+		if v, _ := doc.Get(tag.OriginalDate); !slices.Equal(v, []string{c.want}) || !hasLintCode(doc, "conflicting-families") {
+			t.Errorf("%s: ORIGINALDATE = %v, lint %v; want %s and a conflict", name, v, doc.Lint(), c.want)
+		}
+	}
+	// A year echoes any date the atoms read hold, the second of two under one name too.
+	two := mustParseBytes(t, testfile.MP4Tagged(date, mp4Freeform("com.apple.iTunes", "originaldate", "2001-01-01"), mp4Freeform("com.apple.iTunes", "originalyear", "2001")))
+	if v, _ := two.Get(tag.OriginalDate); !slices.Equal(v, []string{"1999-05-01", "2001-01-01"}) || hasLintCode(two, "conflicting-families") {
+		t.Errorf("two dates and the second's year: ORIGINALDATE = %v, lint %v", v, two.Lint())
+	}
+	// The same bare year twice is one value.
+	doc := mustParseBytes(t, testfile.MP4Tagged(year, mp4Freeform("com.apple.iTunes", "originaldate", "1999")))
+	if v, _ := doc.Get(tag.OriginalDate); !slices.Equal(v, []string{"1999"}) || len(doc.Lint()) != 0 {
+		t.Errorf("two atoms of one year: ORIGINALDATE = %v, lint %v", v, doc.Lint())
+	}
+}
+
+// A total held twice by atoms that also hold the number: the first is read, the conflict shows,
+// an edit elsewhere keeps both atoms, and an edit that stores nothing settles nothing.
+func TestMP4TotalHeldBesideThePair(t *testing.T) {
+	pair := mp4Pair("trkn", 3, 12)
+	free := mp4Freeform("com.apple.iTunes", "TRACKTOTAL", "15")
+	for name, c := range map[string]struct {
+		items [][]byte
+		total string
+	}{
+		"pair first": {[][]byte{pair, free}, "12"}, "freeform first": {[][]byte{free, pair}, "15"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := testfile.MP4Tagged(c.items...)
+			doc := mustParseBytes(t, data)
+			if n, _ := doc.Get(tag.TrackNumber); !slices.Equal(n, []string{"3"}) {
+				t.Errorf("TRACKNUMBER = %v", n)
+			}
+			if v, _ := doc.Get(tag.TrackTotal); !slices.Equal(v, []string{c.total}) || !hasLintCode(doc, "conflicting-families") || hasLintCode(doc, "single-valued-multi") {
+				t.Errorf("TRACKTOTAL = %v, lint %v; want [%s] and the conflict", v, doc.Lint(), c.total)
+			}
+			for _, edit := range []func(*wl.Editor) *wl.Editor{
+				func(e *wl.Editor) *wl.Editor { return e.Set(tag.Album, "A") },
+				func(e *wl.Editor) *wl.Editor { return e.Set(tag.Album, "A").Set(tag.TrackNumber, "abc") },
+			} {
+				plan, err := edit(doc.Edit()).Prepare()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if out := applyToBytes(t, data, plan); !bytes.Contains(out, pair) || !bytes.Contains(out, free) {
+					t.Errorf("an edit that leaves the track alone dropped or rewrote one of its atoms (%q)", plan.Report().Operations)
+				}
+			}
+			plan, err := doc.Edit().Set(tag.TrackNumber, "abc").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !plan.IsNoOp() || !reportHasWarning(plan.Report().Warnings, wl.WarnValueDropped) {
+				t.Errorf("a discarded track number planned %q with %v", plan.Report().Operations, plan.Report().Warnings)
+			}
+			plan, err = doc.Edit().Set(tag.TrackTotal, "20").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := applyToBytes(t, data, plan)
+			re := mustParseBytes(t, out)
+			if v, _ := re.Get(tag.TrackTotal); !slices.Equal(v, []string{"20"}) || bytes.Contains(out, []byte("TRACKTOTAL")) || len(re.Lint()) != 0 {
+				t.Errorf("after an edit of the total: %v, lint %v, or the freeform stayed", v, re.Lint())
+			}
+		})
+	}
+}
+
+// An edit that stores nothing writes nothing, a respelling it would otherwise carry along
+// included: here one that makes the ilst a byte longer, which no padding absorbs.
+func TestMP4DiscardedEditDoesNotMigrate(t *testing.T) {
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"), mp4Freeform("com.apple.iTunes", "MUSICBRAINZ_ALBUMSTATUS", "official"))
+	if v, _ := mustParseBytes(t, data).Get(tag.ReleaseStatus); !slices.Equal(v, []string{"official"}) {
+		t.Fatalf("RELEASESTATUS = %v", v)
+	}
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.BPM, "abc").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.IsNoOp() || !reportHasWarning(plan.Report().Warnings, wl.WarnValueDropped) {
+		t.Errorf("planned %q with warnings %v", plan.Report().Operations, plan.Report().Warnings)
 	}
 }
 

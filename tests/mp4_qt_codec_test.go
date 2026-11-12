@@ -125,8 +125,8 @@ func TestMP4QuickTimeMP3Fixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if digest.ExtentVersion != "mp4-mdat-v3" {
-		t.Errorf("extent = %q, want mp4-mdat-v3", digest.ExtentVersion)
+	if digest.ExtentVersion != "mp4-samples-v4" {
+		t.Errorf("extent = %q, want mp4-samples-v4", digest.ExtentVersion)
 	}
 }
 

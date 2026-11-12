@@ -54,7 +54,8 @@ func WithSourceName(name string) ParseOption {
 }
 
 // WithPadding sets post-metadata padding and marks it explicit so a
-// padding-only change is still realized.
+// padding-only change is still realized. Where padding needs a structure the
+// file lacks (an MP4 with no ilst), only a floor (Min) creates it.
 func WithPadding(p PaddingPolicy) WriteOption {
 	return func(o *core.WriteOptions) {
 		o.Padding = p

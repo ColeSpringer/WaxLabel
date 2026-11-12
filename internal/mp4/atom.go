@@ -112,13 +112,15 @@ walkLoop:
 		size := int64(binary.BigEndian.Uint32(head[0:4]))
 		headerLen := int64(8)
 		openEnded := false
+		// Bytes whose size field forms no atom end the walk. At the top level they are what
+		// something appended behind the last atom, which the caller keeps and reports; in a
+		// container the tiling check below refuses them.
 		switch {
 		case size == 1:
-			// A 64-bit atom needs a 16-byte header; reject one that does not fit the region.
-			// Reading its extended size from outside would let the size clamp below fall
-			// under headerLen, making payload lengths like a.size-a.headerLen negative.
+			// A 64-bit atom needs a 16-byte header inside the region: an extended size read
+			// from outside it would let the clamp below fall under headerLen.
 			if off+16 > end {
-				return nil, fmt.Errorf("%w: 64-bit atom %q header truncated", waxerr.ErrInvalidData, name)
+				break walkLoop
 			}
 			ext, err := bits.ReadSlice(src, off+8, 8, limit)
 			if err != nil {
@@ -127,7 +129,7 @@ walkLoop:
 			size = int64(binary.BigEndian.Uint64(ext))
 			headerLen = 16
 			if size < 16 {
-				return nil, fmt.Errorf("%w: 64-bit atom %q size %d below 16", waxerr.ErrInvalidData, name, size)
+				break walkLoop
 			}
 		case size == 0:
 			// A declared size of 0 means "runs to the end of the enclosing region," which is
@@ -137,7 +139,7 @@ walkLoop:
 			}
 			size, openEnded = end-off, true
 		case size < 8:
-			return nil, fmt.Errorf("%w: atom %q size %d below 8", waxerr.ErrInvalidData, name, size)
+			break walkLoop
 		}
 		// Only a top-level size==0 sentinel became end-off above (a nested one broke out
 		// of the walk), so past here only an oversized atom trips the clamp below and

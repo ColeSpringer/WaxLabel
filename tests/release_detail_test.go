@@ -209,8 +209,7 @@ func TestReleaseDetailDualRepresentationID3(t *testing.T) {
 		t.Error("the surviving frame should be the Picard-spelled one")
 	}
 
-	// An unrelated edit copies both frames verbatim, so the duplication persists; MP4 by contrast
-	// always coalesces.
+	// An unrelated edit copies both frames verbatim, so the duplication persists.
 	unrelatedPlan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Untouched").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -221,38 +220,43 @@ func TestReleaseDetailDualRepresentationID3(t *testing.T) {
 	}
 }
 
-// MP4 arm: buildItems rebuilds every owned item from the tag set, so any write coalesces the two
-// atoms into one that carries both values.
+// MP4 arm: the first atom is the one read, an unrelated edit keeps both, and an edit of the key
+// leaves the Picard-spelled one.
 func TestReleaseDetailDualRepresentationMP4(t *testing.T) {
-	data := testfile.MP4Tagged(
-		testfile.MP4Text("\xa9nam", "T"),
-		mp4Freeform("com.apple.iTunes", "RELEASECOUNTRY", "US"),
-		mp4Freeform("com.apple.iTunes", picardCountry, "GB"),
-	)
+	upper := mp4Freeform("com.apple.iTunes", "RELEASECOUNTRY", "US")
+	picard := mp4Freeform("com.apple.iTunes", picardCountry, "GB")
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"), upper, picard)
 
 	doc := mustParseBytes(t, data)
-	if got, _ := doc.Tags().Get(tag.ReleaseCountry); len(got) != 2 {
-		t.Fatalf("RELEASECOUNTRY = %v, want both atoms to project", got)
+	if got, _ := doc.Tags().Get(tag.ReleaseCountry); !slices.Equal(got, []string{"US"}) {
+		t.Fatalf("RELEASECOUNTRY = %v, want [US], the first atom's", got)
 	}
-	if !hasLintCode(doc, "single-valued-multi") {
-		t.Errorf("expected a single-valued-multi finding; got %v", doc.Lint())
+	if !hasLintCode(doc, "conflicting-families") {
+		t.Errorf("expected a conflicting-families finding; got %v", doc.Lint())
 	}
 
-	// An edit to an unrelated key still coalesces, unlike ID3.
 	plan, err := doc.Edit().Set(tag.Title, "Changed").Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
 	out := applyToBytes(t, data, plan)
+	if !bytes.Contains(out, upper) || !bytes.Contains(out, picard) {
+		t.Error("an unrelated edit must keep both atoms as they are")
+	}
 
+	plan, err = doc.Edit().Set(tag.ReleaseCountry, "DE").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = applyToBytes(t, data, plan)
 	if bytes.Contains(out, []byte("RELEASECOUNTRY")) {
-		t.Error("the uppercase atom name should be gone after a rebuild")
+		t.Error("the uppercase atom should be gone after an edit of the key")
 	}
 	if n := bytes.Count(out, []byte(picardCountry)); n != 1 {
 		t.Errorf("output carries %d %q atoms, want 1", n, picardCountry)
 	}
-	if got, _ := mustParseBytes(t, out).Tags().Get(tag.ReleaseCountry); !slices.Equal(got, []string{"US", "GB"}) {
-		t.Errorf("coalesced values = %v, want [US GB] (MP4 merges, never drops)", got)
+	if got, _ := mustParseBytes(t, out).Tags().Get(tag.ReleaseCountry); !slices.Equal(got, []string{"DE"}) {
+		t.Errorf("RELEASECOUNTRY = %v, want [DE]", got)
 	}
 }
 

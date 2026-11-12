@@ -621,8 +621,8 @@ func TestMP4ChapterEditKeepsEssenceDigest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HashAudioEssence: %v", err)
 	}
-	if before.ExtentVersion != "mp4-mdat-v3" || len(before.Sum) == 0 {
-		t.Fatalf("digest = %s (version %q), want mp4-mdat-v3 with a non-empty sum", before, before.ExtentVersion)
+	if before.ExtentVersion != "mp4-samples-v4" || len(before.Sum) == 0 {
+		t.Fatalf("digest = %s (version %q), want mp4-samples-v4 with a non-empty sum", before, before.ExtentVersion)
 	}
 
 	path := copyToTemp(t, sampleM4B)

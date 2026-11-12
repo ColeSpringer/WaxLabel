@@ -35,6 +35,11 @@ var mp4Text = map[string]tag.Key{
 	"\xa9mvn": tag.MovementName,
 	// ©enc is encoded-by person; ©too is tool. ffmpeg folds both to encoder; iTunes keeps distinct.
 	"\xa9enc": tag.EncodedBy,
+	// The iTunes TV atoms; the season and episode numbers are integer atoms (tvsn, tves).
+	"tvsh": tag.Show,
+	"tven": tag.EpisodeID,
+	"tvnn": tag.Network,
+	"sosn": tag.ShowSort,
 }
 
 // mp4Freeform maps com.apple.iTunes freeform names to canonical keys.
@@ -78,43 +83,81 @@ var mp4Freeform = map[string]tag.Key{
 // quickTimeKeyPrefix is stripped from mdta keys so Apple and ffmpeg bare names match.
 const quickTimeKeyPrefix = "com.apple.quicktime."
 
-// mp4Mdta maps bare mdta key names to canonical keys. Duplicate names (date/creationdate,
-// encoder/software) stay as separate source labels on read.
+// mp4Mdta maps bare mdta key names to canonical keys: Apple's, and the names ffmpeg gives the
+// iTunes atoms, which it writes into a keys index as they are. Duplicate names
+// (date/creationdate, encoder/software) stay as separate source labels on read.
 var mp4Mdta = map[string]tag.Key{
-	"title":        tag.Title,
-	"artist":       tag.Artist,
-	"albumartist":  tag.AlbumArtist,
-	"album":        tag.Album,
-	"composer":     tag.Composer,
-	"comment":      tag.Comment,
-	"description":  tag.Description,
-	"genre":        tag.Genre,
-	"encoder":      tag.Encoder,
-	"software":     tag.Encoder,
-	"copyright":    tag.Copyright,
-	"date":         tag.RecordingDate,
-	"creationdate": tag.RecordingDate,
-	"publisher":    tag.Label,
-	"grouping":     tag.Grouping,
-	"lyrics":       tag.Lyrics,
+	"title":             tag.Title,
+	"artist":            tag.Artist,
+	"albumartist":       tag.AlbumArtist,
+	"album":             tag.Album,
+	"composer":          tag.Composer,
+	"comment":           tag.Comment,
+	"description":       tag.Description,
+	"synopsis":          tag.LongDescription,
+	"genre":             tag.Genre,
+	"encoder":           tag.Encoder,
+	"software":          tag.Encoder,
+	"copyright":         tag.Copyright,
+	"date":              tag.RecordingDate,
+	"creationdate":      tag.RecordingDate,
+	"publisher":         tag.Label,
+	"grouping":          tag.Grouping,
+	"lyrics":            tag.Lyrics,
+	"sort_name":         tag.TitleSort,
+	"sort_artist":       tag.ArtistSort,
+	"sort_album":        tag.AlbumSort,
+	"sort_album_artist": tag.AlbumArtistSort,
+	"sort_composer":     tag.ComposerSort,
+	"sort_show":         tag.ShowSort,
+	"compilation":       tag.Compilation,
+	"gapless_playback":  tag.ITunesGapless,
+	"media_type":        tag.MediaType,
+	"rating":            tag.ITunesAdvisory, // ffmpeg's name for rtng, not a star rating
+	"tmpo":              tag.BPM,
+	"show":              tag.Show,
+	"episode_id":        tag.EpisodeID,
+	"network":           tag.Network,
+	"episode_sort":      tag.EpisodeNumber,
+	"season_number":     tag.SeasonNumber,
 }
 
-// keyMP4Mdta is hand-written write spelling; mp4Mdta is many-to-one (inverting would be nondeterministic).
+// keyMP4Mdta is the name a new mdta entry takes, ffmpeg's. Hand-written: mp4Mdta is many-to-one.
+// A track or disc total has none: it shares the number's entry as "n/total".
 var keyMP4Mdta = map[tag.Key]string{
-	tag.Title:         "title",
-	tag.Artist:        "artist",
-	tag.AlbumArtist:   "albumartist",
-	tag.Album:         "album",
-	tag.Composer:      "composer",
-	tag.Comment:       "comment",
-	tag.Description:   "description",
-	tag.Genre:         "genre",
-	tag.Encoder:       "encoder",
-	tag.Copyright:     "copyright",
-	tag.RecordingDate: "date",
-	tag.Label:         "publisher",
-	tag.Grouping:      "grouping",
-	tag.Lyrics:        "lyrics",
+	tag.Title:           "title",
+	tag.Artist:          "artist",
+	tag.AlbumArtist:     "album_artist",
+	tag.Album:           "album",
+	tag.Composer:        "composer",
+	tag.Comment:         "comment",
+	tag.Description:     "description",
+	tag.LongDescription: "synopsis",
+	tag.Genre:           "genre",
+	tag.Encoder:         "encoder",
+	tag.Copyright:       "copyright",
+	tag.RecordingDate:   "date",
+	tag.Label:           "publisher",
+	tag.Grouping:        "grouping",
+	tag.Lyrics:          "lyrics",
+	tag.TrackNumber:     "track",
+	tag.DiscNumber:      "disc",
+	tag.TitleSort:       "sort_name",
+	tag.ArtistSort:      "sort_artist",
+	tag.AlbumSort:       "sort_album",
+	tag.AlbumArtistSort: "sort_album_artist",
+	tag.ComposerSort:    "sort_composer",
+	tag.ShowSort:        "sort_show",
+	tag.Compilation:     "compilation",
+	tag.ITunesGapless:   "gapless_playback",
+	tag.MediaType:       "media_type",
+	tag.ITunesAdvisory:  "rating",
+	tag.BPM:             "tmpo",
+	tag.Show:            "show",
+	tag.EpisodeID:       "episode_id",
+	tag.Network:         "network",
+	tag.EpisodeNumber:   "episode_sort",
+	tag.SeasonNumber:    "season_number",
 }
 
 // mp4UdtaText: udta-only text atoms not in ilst (mp4Text consulted first on read).
@@ -126,7 +169,7 @@ var mp4UdtaText = map[string]tag.Key{
 var (
 	keyMP4Text     = map[tag.Key]string{}
 	keyMP4Freeform = map[tag.Key]string{}
-	// freeformFold is read-only case fold; mp4Freeform/keyMP4Freeform keep exact write spelling.
+	// freeformFold is the read-only case fold of mp4Freeform, whose spellings are what is written.
 	freeformFold = map[string]tag.Key{}
 )
 
@@ -136,32 +179,6 @@ func init() {
 	}
 	for name, k := range mp4Freeform {
 		keyMP4Freeform[k] = name
-		freeformFold[normalizeKey(name)] = k
-	}
-	// Read-only DJMIXER separator variants; write stays "DJMIXER".
-	for _, name := range []string{"DJ MIXER", "DJ_MIXER", "DJ-MIXER"} {
-		freeformFold[normalizeKey(name)] = tag.DJMixer
-	}
-	// Read-only; no tag.AliasKey on this path.
-	freeformFold[normalizeKey("MUSICBRAINZ_ALBUMSTATUS")] = tag.ReleaseStatus
-	freeformFold[normalizeKey("MUSICBRAINZ_ALBUMTYPE")] = tag.ReleaseType
-	// Matroska native spellings (tag/aliases.go); read-only so sets replace, not append.
-	for name, k := range map[string]tag.Key{
-		"LEAD_PERFORMER": tag.Artist,
-		"DATE_RECORDED":  tag.RecordingDate,
-		"DATE_RELEASED":  tag.ReleaseDate,
-		"DATE_RELEASE":   tag.ReleaseDate,
-		"DATE_ORIGINAL":  tag.OriginalDate,
-		"ORIGINAL_DATE":  tag.OriginalDate,
-		"ENCODED_BY":     tag.EncodedBy,
-		"PART_NUMBER":    tag.TrackNumber,
-		"TOTAL_PARTS":    tag.TrackTotal,
-		"TOTAL_DISCS":    tag.DiscTotal,
-		"CATALOG_NUMBER": tag.CatalogNumber,
-		"PUBLISHER":      tag.Label,
-		"REMIXED_BY":     tag.Remixer,
-		"CONTENT_GROUP":  tag.Grouping,
-	} {
 		freeformFold[normalizeKey(name)] = k
 	}
 	// iTunes structured keys + ENCODEDBY; read-only (write uses structured or ©-text atoms).
@@ -185,15 +202,17 @@ func MP4KeyText(key tag.Key) (string, bool) {
 	return name, ok
 }
 
-// MP4FreeformKey returns the canonical key for a freeform name. Case folds via freeformFold
-// (like [ID3TXXXKey]/[MatroskaTagKey]). Separators are not normalized; DJMIXER variants are
-// seeded in init.
+// MP4FreeformKey returns the canonical key for a freeform name: the table's, case folded, else
+// the key an alias spelling names ([tag.AliasKey]). Separators are not normalized.
 func MP4FreeformKey(name string) (tag.Key, bool) {
 	if k, ok := mp4Freeform[name]; ok {
 		return k, true
 	}
-	k, ok := freeformFold[normalizeKey(name)]
-	return k, ok
+	norm := normalizeKey(name)
+	if k, ok := freeformFold[norm]; ok {
+		return k, true
+	}
+	return tag.AliasKey(norm)
 }
 
 // MP4KeyFreeform returns the freeform name to write. Unlisted keys write string(key).
@@ -204,10 +223,15 @@ func MP4KeyFreeform(key tag.Key) string {
 	return string(key)
 }
 
-// MP4MdtaKey strips quickTimeKeyPrefix, then maps or falls through [tag.FoldKey].
+// MP4MdtaKey maps an mdta key name, less quickTimeKeyPrefix: the table's, as written (a custom
+// key is written in capitals, so SOFTWARE is not Apple's "software"), else the key an alias
+// spelling names, else the name folded to a custom key ([tag.FoldKey]).
 func MP4MdtaKey(name string) (tag.Key, bool) {
 	bare := strings.TrimPrefix(name, quickTimeKeyPrefix)
 	if k, ok := mp4Mdta[bare]; ok {
+		return k, true
+	}
+	if k, ok := tag.AliasKey(bare); ok {
 		return k, true
 	}
 	return tag.FoldKey(bare)

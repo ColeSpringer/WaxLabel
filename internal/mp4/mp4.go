@@ -1,10 +1,14 @@
 // Package mp4 implements reading and writing MP4 / iTunes (M4A) metadata for the
-// public waxlabel package. The codec itself is internal. Tags live at
-// moov.udta.meta.ilst; media in mdat with offsets in stco/co64.
+// public waxlabel package. The codec itself is internal. Tags live in the ilst of
+// moov.udta.meta, or of a meta directly under moov, keyed by atom name or through an mdta
+// keys index, and in moov.udta text atoms; media in mdat with offsets in stco/co64.
 //
 // Preservation-first: rewrites ilst, reusing neighbouring free padding when possible.
 // Growth past padding shifts stco/co64 and patches moov/udta/meta sizes; mdat is copied
-// verbatim.
+// verbatim. An item keeps the encoding the file gave it while its value stands.
+//
+// The audio essence is the sound tracks' sample chunks; without readable sample tables,
+// the mdats.
 //
 // Chapters: Nero chpl and QuickTime text track, projected together; an edit rewrites
 // both (chpl plus the text track a tref "chap" entry names, samples in an mdat behind the
@@ -86,17 +90,20 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
-		Representation: "iTunes ilst atoms, an mdta keys store, or moov.udta text atoms", Fidelity: "lossless",
+		Representation: "iTunes ilst atoms or an mdta keys store, under moov.udta.meta or moov.meta, or moov.udta text atoms", Fidelity: "lossless",
 		Constraints: []string{
 			"the long tail is stored as com.apple.iTunes freeform atoms",
-			"values go to one store per file: the ilst when the file has one, else its moov.udta text atoms",
+			"values go to one store per file: the ilst when the file has one, moov.udta.meta's ahead of moov.meta's, else its moov.udta text atoms",
+			"moov.udta text atoms and a second ilst follow each write for the keys they hold; a text atom drops a value it cannot hold, and a key the second ilst alone holds stays there",
+			"a key that several ilst items hold reads from the first; the others stay until the key is edited",
+			"a new mdta entry takes ffmpeg's name for the key, and a track or disc number shares one entry with its total",
 		},
 	}
 	pictures := core.Capability{
 		// Write Full: image bytes lossless; role/description loss is per-picture
 		// (plan warning), not AccessPartial.
 		Read: core.AccessFull, Write: core.AccessFull,
-		Representation: "covr atom (JPEG/PNG/BMP)", Fidelity: "image bytes lossless; role and description not stored",
+		Representation: "covr atom, or the artwork key of an mdta keys store (JPEG/PNG/BMP)", Fidelity: "image bytes lossless; role and description not stored",
 		Constraints: []string{"covers store image data only - picture role and description are dropped (read back as front cover)"},
 		PictureLoss: core.PictureLossRoleAndDescription,
 		// A covr atom can only label JPEG/PNG/BMP, so the transfer layer drops other cover
@@ -155,7 +162,7 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 			refusal = d.refuseWrite()
 		}
 	}
-	// Padding is grow-only: an edit that fits reuses the ilst and free region in place.
+	// An edit that fits reuses the ilst and free region in place unless the policy reuses none.
 	return core.NewCapabilities(core.FormatMP4, refusal != nil, fields, pictures, chapters, core.AccessPartial, perField).
 		WithFieldClassifier(transferClassifier).
 		WithReadOnlyReason(refusal)
@@ -176,15 +183,21 @@ func bpmValueReduced(v string) bool {
 }
 
 // EssenceExtent: versioned name plus sample-entry config (codec fourcc, channels,
-// sample size, rate) mixed ahead of mdat payload range(s).
+// sample size, rate) mixed ahead of the essence ranges.
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	var cfg [12]byte
+	// v3: essenceMdats, each mdat from its first non-chapter chunk, where no sample table
+	// gives the sound tracks' own chunks.
+	label := "mp4-mdat-v3"
 	if d, ok := m.Native.(*doc); ok {
 		copy(cfg[0:4], d.cfg.codec[:])
 		binary.BigEndian.PutUint16(cfg[4:6], d.cfg.channels)
 		binary.BigEndian.PutUint16(cfg[6:8], d.cfg.sampleSize)
 		binary.BigEndian.PutUint32(cfg[8:12], d.cfg.sampleRate)
+		if d.sampleExtent {
+			// v4: the sound tracks' sample chunks, no video and no chapter samples.
+			label = "mp4-samples-v4"
+		}
 	}
-	// v3: essenceMdats trims each mdat to its first non-chapter chunk.
-	return "mp4-mdat-v3", cfg[:]
+	return label, cfg[:]
 }

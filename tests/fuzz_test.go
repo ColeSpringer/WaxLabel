@@ -257,6 +257,32 @@ func FuzzParse(f *testing.F) {
 		f.Add(slices.Concat(stream, apeTagText(map[string]string{"Title": "a"}), apeTagText(map[string]string{"Title": "b"}), trailerJunk(40),
 			testfile.Lyrics3v2([2]string{"LYR", "x"}), testfile.ID3v1("t", "", "", "", "", 255), testfile.ID3v1("u", "", "", "", "", 255)))
 	}
+	// MP4 tag stores and properties: a store under moov.meta, alone and beside one under moov.udta; a
+	// keys store under ffmpeg's names, with a key held twice, a non-text item and cover art; atoms in
+	// encodings no rebuild renders; sound and video chunks placed by sample tables; a TrueHD entry
+	// whose first sample opens with a major sync; bytes behind the last atom that form none.
+	keysMeta := mp4MdtaMeta([]string{"title", "track", "software", "encoder", "com.apple.quicktime.rating.user", "com.apple.quicktime.artwork"},
+		[]string{"T", "3/12", "QT", "Lavf"}, testfile.MP4Atom("free", make([]byte, 24)))
+	f.Add(mp4MoovMetaFile(keysMeta))
+	f.Add(mp4MoovMetaFile(testfile.MP4Atom("udta", slices.Concat(mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "U")),
+		testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T"))))), keysMeta))
+	f.Add(testfile.MP4Assemble(testfile.MP4HdlrMdta(), testfile.MP4Keys("title", "com.apple.quicktime.rating.user", "covr"),
+		testfile.MP4Ilst(testfile.MP4KeyItem(1, "T"), testfile.MP4KeyItemData(2, testfile.MP4Data(23, []byte{0x40, 0xA0, 0, 0})),
+			testfile.MP4KeyItemData(3, testfile.MP4Data(13, testfile.JPEG())), testfile.MP4Atom("covr", testfile.MP4Data(14, testfile.PNG())))))
+	f.Add(testfile.MP4Tagged(testfile.MP4Atom("gnre", testfile.MP4Data(0, []byte{0, 18})), testfile.MP4Text("\xa9gen", "Custom"),
+		testfile.MP4Atom("trkn", testfile.MP4Data(0, []byte{0, 0, 0, 7})), testfile.MP4Atom("disk", testfile.MP4Data(0, []byte{0, 0, 0, 1, 0, 2, 0, 0})),
+		testfile.MP4Atom("stik", testfile.MP4Data(22, []byte{2})), testfile.MP4Text("tvsh", "Show"), testfile.MP4Atom("tves", testfile.MP4Data(21, []byte{0, 0, 0, 2})),
+		mp4Freeform("com.apple.iTunes", "ITUNESADVISORY", "2"), testfile.MP4Atom("rtng", testfile.MP4Data(21, []byte{1}))))
+	f.Add(mp4AV(0x11, []byte("video one"), keysMeta))
+	f.Add(mp4AV(0x11, nil)[:len(mp4AV(0x11, nil))-30])
+	trueHD := testfile.MP4AssembleStsd(testfile.MP4Stsd(testfile.MP4StsdEntry("mlpa", 2, 16, 0,
+		testfile.MP4Atom("dmlp", make([]byte, 10)))), nil, nil, nil, 96000)
+	copy(trueHD[bytes.Index(trueHD, []byte("mdat"))+4:], majorSync(0xBA, 0x10, 0))
+	f.Add(trueHD)
+	f.Add(mp4AACFile(48000, 2, 48000, testfile.MP4EsdsRaw(0xDD, bytes.Repeat([]byte{0x5A}, 2000), mp4DescrLong)))
+	for _, tail := range []string{"\x00\x00\x00\x05junk", "\x00\x00\x00\x01junk", "\x00\x00\x00\x01junk\x00\x00\x00\x00\x00\x00\x00\x09", "abc"} {
+		f.Add(slices.Concat(testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T")), []byte(tail)))
+	}
 	// Regression seeds recovered from prior fuzz runs.
 	f.Add([]byte("\x00\x00\x00\bftyp0000moov0")) // MP4: 8-byte ftyp box then a short moov tail
 	f.Add([]byte("RIFF0000WAVE000000000"))       // WAV: RIFF/WAVE with ASCII-digit chunk sizes

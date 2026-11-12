@@ -25,7 +25,16 @@ const (
 	typePNG       = 14
 	typeBMP       = 27
 	typeSignedInt = 21
+	// typeUnsignedInt is what some writers give the integer atoms; an atom's value is never
+	// negative, so both read alike.
+	typeUnsignedInt = 22
 )
+
+// integerType reports whether a data atom's type holds an integer: one of the two integer
+// types, or the implicit type iTunes gives its fixed-layout atoms.
+func integerType(typ uint32) bool {
+	return typ == typeSignedInt || typ == typeUnsignedInt || typ == typeImplicit
+}
 
 // dataAtom is one decoded "data" sub-atom: its well-known type and value bytes.
 type dataAtom struct {
@@ -102,6 +111,10 @@ func decodeItem(it item) itemResult {
 		return decodeBool(it, tag.ITunesGapless)
 	case "shwm":
 		return decodeBool(it, tag.ShowMovement)
+	case "tves":
+		return decodeInt(it, tag.EpisodeNumber)
+	case "tvsn":
+		return decodeInt(it, tag.SeasonNumber)
 	default:
 		key, ok := mapping.MP4TextKey(it.id())
 		if !ok {
@@ -113,9 +126,9 @@ func decodeItem(it item) itemResult {
 
 // decodeMdtaItem decodes an item keyed by the resolved keys-index name rather than a
 // four-character atom. An unrepresentable key leaves the item unowned, so it is preserved
-// verbatim. Cover art is the one non-text value here, stored under the name "covr".
+// verbatim. Cover art is the one non-text value here.
 func decodeMdtaItem(it item) itemResult {
-	if it.key == mdtaCoverKey {
+	if isMdtaCoverKey(it.key) {
 		return decodeCover(it)
 	}
 	key, ok := mapping.MP4MdtaKey(it.key)
@@ -134,6 +147,17 @@ func decodeMdtaItem(it item) itemResult {
 		}
 		if !utf8.Valid(a.value) {
 			return itemResult{owned: false}
+		}
+		// A track or disc entry holds "n/total" as one text, as ffmpeg writes it: two values
+		// of two keys, like the trkn atom's.
+		if num, total, split := tag.NumberTotalSplit(key, string(a.value)); split {
+			if num != "" {
+				contribs = append(contribs, core.Contribution{Key: key, Value: num, Source: src})
+			}
+			if total != "" {
+				contribs = append(contribs, core.Contribution{Key: tag.TotalKey(key), Value: total, Source: src})
+			}
+			continue
 		}
 		contribs = append(contribs, core.Contribution{Key: key, Value: string(a.value), Source: src})
 	}
@@ -160,8 +184,8 @@ func decodeText(it item, key tag.Key) itemResult {
 	return itemResult{contribs: contribs, owned: true}
 }
 
-// decodePair decodes a trkn/disk numeric pair: reserved(2), number(2), total(2),
-// [reserved(2)]. A zero number or total is omitted.
+// decodePair decodes a trkn/disk numeric pair: reserved(2), number(2), [total(2),
+// [reserved(2)]]. A zero number or total is omitted.
 func decodePair(it item, numKey, totKey tag.Key) itemResult {
 	atoms, ok := parseDataAtoms(it.payload)
 	if !ok {
@@ -169,11 +193,14 @@ func decodePair(it item, numKey, totKey tag.Key) itemResult {
 	}
 	var contribs []core.Contribution
 	for _, a := range atoms {
-		if len(a.value) < 6 {
+		if len(a.value) < 4 {
 			return itemResult{owned: false}
 		}
 		num := binary.BigEndian.Uint16(a.value[2:4])
-		total := binary.BigEndian.Uint16(a.value[4:6])
+		var total uint16
+		if len(a.value) >= 6 {
+			total = binary.BigEndian.Uint16(a.value[4:6])
+		}
 		if num > 0 {
 			contribs = append(contribs, core.Contribution{Key: numKey, Value: strconv.Itoa(int(num)), Source: it.id()})
 		}
@@ -264,7 +291,7 @@ func decodeInt(it item, key tag.Key) itemResult {
 	if !ok || len(atoms) != 1 {
 		return itemResult{owned: false}
 	}
-	if atoms[0].typ != typeSignedInt && atoms[0].typ != typeImplicit {
+	if !integerType(atoms[0].typ) {
 		return itemResult{owned: false}
 	}
 	n, ok := intFromBytes(atoms[0].value)
@@ -297,7 +324,7 @@ func decodeBool(it item, key tag.Key) itemResult {
 	if !ok || len(atoms) != 1 || len(atoms[0].value) != 1 {
 		return itemResult{owned: false}
 	}
-	if atoms[0].typ != typeSignedInt && atoms[0].typ != typeImplicit {
+	if !integerType(atoms[0].typ) {
 		return itemResult{owned: false}
 	}
 	val := "0"
@@ -370,49 +397,222 @@ func parseLabelAtom(p []byte, pos int64, want string) (string, int64, bool) {
 	return string(p[pos+12 : pos+size]), pos + size, true
 }
 
-// project derives the canonical view from a parsed (or rewritten) document. It is a
-// pure read, so Parse and the post-write result share it regardless of call order.
-func project(d *doc) (tags tag.TagSet, pics []core.Picture, families []core.FamilyValue, numericGenre bool) {
-	var contribs []core.Contribution
-	for _, it := range d.items {
-		r := decodeItem(it)
+// itemKeys returns the keys an item holds values of: its contributions', and the total's when a
+// number holds a slash pair.
+func itemKeys(r itemResult) []tag.Key {
+	var keys []tag.Key
+	add := func(k tag.Key) {
+		if !slices.Contains(keys, k) {
+			keys = append(keys, k)
+		}
+	}
+	for _, c := range r.contribs {
+		add(c.Key)
+		if _, _, split := tag.NumberTotalSplit(c.Key, c.Value); split {
+			add(tag.TotalKey(c.Key))
+		}
+	}
+	return keys
+}
+
+// reading is how one ilst's items are read: what each decodes to, its identity and keys, and for
+// each key the identity of the item whose values are read for it.
+type reading struct {
+	items   []item
+	results []itemResult
+	ids     []itemKey
+	keys    [][]tag.Key
+	primary map[tag.Key]itemKey
+	// values holds what the items read for a date key say, which a bare year elsewhere may echo.
+	values map[tag.Key][]string
+}
+
+// readItems settles which item is read for each key: the first to hold it, and others of its
+// identity with it. An item of another identity is not read for that key; it shows in the families
+// and stays in the file until the key is edited. A date is the one exception to "first": an item
+// holding only its year gives way to a later one holding the date (Picard writes an originalyear
+// atom ahead of originaldate), and a year beside its date is an echo, not a disagreement.
+func readItems(items []item) reading {
+	n := len(items)
+	rd := reading{
+		items: items, results: make([]itemResult, n), ids: make([]itemKey, n), keys: make([][]tag.Key, n),
+		primary: map[tag.Key]itemKey{}, values: map[tag.Key][]string{},
+	}
+	for i, it := range items {
+		rd.results[i] = decodeItem(it)
+		rd.ids[i], rd.keys[i] = itemIdentity(it), itemKeys(rd.results[i])
+		for _, k := range rd.keys[i] {
+			if !tag.IsDateKey(k) {
+				if _, held := rd.primary[k]; !held {
+					rd.primary[k] = rd.ids[i]
+				}
+				continue
+			}
+			vals := contribValues(rd.results[i], k)
+			first, held := rd.primary[k]
+			switch {
+			case !held, first != rd.ids[i] && echoesOf(rd.values[k], vals):
+				rd.primary[k], rd.values[k] = rd.ids[i], vals
+			case first == rd.ids[i]:
+				rd.values[k] = append(rd.values[k], vals...)
+			}
+		}
+	}
+	return rd
+}
+
+// read reports whether item i is the one read for key.
+func (rd reading) read(i int, key tag.Key) bool { return rd.primary[key] == rd.ids[i] }
+
+// echo reports whether c, of an item not read for its key, only repeats the year of the date read.
+func (rd reading) echo(c core.Contribution) bool {
+	return tag.IsDateKey(c.Key) && echoesOf([]string{c.Value}, rd.values[c.Key])
+}
+
+// shadowed reports whether item i holds values and is read for none of them.
+func (rd reading) shadowed(i int) bool {
+	return len(rd.keys[i]) > 0 && !slices.ContainsFunc(rd.keys[i], func(k tag.Key) bool { return rd.read(i, k) })
+}
+
+// contribValues returns the values r holds of key.
+func contribValues(r itemResult, key tag.Key) []string {
+	var vals []string
+	for _, c := range r.contribs {
+		if c.Key == key {
+			vals = append(vals, c.Value)
+		}
+	}
+	return vals
+}
+
+// echoesOf reports whether every one of years is a bare year that opens one of dates.
+func echoesOf(years, dates []string) bool {
+	for _, y := range years {
+		if !slices.ContainsFunc(dates, func(d string) bool {
+			return len(d) > 4 && d[:4] == y && d[4] == '-'
+		}) {
+			return false
+		}
+	}
+	return true
+}
+
+// storeContribs sorts what one ilst's items hold: the contributions read, every contribution for
+// the families (but a year that echoes the date read), the pictures, and whether the genre read
+// is numeric.
+func storeContribs(rd reading) (contribs, all []core.Contribution, pics []core.Picture, numericGenre bool) {
+	for i, r := range rd.results {
 		if !r.owned {
 			continue
 		}
-		contribs = append(contribs, r.contribs...)
+		for _, c := range r.contribs {
+			switch {
+			case rd.read(i, c.Key):
+				contribs, all = append(contribs, c), append(all, c)
+			case !rd.echo(c):
+				all = append(all, c)
+			}
+		}
 		pics = append(pics, r.pics...)
-		numericGenre = numericGenre || r.numericGenre
+		numericGenre = numericGenre || r.numericGenre && rd.read(i, tag.Genre)
 	}
-	// A udta-level value is promoted only for a key the ilst does not hold: merging the
-	// two would fold a disagreement into a multi-value the next write stores as one.
-	ilstTags := core.BuildTagSet(contribs)
-	var secondary []core.Contribution
-	for _, c := range udtaContributions(d.udtaTexts) {
-		if ilstTags.Has(c.Key) {
-			secondary = append(secondary, c)
+	return contribs, all, pics, numericGenre
+}
+
+// storesView is what a document's stores give the canonical view.
+type storesView struct {
+	contribs []core.Contribution // the values read
+	all      []core.Contribution // those, and what the first store holds unread
+	// secondary holds what the other stores hold of keys already read, and what the second
+	// store holds unread: each shows as a family entry of its own.
+	secondary    []core.Contribution
+	pics         []core.Picture
+	numericGenre bool
+	// secondOnly names the keys read from the second store alone. A write leaves them there.
+	secondOnly map[tag.Key]bool
+}
+
+// viewStores reads the stores in order: the ilst written, the udta text atoms, the second store.
+// A value of a later one is promoted only for a key the ones before it do not hold: merging the
+// two would fold a disagreement into a multi-value the next write stores as one.
+func viewStores(d *doc) storesView {
+	var v storesView
+	v.contribs, v.all, v.pics, v.numericGenre = storeContribs(d.reading())
+	promote := func(from []core.Contribution) (promoted map[tag.Key]bool) {
+		held := core.BuildTagSet(v.contribs)
+		tag.NormalizeNumberPairs(&held) // a number's "n/total" holds the total too
+		promoted = map[tag.Key]bool{}
+		for _, c := range from {
+			if held.Has(c.Key) {
+				v.secondary = append(v.secondary, c)
+				continue
+			}
+			v.contribs, v.all = append(v.contribs, c), append(v.all, c)
+			promoted[c.Key] = true
+			if _, _, split := tag.NumberTotalSplit(c.Key, c.Value); split {
+				promoted[tag.TotalKey(c.Key)] = true
+			}
+		}
+		return promoted
+	}
+	promote(udtaContributions(d.udtaTexts))
+	if d.second != nil {
+		read, all, pics, _ := storeContribs(readItems(d.second.items))
+		v.secondOnly = promote(read)
+		v.secondary = append(v.secondary, unread(all, read)...)
+		if len(v.pics) == 0 {
+			v.pics = pics
+		}
+	}
+	return v
+}
+
+// unread returns the contributions of all that read, a subsequence of it, lacks.
+func unread(all, read []core.Contribution) []core.Contribution {
+	var out []core.Contribution
+	for _, c := range all {
+		if len(read) > 0 && read[0] == c {
+			read = read[1:]
 			continue
 		}
-		contribs = append(contribs, c)
+		out = append(out, c)
 	}
-	tags = core.BuildTagSet(contribs)
-	families = core.BuildFamilies(contribs, core.FamilyMP4)
-	for _, c := range secondary {
+	return out
+}
+
+// project derives the canonical view from a parsed (or rewritten) document. It is a
+// pure read, so Parse and the post-write result share it regardless of call order.
+func project(d *doc) (tags tag.TagSet, pics []core.Picture, families []core.FamilyValue, numericGenre bool) {
+	v := viewStores(d)
+	tags = core.BuildTagSet(v.contribs)
+	// A text item of a number key, a freeform TRACKNUMBER say, may hold "n/total".
+	tag.NormalizeNumberPairs(&tags)
+	families = core.BuildFamilies(v.all, core.FamilyMP4)
+	for _, c := range v.secondary {
 		families = append(families, core.FamilyValue{
 			Key: c.Key, Family: core.FamilyMP4, Scope: core.ScopeTrack,
 			Values: []string{c.Value}, Selected: core.FamilySelected(tags, c.Key, c.Value),
 		})
 	}
-	return tags, pics, families, numericGenre
+	return tags, v.pics, families, v.numericGenre
 }
 
 // invalidKeyWarnings reports the iTunes freeform names the canonical vocabulary cannot
-// represent. decodeFreeform preserves such an item verbatim and contributes nothing, so
-// without a warning the value would be absent from every canonical view unremarked.
+// represent, and the keys items whose value, no text, hides a canonical key's. Such an item is
+// preserved verbatim and contributes nothing, so without a warning the value would be absent
+// from every canonical view unremarked.
 func invalidKeyWarnings(d *doc) []core.Warning {
 	var ws []core.Warning
 	seen := map[string]bool{}
-	for _, it := range d.items {
-		if it.id() != "----" {
+	for _, it := range slices.Concat(d.items, d.secondItems()) {
+		// A keys item that holds no text shows under no key. Where that hides a value a key
+		// would show, the file says so; the other binary items a recorder writes are kept
+		// without a word.
+		if it.mdta() && !seen[it.key] && !owned(it) && hidesKey(it.key) {
+			seen[it.key] = true
+			ws = core.WarnInvalidKey(ws, it.key)
+		}
+		if it.mdta() || it.id() != "----" {
 			continue
 		}
 		mean, name, _, ok := parseMeanName(it.payload)
@@ -426,6 +626,16 @@ func invalidKeyWarnings(d *doc) []core.Warning {
 		ws = core.WarnInvalidKey(ws, name)
 	}
 	return ws
+}
+
+// appleUserRating is the keys name of QuickTime's star rating, a float no text key can show.
+const appleUserRating = "com.apple.quicktime.rating.user"
+
+// hidesKey reports whether an unreadable keys item of this name hides a value a canonical key
+// would show.
+func hidesKey(name string) bool {
+	k, ok := mapping.MP4MdtaKey(name)
+	return name == appleUserRating || ok && k.Known()
 }
 
 // owned reports whether the canonical rebuild owns an item. Items it does not own

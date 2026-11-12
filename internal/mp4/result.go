@@ -1,43 +1,76 @@
 package mp4
 
 import (
+	"math"
 	"slices"
 
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// buildResult constructs the plan's result for an in-place ilst rewrite: the tags and pictures
-// the new items project, and the chapters and essence of a store that does not otherwise change.
-func buildResult(edited *core.Media, base *doc, newItems []item, lay layout, delta int64) *core.Media {
-	// This path runs only when the store outside the ilst region is untouched (the keys
-	// index gained nothing and no udta text atom needed syncing), so the udta text atoms
-	// project as parsed.
-	nd := &doc{items: newItems, udtaTexts: base.udtaTexts}
-	shiftEssence(nd, base, lay.regionStart, lay.regionEnd, delta)
+// stores is what a result projects its tags and pictures from: the items of the store written,
+// those of a second store, and the udta text atoms.
+type stores struct {
+	items, second []item
+	texts         []udtaText
+}
+
+func (st stores) doc() *doc {
+	nd := &doc{items: st.items, udtaTexts: st.texts}
+	if st.second != nil {
+		nd.second = &metaStore{items: st.second}
+	}
+	return nd
+}
+
+// buildResult constructs the plan's result for an in-place ilst rewrite. Nothing outside the ilst
+// region changes on that path (the keys index gained nothing, and no udta text atom or second
+// store needed syncing), so those project as parsed.
+func buildResult(edited *core.Media, base *doc, newItems []item, lay layout) *core.Media {
+	region := edit{off: lay.regionStart, oldLen: lay.regionEnd - lay.regionStart, lit: lay.regionBytes}
+	return tagResult(edited, base, stores{items: newItems, second: base.secondItems(), texts: base.udtaTexts},
+		newShifts([]edit{region}), core.CloneChapters(base.chapters))
+}
+
+// tagResult constructs the result of a write whose edits leave the chapter track alone: what the
+// stores project, the chapters given, and the essence where the edits move it.
+func tagResult(edited *core.Media, base *doc, st stores, moved shifts, chapters []core.Chapter) *core.Media {
+	nd := st.doc()
+	shiftEssence(nd, base, moved)
 	tags, pics, _, _ := project(nd)
 	out := &core.Media{
 		Format:     core.FormatMP4,
 		Properties: edited.Properties.Clone(),
 		Tags:       tags,
 		Pictures:   pics,
-		Chapters:   core.CloneChapters(base.chapters),
+		Chapters:   chapters,
 	}
 	setEssence(nd, out)
 	core.SyncTextItems(out)
 	return out
 }
 
-// shiftEssence sets what setEssence reads, as a metadata region that changed size by delta
-// leaves it: every chunk-offset table entry past the insertion point and every table atom,
-// mdat range, chapter-only mdat and chapter track at or past regionEnd move by delta.
-func shiftEssence(nd, base *doc, insertion, regionEnd, delta int64) {
-	nd.offTables = shiftTables(base.offTables, insertion, regionEnd, delta)
+// shiftEssence sets what setEssence reads, as a write's edits leave it: every chunk offset past
+// an edit's start, and every table atom, mdat, chapter-only mdat and chapter track at or past an
+// edit's end, moves by that edit's length change.
+func shiftEssence(nd, base *doc, moved shifts) {
+	shiftSoundChunks(nd, base, moved)
+	nd.offTables = make([]offsetTable, 0, len(base.offTables))
+	for _, t := range base.offTables {
+		nt := t
+		nt.offset = t.offset + moved.past(t.offset)
+		nt.entries = slices.Clone(t.entries)
+		for i, e := range nt.entries {
+			// A table whose offset would underflow is refused in offsetPatch before any result
+			// is built, so the shifted value is never negative here.
+			if e <= math.MaxInt64 {
+				nt.entries[i] = uint64(int64(e) + moved.at(int64(e)))
+			}
+		}
+		nd.offTables = append(nd.offTables, nt)
+	}
 	nd.mdats = make([][2]int64, len(base.mdats))
 	for i, m := range base.mdats {
-		off := m[0]
-		if off >= regionEnd {
-			off += delta
-		}
+		off := m[0] + moved.past(m[0])
 		nd.mdats[i] = [2]int64{off, m[1]}
 		if base.chapterMdat(m[0]) {
 			nd.chapMdats = append(nd.chapMdats, off)
@@ -45,31 +78,18 @@ func shiftEssence(nd, base *doc, insertion, regionEnd, delta int64) {
 	}
 	if base.chapTrak != nil {
 		t := *base.chapTrak
-		if t.offset >= regionEnd {
-			t.offset += delta
-		}
+		t.offset += moved.past(t.offset)
 		nd.chapTrak = &t
 	}
 }
 
-// shiftTables relocates one group of offset tables into the plan's result: the atom's
-// own offset moves when it lies at or past regionEnd, and every entry past the
-// insertion point moves by delta.
-func shiftTables(src []offsetTable, insertion, regionEnd, delta int64) []offsetTable {
-	out := make([]offsetTable, 0, len(src))
-	for _, t := range src {
-		nt := t
-		if t.offset >= regionEnd {
-			nt.offset = t.offset + delta
-		}
-		nt.entries = slices.Clone(t.entries)
-		for i, e := range nt.entries {
-			// The ok result is unreachable here: Plan refuses an underflowing table in
-			// offsetPatch before any result is built. shiftOffset returns the offset
-			// unchanged in that case, so discarding ok keeps the inert value.
-			nt.entries[i], _ = shiftOffset(e, insertion, delta)
-		}
-		out = append(out, nt)
+// shiftSoundChunks moves the sound tracks' chunk ranges as their chunk offsets move. No edit
+// falls inside one, so each moves whole.
+func shiftSoundChunks(nd, base *doc, moved shifts) {
+	nd.sampleExtent = base.sampleExtent
+	nd.soundChunks = make([][2]int64, len(base.soundChunks))
+	for i, r := range base.soundChunks {
+		by := moved.at(r[0])
+		nd.soundChunks[i] = [2]int64{r[0] + by, r[1] + by}
 	}
-	return out
 }

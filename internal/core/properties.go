@@ -143,6 +143,8 @@ func canonicalCodecName(raw string) string {
 		return "MAC3"
 	case "MAC6":
 		return "MAC6"
+	case "MLPA", "TRUEHD":
+		return "TrueHD" // the MP4 fourcc and Matroska's CodecID suffix
 	case "HE-AAC", "HE-AAC V2", "XHE-AAC":
 		// MP4 esds SBR/PS spellings: still AAC; extension stays in profile.
 		return "AAC"
@@ -150,6 +152,11 @@ func canonicalCodecName(raw string) string {
 	// "AAC LC", "AAC Main", etc. -> "AAC"; bare "AAC" falls through unchanged.
 	if strings.HasPrefix(up, "AAC") {
 		return "AAC"
+	}
+	// The DTS extensions are profiles of DTS: an esds object type's "DTS-HD Master Audio", the
+	// MP4 fourccs (dtsc, dtsh, dtsl, dtse, dtsx).
+	if strings.HasPrefix(up, "DTS") {
+		return "DTS"
 	}
 	return raw
 }

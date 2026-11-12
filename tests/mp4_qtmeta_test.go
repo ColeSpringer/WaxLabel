@@ -3,6 +3,7 @@ package waxlabel_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -24,22 +25,11 @@ const (
 	langDeu uint16 = 0x0EB5
 )
 
-// mp4MdtaFile builds a file whose moov.udta.meta carries an mdta handler, a keys index over names,
-// and an ilst whose items are keyed by index into it; the shape ffmpeg's "-movflags
-// +use_metadata_tags" produces.
-func mp4MdtaFile(names []string, values []string) []byte {
-	items := make([][]byte, 0, len(values))
-	for i, v := range values {
-		items = append(items, mp4KeyItem(i+1, v))
-	}
-	return testfile.MP4Assemble(mp4HdlrMdta(), mp4Keys(names...), testfile.MP4Ilst(items...))
-}
-
 // An ffmpeg "+use_metadata_tags" file keys its ilst items by index into a keys box holding bare
 // names. Without the keys index every item falls to the unknown-atom branch and the file reports
 // no tags at all.
 func TestMP4MdtaBareKeysRead(t *testing.T) {
-	data := mp4MdtaFile(
+	data := testfile.MP4MdtaFile(
 		[]string{"title", "artist", "encoder"},
 		[]string{"Keys Title", "Keys Artist", "Lavf62.3.100"},
 	)
@@ -58,7 +48,7 @@ func TestMP4MdtaBareKeysRead(t *testing.T) {
 // Apple's recorders write the reverse-DNS key form. Stripping the prefix puts both producers on
 // the same vocabulary.
 func TestMP4MdtaApplePrefixedKeysRead(t *testing.T) {
-	data := mp4MdtaFile(
+	data := testfile.MP4MdtaFile(
 		[]string{"com.apple.quicktime.title", "com.apple.quicktime.creationdate", "com.apple.quicktime.software"},
 		[]string{"Apple Title", "2021-05-04", "QuickTime 10.5"},
 	)
@@ -77,7 +67,7 @@ func TestMP4MdtaApplePrefixedKeysRead(t *testing.T) {
 // key outside the vocabulary contributes nothing but must survive a rewrite verbatim, the same
 // treatment an unrecognized four-cc atom gets.
 func TestMP4MdtaUnknownKeyPreserved(t *testing.T) {
-	data := mp4MdtaFile(
+	data := testfile.MP4MdtaFile(
 		[]string{"title", "custom"},
 		[]string{"Before", "Keeper"},
 	)
@@ -208,6 +198,138 @@ func TestMP4UdtaIlstDisagreementSurvivesUnrelatedEdit(t *testing.T) {
 	}
 }
 
+// A udta text atom holds one value of at most 65535 bytes. A value the ilst takes and the atom
+// cannot leaves no atom: one cut short, or holding the first of several, would disagree with it.
+func TestMP4UdtaTextThatCannotHoldTheValueIsRemoved(t *testing.T) {
+	long := strings.Repeat("c", 70000)
+	withIlst := testfile.MP4AssembleUdta(
+		mp4UdtaText("\xa9cmt", mp4QTTextEntry(langUnd, "Old")), mp4UdtaText("\xa9ART", mp4QTTextEntry(langUnd, "Old")),
+		mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "Kept")),
+		testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9cmt", "Old"), testfile.MP4Text("\xa9ART", "Old"), testfile.MP4Text("\xa9nam", "Kept"))),
+	)
+	udtaOnly := testfile.MP4AssembleUdta(
+		mp4UdtaText("\xa9cmt", mp4QTTextEntry(langUnd, "Old")), mp4UdtaText("\xa9ART", mp4QTTextEntry(langUnd, "Old")),
+		mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "Kept")))
+	for name, data := range map[string][]byte{"beside an ilst": withIlst, "udta alone": udtaOnly} {
+		for edit, c := range map[string]struct {
+			key  tag.Key
+			vals []string
+			atom string
+		}{
+			"a 70,000-byte comment": {tag.Comment, []string{long}, "\xa9cmt"},
+			"two artists":           {tag.Artist, []string{"One", "Two"}, "\xa9ART"},
+		} {
+			t.Run(name+", "+edit, func(t *testing.T) {
+				plan, err := mustParseBytes(t, data).Edit().Set(c.key, c.vals...).Prepare()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !slices.ContainsFunc(plan.Report().Warnings, func(w wl.Warning) bool {
+					return w.Code == wl.WarnNativeValueReduced && slices.Contains(w.Keys, c.key)
+				}) {
+					t.Errorf("warnings = %v, want native-value-reduced for %s", plan.Report().Warnings, c.key)
+				}
+				out := applyToBytes(t, data, plan)
+				kids := mp4UdtaKids(t, out)
+				if slices.Contains(kids, c.atom) || !slices.Contains(kids, "\xa9nam") {
+					t.Errorf("udta holds %q, want %q gone and the title atom kept", kids, c.atom)
+				}
+				re := mustParseBytes(t, out)
+				if v, _ := re.Get(c.key); !slices.Equal(v, c.vals) {
+					t.Errorf("%s read back as %d value(s)", c.key, len(v))
+				}
+				if hasLintCode(re, "conflicting-families") {
+					t.Errorf("the stores disagree after the write: %v", re.Lint())
+				}
+			})
+		}
+	}
+}
+
+// The removal is reported by a chapter write that carries the tag edit too, with a chapter track
+// and without one (no track id is free).
+func TestMP4UdtaTextRemovalReportedByAChapterWrite(t *testing.T) {
+	kids := testfile.MP4Atom("udta", slices.Concat(mp4UdtaText("\xa9cmt", mp4QTTextEntry(langUnd, "Old")),
+		testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9cmt", "Old")))))
+	for name, id := range map[string]int{"chapter track": 1, "chpl alone": -1} { // -1: track id 0xFFFFFFFF
+		data := testfile.MP4TracksFile(nil, func(audio, _, _ uint32) []byte {
+			return slices.Concat(testfile.MP4Mvhd(1000, 1000), testfile.MP4SoundTrak(id, audio), kids)
+		})
+		plan, err := mustParseBytes(t, data).Edit().SetChapters(chaptersFromTitles("A")...).Set(tag.Comment, strings.Repeat("c", 70000)).Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ops := strings.Join(plan.Report().Operations, "; ")
+		if strings.Contains(ops, "QuickTime track") != (name == "chapter track") {
+			t.Fatalf("%s: operations %q", name, ops)
+		}
+		if !reportHasWarning(plan.Report().Warnings, wl.WarnNativeValueReduced) {
+			t.Errorf("%s: warnings %v, want native-value-reduced", name, plan.Report().Warnings)
+		}
+		if kids := mp4UdtaKids(t, applyToBytes(t, data, plan)); slices.Contains(kids, "\xa9cmt") {
+			t.Errorf("%s: udta holds %q", name, kids)
+		}
+	}
+}
+
+// A padding floor is applied by a write that changes no value, on the path that syncs a udta atom.
+func TestMP4PaddingFloorAppliedWithAUdtaSync(t *testing.T) {
+	data := testfile.MP4AssembleUdta(
+		mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "Udta")),
+		testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "Ilst Title"))),
+	)
+	plan, err := mustParseBytes(t, data).Edit().Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 4096, Min: 4096, ReuseInPlace: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.IsNoOp() || plan.Report().PaddingAfter != 4096 {
+		t.Errorf("no-op %v, PaddingAfter %d, want the floor reserved", plan.IsNoOp(), plan.Report().PaddingAfter)
+	}
+}
+
+// A keys item whose value is no text (Apple's user rating is a float) shows under no key; the
+// file says so, and an edit keeps the item.
+func TestMP4MdtaNonTextItemWarned(t *testing.T) {
+	rating := testfile.MP4KeyItemData(2, testfile.MP4Data(23, []byte{0x40, 0xA0, 0, 0}))
+	data := testfile.MP4Assemble(testfile.MP4HdlrMdta(), testfile.MP4Keys("title", "com.apple.quicktime.rating.user", "com.apple.quicktime.artwork"),
+		testfile.MP4Ilst(testfile.MP4KeyItem(1, "T"), rating, rating, testfile.MP4KeyItemData(3, testfile.MP4Data(13, testfile.JPEG()))))
+	doc := mustParseBytes(t, data)
+	var named []string
+	for _, w := range doc.Warnings() {
+		if w.Code == wl.WarnInvalidTagKey {
+			named = append(named, w.Message)
+		}
+	}
+	if len(named) != 1 || !strings.Contains(named[0], "com.apple.quicktime.rating.user") {
+		t.Errorf("invalid-tag-key warnings = %q, want one naming the rating key", named)
+	}
+	if doc.Tags().Len() != 1 {
+		t.Errorf("keys = %v, want the title alone", doc.Tags().Keys())
+	}
+	plan, err := doc.Edit().Set(tag.Title, "Other").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(applyToBytes(t, data, plan), rating) {
+		t.Error("the rating item did not survive an edit of the title")
+	}
+}
+
+// An edit that stores nothing writes nothing, the sync of a disagreeing udta atom included.
+func TestMP4DiscardedEditDoesNotSyncUdta(t *testing.T) {
+	data := testfile.MP4AssembleUdta(
+		mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "Udta")),
+		testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "Ilst Title"))),
+	)
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.BPM, "abc").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.IsNoOp() {
+		t.Errorf("planned %q", plan.Report().Operations)
+	}
+}
+
 // udta child outside the text vocabulary is not decoded and must survive a rewrite through the
 // verbatim udta splice.
 func TestMP4UdtaUnmappedAtomPreserved(t *testing.T) {
@@ -232,7 +354,7 @@ func TestMP4UdtaUnmappedAtomPreserved(t *testing.T) {
 // A set on a keys-indexed file must be written as a keys entry plus an index-keyed item, not as
 // a four-character "\xa9nam" atom inside an mdta box where nothing will read it.
 func TestMP4MdtaWriteStaysKeyed(t *testing.T) {
-	data := mp4MdtaFile([]string{"title"}, []string{"Before"})
+	data := testfile.MP4MdtaFile([]string{"title"}, []string{"Before"})
 	doc := mustParseBytes(t, data)
 	plan, err := doc.Edit().Set(tag.Title, "After").Set(tag.Album, "Fresh").Prepare()
 	if err != nil {
@@ -380,7 +502,8 @@ func TestDifferentialFFprobeReadsQuickTimeStores(t *testing.T) {
 			args := []string{"-hide_banner", "-loglevel", "error", "-y",
 				"-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "aac"}
 			args = append(args, c.args...)
-			args = append(args, "-metadata", "title=Original", path)
+			args = append(args, "-metadata", "title=Original", "-metadata", "track=3/12",
+				"-metadata", "album_artist=Original Band", path)
 			if err := exec.Command("ffmpeg", args...).Run(); err != nil {
 				t.Fatalf("ffmpeg author %s: %v", c.file, err)
 			}
@@ -388,12 +511,31 @@ func TestDifferentialFFprobeReadsQuickTimeStores(t *testing.T) {
 			if got := doc.Fields().Title; got != "Original" {
 				t.Fatalf("read back TITLE = %q, want Original (the store was not decoded)", got)
 			}
-			plan, err := doc.Edit().
+			edit := doc.Edit().
 				Set(tag.Title, "Written By WaxLabel").
 				Set(tag.Artist, "Written Artist").
 				Set(tag.Album, "Written Album").
-				Set(tag.Comment, "Written Comment").
-				Prepare()
+				Set(tag.Comment, "Written Comment")
+			want := map[string]string{
+				"title":   "Written By WaxLabel",
+				"artist":  "Written Artist",
+				"album":   "Written Album",
+				"comment": "Written Comment",
+			}
+			// The names ffmpeg gave the keys index are the ones read and written. A plain .mov
+			// stores neither field in a udta text atom ffmpeg wrote.
+			if c.name == "mdta-keys" {
+				for k, v := range map[tag.Key]string{tag.TrackNumber: "3", tag.TrackTotal: "12", tag.AlbumArtist: "Original Band"} {
+					if got, _ := doc.Get(k); !slices.Equal(got, []string{v}) {
+						t.Errorf("%s = %v, want [%s]", k, got, v)
+					}
+				}
+				edit = edit.Set(tag.TrackNumber, "5").Set(tag.AlbumArtist, "Written Band").
+					Set(tag.TitleSort, "Written Sort").Set(tag.Compilation, "1")
+				want["track"], want["album_artist"] = "5/12", "Written Band"
+				want["sort_name"], want["compilation"] = "Written Sort", "1"
+			}
+			plan, err := edit.Prepare()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -401,12 +543,7 @@ func TestDifferentialFFprobeReadsQuickTimeStores(t *testing.T) {
 				t.Fatal(err)
 			}
 			tags := ffprobeFormatTags(t, path)
-			for probeKey, want := range map[string]string{
-				"title":   "Written By WaxLabel",
-				"artist":  "Written Artist",
-				"album":   "Written Album",
-				"comment": "Written Comment",
-			} {
+			for probeKey, want := range want {
 				if got := lookupCI(tags, probeKey); got != want {
 					t.Errorf("ffprobe %s = %q, want %q (all tags: %v)", probeKey, got, want, tags)
 				}
@@ -444,7 +581,7 @@ func ffprobeFormatTags(t *testing.T, path string) map[string]string {
 // nothing. Encoding index-keyed items into it would name entries in a table that does not exist, so
 // the write falls back to the four-character encoder and the values still read back.
 func TestMP4MdtaWithoutKeysBoxFallsBack(t *testing.T) {
-	data := testfile.MP4Assemble(mp4HdlrMdta(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "Before")))
+	data := testfile.MP4Assemble(testfile.MP4HdlrMdta(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "Before")))
 	doc := mustParseBytes(t, data)
 	if got := doc.Fields().Title; got != "Before" {
 		t.Fatalf("TITLE = %q, want Before (an unresolved item falls through to the four-cc dispatch)", got)
@@ -467,8 +604,8 @@ func TestMP4MdtaWithoutKeysBoxFallsBack(t *testing.T) {
 // turns negative under a 32-bit int, which would pass the bounds check and panic the lookup.
 func TestMP4MdtaOutOfRangeIndexPreserved(t *testing.T) {
 	// "\xa9nam" reads as the index 0xA96E616D (2842583405), far past a one-entry table.
-	data := testfile.MP4Assemble(mp4HdlrMdta(), mp4Keys("title"),
-		testfile.MP4Ilst(mp4KeyItem(1, "Kept"), testfile.MP4Text("\xa9nam", "Out Of Range")))
+	data := testfile.MP4Assemble(testfile.MP4HdlrMdta(), testfile.MP4Keys("title"),
+		testfile.MP4Ilst(testfile.MP4KeyItem(1, "Kept"), testfile.MP4Text("\xa9nam", "Out Of Range")))
 	doc := mustParseBytes(t, data)
 	if got := doc.Fields().Title; got != "Kept" {
 		t.Errorf("TITLE = %q, want Kept (from the in-range keys entry)", got)
@@ -482,23 +619,124 @@ func TestMP4MdtaOutOfRangeIndexPreserved(t *testing.T) {
 	}
 }
 
+// Cover art in an mdta store, under the key name WaxLabel once wrote, under Apple's, and in the
+// four-character item ffmpeg also reads there: each is a picture, and a tag edit keeps the item as
+// it is.
 func TestMP4MdtaCoverSurvivesTagEdit(t *testing.T) {
-	data := testfile.MP4Assemble(mp4HdlrMdta(), mp4Keys("title", "covr"),
-		testfile.MP4Ilst(mp4KeyItem(1, "Before"), mp4KeyItemData(2, testfile.MP4Data(13, testfile.JPEG()))))
-	doc := mustParseBytes(t, data)
-	if len(doc.Pictures()) != 1 {
-		t.Fatalf("setup: pictures = %d, want 1", len(doc.Pictures()))
+	jpeg := testfile.MP4Data(13, testfile.JPEG())
+	for name, c := range map[string]struct {
+		keys  []string
+		cover []byte
+	}{
+		"covr key":          {[]string{"title", "covr"}, testfile.MP4KeyItemData(2, jpeg)},
+		"artwork key":       {[]string{"title", "com.apple.quicktime.artwork"}, testfile.MP4KeyItemData(2, jpeg)},
+		"four-character":    {[]string{"title"}, testfile.MP4Atom("covr", jpeg)},
+		"artwork, two data": {[]string{"title", "com.apple.quicktime.artwork"}, testfile.MP4KeyItemData(2, slices.Concat(jpeg, testfile.MP4Data(14, testfile.PNG())))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := testfile.MP4Assemble(testfile.MP4HdlrMdta(), testfile.MP4Keys(c.keys...),
+				testfile.MP4Ilst(testfile.MP4KeyItem(1, "Before"), c.cover))
+			doc := mustParseBytes(t, data)
+			want := len(doc.Pictures())
+			if want == 0 || doc.Pictures()[0].MIME != "image/jpeg" {
+				t.Fatalf("pictures = %d, want the cover read", want)
+			}
+			if len(doc.Tags().Keys()) != 1 {
+				t.Errorf("keys = %v, want the title alone", doc.Tags().Keys())
+			}
+			plan, err := doc.Edit().Set(tag.Title, "After").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := applyToBytes(t, data, plan)
+			if !bytes.Contains(out, c.cover) || !slices.Equal(mp4KeysNames(t, out), c.keys) {
+				t.Errorf("the cover item or the keys index changed under a tag edit: keys %v", mp4KeysNames(t, out))
+			}
+			re := mustParseBytes(t, out)
+			if len(re.Pictures()) != want {
+				t.Errorf("pictures after a tag-only edit = %d, want %d", len(re.Pictures()), want)
+			}
+			if got := re.Fields().Title; got != "After" {
+				t.Errorf("TITLE = %q, want After", got)
+			}
+		})
 	}
-	plan, err := doc.Edit().Set(tag.Title, "After").Prepare()
+}
+
+// A cover edit of an mdta store writes the cover under Apple's artwork key, the one ffmpeg reads,
+// and leaves no cover under another name.
+func TestMP4MdtaCoverEditWritesArtworkKey(t *testing.T) {
+	const artwork = "com.apple.quicktime.artwork"
+	jpeg := testfile.MP4Data(13, testfile.JPEG())
+	png := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}
+	for name, c := range map[string]struct {
+		keys  []string
+		cover []byte
+	}{
+		"no cover":       {[]string{"title"}, nil},
+		"covr key":       {[]string{"title", "covr"}, testfile.MP4KeyItemData(2, jpeg)},
+		"artwork key":    {[]string{"title", artwork}, testfile.MP4KeyItemData(2, jpeg)},
+		"four-character": {[]string{"title"}, testfile.MP4Atom("covr", jpeg)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := testfile.MP4Assemble(testfile.MP4HdlrMdta(), testfile.MP4Keys(c.keys...),
+				testfile.MP4Ilst(testfile.MP4KeyItem(1, "T"), c.cover))
+			plan, err := mustParseBytes(t, data).Edit().ClearPictures().AddPicture(png).Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := applyToBytes(t, data, plan)
+			names := mp4KeysNames(t, out)
+			at := slices.Index(names, artwork)
+			if at < 0 {
+				t.Fatalf("keys = %v, want the artwork key", names)
+			}
+			if !bytes.Contains(out, testfile.MP4KeyItemData(at+1, testfile.MP4Data(14, testfile.PNG()))) {
+				t.Error("no item under the artwork key holds the new cover")
+			}
+			if bytes.Contains(out, testfile.JPEG()) {
+				t.Error("the replaced cover is still in the file")
+			}
+			re := mustParseBytes(t, out)
+			if pics := re.Pictures(); len(pics) != 1 || pics[0].MIME != "image/png" {
+				t.Errorf("pictures = %d, want the one PNG", len(pics))
+			}
+
+			plan, err = re.Edit().ClearPictures().Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = applyToBytes(t, out, plan)
+			if bytes.Contains(out, testfile.PNG()) || len(mustParseBytes(t, out).Pictures()) != 0 {
+				t.Error("the cover survived its clear")
+			}
+		})
+	}
+}
+
+// ffprobe shows the cover WaxLabel adds to a keys store ffmpeg wrote.
+func TestMP4DifferentialMdtaCover(t *testing.T) {
+	requireTool(t, "ffmpeg")
+	requireTool(t, "ffprobe")
+	path := filepath.Join(t.TempDir(), "keys.m4a")
+	if out, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+		"-c:a", "aac", "-movflags", "+use_metadata_tags", "-metadata", "title=Original", path).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg: %v\n%s", err, out)
+	}
+	plan, err := mustParseFile(t, path).Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
-	re := mustParseBytes(t, applyToBytes(t, data, plan))
-	if len(re.Pictures()) != 1 {
-		t.Errorf("pictures after a tag-only edit = %d, want 1 (the cover must carry)", len(re.Pictures()))
+	if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
+		t.Fatal(err)
 	}
-	if got := re.Fields().Title; got != "After" {
-		t.Errorf("TITLE = %q, want After", got)
+	out, err := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error", "-select_streams", "v",
+		"-show_entries", "stream=codec_name:stream_disposition=attached_pic", "-of", "csv=p=0", path).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "png,1" {
+		t.Errorf("ffprobe video streams = %q (%v), want one attached PNG", out, err)
+	}
+	if tags := ffprobeFormatTags(t, path); tags["title"] != "Original" || len(tags["covr"]) != 0 {
+		t.Errorf("ffprobe tags = %v", tags)
 	}
 }
 
@@ -548,7 +786,7 @@ func TestMP4UdtaEmptyCanonicalEntryKeepsSiblings(t *testing.T) {
 // entry.
 func TestMdtaForeignNamesFoldToCustomKeys(t *testing.T) {
 	names := []string{"custom_key", "com.apple.quicktime.author", "org.example.thing"}
-	data := mp4MdtaFile(names, []string{"v1", "Ann", "x"})
+	data := testfile.MP4MdtaFile(names, []string{"v1", "Ann", "x"})
 	doc := mustParseBytes(t, data)
 	for k, want := range map[tag.Key]string{"CUSTOM_KEY": "v1", "AUTHOR": "Ann", "ORG.EXAMPLE.THING": "x"} {
 		if v, ok := doc.Get(k); !ok || v[0] != want {
@@ -616,7 +854,7 @@ func TestMP4UdtaTextsSurviveChapterWriteResult(t *testing.T) {
 // A tag edit that follows a chapter write on a keys-indexed file still writes to that store.
 func TestMP4MdtaStoreSurvivesChapterThenTagEdit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "in.m4a")
-	if err := os.WriteFile(path, mp4MdtaFile([]string{"title"}, []string{"Before"}), 0o644); err != nil {
+	if err := os.WriteFile(path, testfile.MP4MdtaFile([]string{"title"}, []string{"Before"}), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
@@ -709,4 +947,378 @@ func TestMP4DuplicateUdtaTextFirstWins(t *testing.T) {
 			}
 		})
 	}
+}
+
+// mp4KeysNames reads the names a file's keys box indexes.
+func mp4KeysNames(t *testing.T, data []byte) []string {
+	t.Helper()
+	p := mp4BoxPayload(t, data, "keys")
+	var names []string
+	for pos := 8; pos+8 <= len(p); {
+		size := int(binary.BigEndian.Uint32(p[pos:]))
+		names = append(names, string(p[pos+8:pos+size]))
+		pos += size
+	}
+	return names
+}
+
+// ffmpeg's "+use_metadata_tags" names read as the keys the iTunes atoms of the same fields do, so
+// a value shows under one name whichever store holds it.
+func TestMP4MdtaFFmpegNamesRead(t *testing.T) {
+	want := []struct {
+		name, value string
+		key         tag.Key
+		read        string
+	}{
+		{"album_artist", "AA", tag.AlbumArtist, "AA"},
+		{"track", "3/12", tag.TrackNumber, "3"},
+		{"disc", "1/2", tag.DiscNumber, "1"},
+		{"compilation", "1", tag.Compilation, "1"},
+		{"media_type", "2", tag.MediaType, "2"},
+		{"sort_name", "SN", tag.TitleSort, "SN"},
+		{"sort_artist", "SA", tag.ArtistSort, "SA"},
+		{"sort_album", "SAL", tag.AlbumSort, "SAL"},
+		{"sort_album_artist", "SAA", tag.AlbumArtistSort, "SAA"},
+		{"sort_composer", "SC", tag.ComposerSort, "SC"},
+		{"sort_show", "SS", tag.ShowSort, "SS"},
+		{"synopsis", "SYN", tag.LongDescription, "SYN"},
+		{"gapless_playback", "1", tag.ITunesGapless, "1"},
+		{"rating", "1", tag.ITunesAdvisory, "1"},
+		{"tmpo", "120", tag.BPM, "120"},
+		{"show", "SH", tag.Show, "SH"},
+		{"episode_id", "E1", tag.EpisodeID, "E1"},
+		{"network", "NET", tag.Network, "NET"},
+		{"episode_sort", "4", tag.EpisodeNumber, "4"},
+		{"season_number", "2", tag.SeasonNumber, "2"},
+	}
+	var names, values []string
+	for _, w := range want {
+		names, values = append(names, w.name), append(values, w.value)
+	}
+	doc := mustParseBytes(t, testfile.MP4MdtaFile(names, values))
+	for _, w := range want {
+		if v, _ := doc.Get(w.key); !slices.Equal(v, []string{w.read}) {
+			t.Errorf("%s (mdta %q) = %v, want [%s]", w.key, w.name, v, w.read)
+		}
+	}
+	for k, total := range map[tag.Key]string{tag.TrackTotal: "12", tag.DiscTotal: "2"} {
+		if v, _ := doc.Get(k); !slices.Equal(v, []string{total}) {
+			t.Errorf("%s = %v, want [%s] from the slash pair", k, v, total)
+		}
+	}
+	if n := doc.Tags().Len(); n != len(want)+2 {
+		t.Errorf("%d keys, want %d: %v", n, len(want)+2, doc.Tags().Keys())
+	}
+}
+
+// The number and total of an mdta "track" entry are one value there, as ffmpeg writes it.
+func TestMP4MdtaTrackPairStaysOneEntry(t *testing.T) {
+	data := testfile.MP4MdtaFile([]string{"title", "track"}, []string{"T", "3/12"})
+	edit := func(t *testing.T, e func(*wl.Editor) *wl.Editor) []byte {
+		t.Helper()
+		plan, err := e(mustParseBytes(t, data).Edit()).Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, data, plan)
+		if names := mp4KeysNames(t, out); !slices.Equal(names, []string{"title", "track"}) {
+			t.Errorf("keys = %v, want the two the file had", names)
+		}
+		return out
+	}
+	t.Run("number edit", func(t *testing.T) {
+		out := edit(t, func(e *wl.Editor) *wl.Editor { return e.Set(tag.TrackNumber, "5") })
+		if !bytes.Contains(out, testfile.MP4Data(1, []byte("5/12"))) {
+			t.Error("the track entry does not hold 5/12")
+		}
+		re := mustParseBytes(t, out)
+		if n, _ := re.Get(tag.TrackNumber); !slices.Equal(n, []string{"5"}) {
+			t.Errorf("TRACKNUMBER = %v, want [5]", n)
+		}
+		if n, _ := re.Get(tag.TrackTotal); !slices.Equal(n, []string{"12"}) {
+			t.Errorf("TRACKTOTAL = %v, want [12]", n)
+		}
+	})
+	t.Run("unrelated edit", func(t *testing.T) {
+		out := edit(t, func(e *wl.Editor) *wl.Editor { return e.Set(tag.Title, "Other") })
+		if !bytes.Contains(out, testfile.MP4KeyItem(2, "3/12")) {
+			t.Error("the track item changed under an edit of the title")
+		}
+	})
+	t.Run("cleared by its alias", func(t *testing.T) {
+		out := edit(t, func(e *wl.Editor) *wl.Editor { return e.Clear("TRACK") })
+		re := mustParseBytes(t, out)
+		if re.Tags().Has(tag.TrackNumber) || re.Tags().Has("TRACK") {
+			t.Errorf("the track number survived its clear: %v", re.Tags().Keys())
+		}
+		if n, _ := re.Get(tag.TrackTotal); !slices.Equal(n, []string{"12"}) {
+			t.Errorf("TRACKTOTAL = %v, want [12]", n)
+		}
+	})
+	t.Run("both cleared", func(t *testing.T) {
+		plan, err := mustParseBytes(t, data).Edit().Clear(tag.TrackNumber).Clear(tag.TrackTotal).Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		re := mustParseBytes(t, applyToBytes(t, data, plan))
+		if re.Tags().Has(tag.TrackNumber) || re.Tags().Has(tag.TrackTotal) {
+			t.Errorf("keys after clearing both: %v", re.Tags().Keys())
+		}
+	})
+}
+
+// A keys item keeps the encoding the file gave it under an edit elsewhere: here an implicit-typed
+// text, and an item under the second of two entries of one name.
+func TestMP4MdtaItemKeepsItsEncoding(t *testing.T) {
+	implicit := testfile.MP4KeyItemData(2, testfile.MP4Data(0, []byte("Artist")))
+	second := testfile.MP4KeyItem(4, "Album")
+	data := testfile.MP4Assemble(testfile.MP4HdlrMdta(), testfile.MP4Keys("title", "artist", "album", "album"),
+		testfile.MP4Ilst(testfile.MP4KeyItem(1, "T"), implicit, second))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Other").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if !bytes.Contains(out, implicit) || !bytes.Contains(out, second) {
+		t.Error("an edit of the title re-encoded or re-keyed another item")
+	}
+	re := mustParseBytes(t, out)
+	if v, _ := re.Get(tag.Album); !slices.Equal(v, []string{"Album"}) || re.Fields().Title != "Other" {
+		t.Errorf("after the edit: ALBUM %v, TITLE %q", v, re.Fields().Title)
+	}
+}
+
+// A keys store with a total in the track entry and in an entry of its own. The first is read; an
+// edit elsewhere keeps both entries as they are; an edit of the pair leaves the total where the
+// one read was, and reports an entry removed only when one is.
+func TestMP4MdtaTotalHeldTwice(t *testing.T) {
+	t.Run("own entry first", func(t *testing.T) {
+		data := testfile.MP4MdtaFile([]string{"TOTALTRACKS", "track", "title"}, []string{"15", "3/12", "T"})
+		doc := mustParseBytes(t, data)
+		n, _ := doc.Get(tag.TrackNumber)
+		total, _ := doc.Get(tag.TrackTotal)
+		if !slices.Equal(n, []string{"3"}) || !slices.Equal(total, []string{"15"}) || !hasLintCode(doc, "conflicting-families") {
+			t.Errorf("TRACKNUMBER %v, TRACKTOTAL %v, lint %v; want 3, 15 and the conflict", n, total, doc.Lint())
+		}
+		plan, err := doc.Edit().Set(tag.Title, "Other").Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out := applyToBytes(t, data, plan); !bytes.Contains(out, testfile.MP4KeyItem(1, "15")) || !bytes.Contains(out, testfile.MP4KeyItem(2, "3/12")) {
+			t.Error("an edit of the title rewrote the track entries")
+		}
+		plan, err = doc.Edit().Set(tag.TrackNumber, "5").Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, data, plan)
+		if !bytes.Contains(out, testfile.MP4KeyItem(1, "15")) || !bytes.Contains(out, testfile.MP4KeyItem(2, "5")) {
+			t.Error("the total did not stay in its own entry, or the number did not land in the track entry")
+		}
+		if ops := strings.Join(plan.Report().Operations, "; "); strings.Contains(ops, "removed") {
+			t.Errorf("operations %q name a removal; both entries stay", ops)
+		}
+		if re := mustParseBytes(t, out); len(re.Lint()) != 0 {
+			t.Errorf("lint after the edit: %v", re.Lint())
+		}
+		// Naming the total with the value it has settles it: the other total goes.
+		plan, err = doc.Edit().Set(tag.TrackTotal, "15").Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.IsNoOp() {
+			t.Fatal("naming the total planned nothing")
+		}
+		if out := applyToBytes(t, data, plan); !bytes.Contains(out, testfile.MP4KeyItem(2, "3")) || len(mustParseBytes(t, out).Lint()) != 0 {
+			t.Error("the track entry still holds its own total")
+		}
+	})
+	t.Run("track entry first", func(t *testing.T) {
+		data := testfile.MP4MdtaFile([]string{"track", "TOTALTRACKS", "title"}, []string{"3/12", "12", "T"})
+		doc := mustParseBytes(t, data)
+		if len(doc.Lint()) != 0 {
+			t.Errorf("lint of two agreeing totals: %v", doc.Lint())
+		}
+		plan, err := doc.Edit().Set(tag.TrackNumber, "5").Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, data, plan)
+		if !bytes.Contains(out, testfile.MP4KeyItem(1, "5/12")) || bytes.Contains(out, testfile.MP4KeyItem(2, "12")) {
+			t.Error("the track entry does not hold 5/12 alone")
+		}
+		if ops := plan.Report().Operations; !slices.Contains(ops, "1 conflicting ilst item removed") {
+			t.Errorf("operations = %q, want the removal named", ops)
+		}
+		re := mustParseBytes(t, out)
+		if total, _ := re.Get(tag.TrackTotal); !slices.Equal(total, []string{"12"}) {
+			t.Errorf("TRACKTOTAL = %v", total)
+		}
+	})
+}
+
+// An item whose index lies past the keys table names no key. It must not come to name one a write
+// appends.
+func TestMP4MdtaItemPastTheKeysTableStaysUnnamed(t *testing.T) {
+	// Items at 3 and 5 name nothing; so does one at 0, which no table can name.
+	data := testfile.MP4Assemble(testfile.MP4HdlrMdta(), testfile.MP4Keys("title", "artist"),
+		testfile.MP4Ilst(testfile.MP4KeyItem(1, "T"), testfile.MP4KeyItem(3, "Orphan"), testfile.MP4KeyItem(5, "Another"), testfile.MP4KeyItem(0, "Zero")))
+	doc := mustParseBytes(t, data)
+	plan, err := doc.Edit().Set(tag.Genre, "G").Set(tag.Album, "A").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	re := mustParseBytes(t, out)
+	genre, _ := re.Get(tag.Genre)
+	album, _ := re.Get(tag.Album)
+	if !slices.Equal(genre, []string{"G"}) || !slices.Equal(album, []string{"A"}) || re.Tags().Len() != 3 {
+		t.Errorf("GENRE %v, ALBUM %v, keys %v; want the two new values alone beside the title", genre, album, re.Tags().Keys())
+	}
+	// The one the new keys reach moves past them and past the one already there; the others stay.
+	for idx, value := range map[int]string{6: "Orphan", 5: "Another", 0: "Zero"} {
+		if !bytes.Contains(out, testfile.MP4KeyItem(idx, value)) {
+			t.Errorf("no item %q under index %d", value, idx)
+		}
+	}
+	if names := mp4KeysNames(t, out); !slices.Equal(names, []string{"title", "artist", "genre", "album"}) {
+		t.Errorf("keys = %v", names)
+	}
+}
+
+// A total the file keeps in an entry of its own stays there.
+func TestMP4MdtaSeparateTotalEntryKept(t *testing.T) {
+	data := testfile.MP4MdtaFile([]string{"track", "TRACKTOTAL"}, []string{"3", "12"})
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.TrackNumber, "5").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if !bytes.Contains(out, testfile.MP4KeyItem(1, "5")) || !bytes.Contains(out, testfile.MP4KeyItem(2, "12")) {
+		t.Error("the number and total did not stay in their own entries")
+	}
+}
+
+// A key new to an mdta store takes ffmpeg's name for it.
+func TestMP4MdtaNewKeysTakeFFmpegNames(t *testing.T) {
+	data := testfile.MP4MdtaFile([]string{"title"}, []string{"T"})
+	plan, err := mustParseBytes(t, data).Edit().
+		Set(tag.AlbumArtist, "AA").Set(tag.TrackNumber, "5").Set(tag.TrackTotal, "12").
+		Set(tag.DiscTotal, "2").Set(tag.TitleSort, "SN").Set(tag.Compilation, "1").
+		Set(tag.Show, "SH").Set(tag.SeasonNumber, "2").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	names := mp4KeysNames(t, out)
+	slices.Sort(names)
+	want := []string{"album_artist", "compilation", "disc", "season_number", "show", "sort_name", "title", "track"}
+	if !slices.Equal(names, want) {
+		t.Errorf("keys = %v, want %v", names, want)
+	}
+	for _, v := range []string{"5/12", "/2"} {
+		if !bytes.Contains(out, testfile.MP4Data(1, []byte(v))) {
+			t.Errorf("no entry holds %q", v)
+		}
+	}
+	re := mustParseBytes(t, out)
+	for k, v := range map[tag.Key]string{
+		tag.AlbumArtist: "AA", tag.TrackNumber: "5", tag.TrackTotal: "12", tag.DiscTotal: "2",
+		tag.TitleSort: "SN", tag.Compilation: "1", tag.Show: "SH", tag.SeasonNumber: "2",
+	} {
+		if got, _ := re.Get(k); !slices.Equal(got, []string{v}) {
+			t.Errorf("%s = %v, want [%s]", k, got, v)
+		}
+	}
+	if re.Tags().Has(tag.DiscNumber) {
+		t.Error("a lone disc total read back with a disc number")
+	}
+}
+
+// Two mdta entries naming one key: the first is the value read and the other shows in the families.
+// An edit elsewhere keeps both; an edit of the key leaves one.
+func TestMP4MdtaKeyHeldTwice(t *testing.T) {
+	names := []string{"software", "creationdate", "date", "encoder", "title"}
+	values := []string{"QuickTime 10", "2021-05-04", "2020", "Lavf60", "T"}
+	data := testfile.MP4MdtaFile(names, values)
+	doc := mustParseBytes(t, data)
+	for k, want := range map[tag.Key]string{tag.Encoder: "QuickTime 10", tag.RecordingDate: "2021-05-04"} {
+		if v, _ := doc.Get(k); !slices.Equal(v, []string{want}) {
+			t.Errorf("%s = %v, want [%s], the first entry's", k, v, want)
+		}
+		if selected, ok := familySelected(doc, k); !ok || selected {
+			t.Errorf("%s family selected = %v (found %v), want an unselected entry", k, selected, ok)
+		}
+	}
+	if !hasLintCode(doc, "conflicting-families") || hasLintCode(doc, "single-valued-multi") {
+		t.Errorf("lint = %v, want conflicting-families and no single-valued-multi", doc.Lint())
+	}
+
+	t.Run("unrelated edit", func(t *testing.T) {
+		plan, err := doc.Edit().Set(tag.Title, "Other").Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, data, plan)
+		for i, v := range values[:4] {
+			if !bytes.Contains(out, testfile.MP4KeyItem(i+1, v)) {
+				t.Errorf("the %q item did not survive an edit of the title", names[i])
+			}
+		}
+		re := mustParseBytes(t, out)
+		if v, _ := re.Get(tag.Encoder); !slices.Equal(v, []string{"QuickTime 10"}) {
+			t.Errorf("ENCODER = %v after the edit", v)
+		}
+		if got, want := ffprobeTagsIfPresent(t, out), ffprobeTagsIfPresent(t, data); got != nil {
+			for _, n := range names[:4] {
+				if got[n] != want[n] {
+					t.Errorf("ffprobe %s = %q, was %q", n, got[n], want[n])
+				}
+			}
+		}
+	})
+	for name, value := range map[string]string{"edit of the key": "New", "the same value set again": "QuickTime 10"} {
+		t.Run(name, func(t *testing.T) {
+			plan, err := doc.Edit().Set(tag.Encoder, value).Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.IsNoOp() {
+				t.Fatal("the plan is a no-op; the second entry would stay")
+			}
+			if ops := plan.Report().Operations; !slices.Contains(ops, "1 conflicting ilst item removed") {
+				t.Errorf("operations = %v, want the removal named", ops)
+			}
+			out := applyToBytes(t, data, plan)
+			if bytes.Contains(out, []byte("Lavf60")) {
+				t.Error("the second ENCODER entry survived an edit of the key")
+			}
+			if !bytes.Contains(out, testfile.MP4KeyItem(1, value)) || !bytes.Contains(out, testfile.MP4KeyItem(2, "2021-05-04")) || !bytes.Contains(out, testfile.MP4KeyItem(3, "2020")) {
+				t.Error("the edit did not land in the first entry, or it touched the date entries")
+			}
+			re := mustParseBytes(t, out)
+			if selected, ok := familySelected(re, tag.Encoder); !ok || !selected {
+				t.Errorf("ENCODER family selected = %v (found %v) after the edit", selected, ok)
+			}
+			if hasLintCode(re, "conflicting-families") != true {
+				t.Error("the date entries no longer conflict")
+			}
+		})
+	}
+}
+
+// ffprobeTagsIfPresent returns ffprobe's container tags for data, nil when ffprobe is not there.
+func ffprobeTagsIfPresent(t *testing.T, data []byte) map[string]string {
+	t.Helper()
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		if os.Getenv("WAXLABEL_REQUIRE_FFMPEG") != "" {
+			t.Fatal("ffprobe is required and missing")
+		}
+		return nil
+	}
+	path := filepath.Join(t.TempDir(), "probe.m4a")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return ffprobeFormatTags(t, path)
 }

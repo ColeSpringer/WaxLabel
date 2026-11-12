@@ -130,6 +130,7 @@ func ffmpegEncode(t *testing.T, path string, args ...string) string {
 // probeStream is what ffprobe makes of a file's first audio stream: every field the differential
 // tests compare, from one invocation.
 type probeStream struct {
+	CodecName     string
 	SampleRate    int
 	Channels      int
 	BitsPerSample int
@@ -147,7 +148,7 @@ func ffprobeStream(t *testing.T, path string) probeStream {
 	t.Helper()
 	out, err := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error",
 		"-select_streams", "a:0",
-		"-show_entries", "stream=sample_rate,channels,profile,bits_per_sample,duration_ts,duration,bit_rate,time_base",
+		"-show_entries", "stream=codec_name,sample_rate,channels,profile,bits_per_sample,duration_ts,duration,bit_rate,time_base",
 		"-of", "json", path).Output()
 	if err != nil {
 		// ffprobe says why on stderr ("missing mandatory atoms", an unreadable config); without it a
@@ -189,7 +190,9 @@ func ffprobeStream(t *testing.T, path string) probeStream {
 	}
 	profile, _ := fields["profile"].(string)
 	timeBase, _ := fields["time_base"].(string)
+	codecName, _ := fields["codec_name"].(string)
 	p := probeStream{
+		CodecName:     codecName,
 		SampleRate:    int(number("sample_rate")),
 		Channels:      int(number("channels")),
 		BitsPerSample: int(number("bits_per_sample")),

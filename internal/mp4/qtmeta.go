@@ -19,10 +19,11 @@ import (
 //   - Classic QuickTime text atoms ("\xa9nam", "\xa9swr", ...) directly under moov.udta
 //     with no meta wrapper, as in a plain .mov.
 //
-// A file can carry all three stores at once. Every store contributes, each under its own
-// Contribution.Source label ("\xa9nam" for the iTunes ilst, "mdta:title",
-// "udta.\xa9nam"). BuildFamilies marks a key unselected when two sources disagree, so a
-// disagreement between stores surfaces in lint's conflicting-families rule.
+// A meta sits under moov.udta or, as Apple's recorders write it, directly under moov. A file
+// can carry all of these at once. Each store reads under its own Contribution.Source label
+// ("\xa9nam" for an iTunes ilst, "mdta:title", "udta.\xa9nam"). A key takes its value from
+// the first store that holds it; one that disagrees shows as an unselected family, which
+// lint's conflicting-families rule reports.
 
 // mdtaHandler is the meta hdlr handler_type for a keys-indexed metadata store. A meta with
 // any other handler is decoded as iTunes.

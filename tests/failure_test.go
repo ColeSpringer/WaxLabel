@@ -223,7 +223,7 @@ func TestParseReadFaultsKeepTheirCause(t *testing.T) {
 		testfile.El(testfile.IDTags, testfile.TagGroup(0, testfile.SimpleTag("ARTIST", "After")))))
 	f32 := testfile.El(testfile.IDDuration, binary.BigEndian.AppendUint32(nil, math.Float32bits(1000)))
 	mkvF32 := concat(testfile.EBMLHeader("matroska"), testfile.El(testfile.IDSegment, testfile.El(testfile.IDInfo, f32), testfile.AudioCluster(0)))
-	mdta := mp4MdtaFile([]string{"title"}, []string{"Keys Title"})
+	mdta := testfile.MP4MdtaFile([]string{"title"}, []string{"Keys Title"})
 	saio := mp4SaioFile(t, 0, false)
 	emptyMeta := testfile.MP4Assemble()
 	co64 := mp4QTChaptersCo64(func(samples int) uint64 { return uint64(samples) })

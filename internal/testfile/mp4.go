@@ -30,6 +30,41 @@ func MP4HdlrMdir() []byte {
 	return MP4Atom("hdlr", slices.Concat(make([]byte, 8), []byte("mdirappl"), make([]byte, 9)))
 }
 
+// MP4HdlrMdta is the handler of a meta whose ilst items are keyed by index into a sibling keys
+// box, as ffmpeg's "+use_metadata_tags" writes.
+func MP4HdlrMdta() []byte {
+	return MP4Atom("hdlr", slices.Concat(make([]byte, 8), []byte("mdta"), make([]byte, 12)))
+}
+
+// MP4Keys is a keys box of names under the "mdta" namespace; entry i is ilst index i+1.
+func MP4Keys(names ...string) []byte {
+	body := slices.Concat([]byte{0, 0, 0, 0}, BE32(len(names)))
+	for _, n := range names {
+		body = slices.Concat(body, BE32(8+len(n)), []byte("mdta"), []byte(n))
+	}
+	return MP4Atom("keys", body)
+}
+
+// MP4KeyItem is an mdta ilst item of one UTF-8 value, named by its 1-based keys index.
+func MP4KeyItem(index int, value string) []byte {
+	return MP4KeyItemData(index, MP4Data(1, []byte(value)))
+}
+
+// MP4KeyItemData is MP4KeyItem over rendered data atoms.
+func MP4KeyItemData(index int, data []byte) []byte {
+	return slices.Concat(BE32(8+len(data)), BE32(index), data)
+}
+
+// MP4MdtaFile is a file whose meta holds an mdta handler, a keys box of names and one item of
+// values[i] for each.
+func MP4MdtaFile(names, values []string) []byte {
+	items := make([][]byte, 0, len(values))
+	for i, v := range values {
+		items = append(items, MP4KeyItem(i+1, v))
+	}
+	return MP4Assemble(MP4HdlrMdta(), MP4Keys(names...), MP4Ilst(items...))
+}
+
 func MP4HdlrSoun() []byte {
 	return MP4Atom("hdlr", slices.Concat(make([]byte, 8), []byte("soun"), make([]byte, 12)))
 }
@@ -289,4 +324,78 @@ func MP4QTFileTS(timescale int, startsMS []int, titles []string, udtaKids ...[]b
 	}
 	audioOff := bytes.Index(build(0, 0), []byte("mdat")) + 4
 	return build(uint32(audioOff), uint32(audioOff+len(audioFiller)))
+}
+
+// MP4SampleTables is a track's stts, stsc, stsz and stco: chunk i lies at offs[i] and holds
+// samples of the sizes in sizes[i].
+func MP4SampleTables(offs []uint32, sizes [][]int) []byte {
+	var stsc, stsz, stco []byte
+	n := 0
+	for i, chunk := range sizes {
+		stsc = slices.Concat(stsc, BE32(i+1), BE32(len(chunk)), BE32(1))
+		for _, size := range chunk {
+			stsz = append(stsz, BE32(size)...)
+		}
+		stco = append(stco, BE32(int(offs[i]))...)
+		n += len(chunk)
+	}
+	return slices.Concat(
+		MP4Atom("stts", slices.Concat([]byte{0, 0, 0, 0}, BE32(1), BE32(n), BE32(1024))),
+		MP4Atom("stsc", slices.Concat([]byte{0, 0, 0, 0}, BE32(len(sizes)), stsc)),
+		MP4Atom("stsz", slices.Concat([]byte{0, 0, 0, 0}, BE32(0), BE32(n), stsz)),
+		MP4Atom("stco", slices.Concat([]byte{0, 0, 0, 0}, BE32(len(offs)), stco)))
+}
+
+// MP4Trak is a trak of the given handler and track id whose stbl holds stbl, with a one-second
+// media header; extra goes between its tkhd and mdia.
+func MP4Trak(handler string, trackID int, stbl []byte, extra ...[]byte) []byte {
+	hdlr := MP4Atom("hdlr", slices.Concat(make([]byte, 8), []byte(handler), make([]byte, 12)))
+	mdia := MP4Atom("mdia", slices.Concat(hdlr, MP4Mdhd(44100), MP4Atom("minf", MP4Atom("stbl", stbl))))
+	return MP4Atom("trak", slices.Concat(mp4Tkhd(trackID), slices.Concat(extra...), mdia))
+}
+
+// MP4AVFile is ftyp, a moov of a movie header, a sound track, a video track when video is given
+// and moovKids, then one mdat interleaving the chunks, each audio chunk ahead of the video chunk
+// of its index. An audio chunk is two samples.
+func MP4AVFile(audio, video [][]byte, moovKids ...[]byte) []byte {
+	build := func(at uint32) []byte {
+		var mdat []byte
+		var aOffs, vOffs []uint32
+		var aSizes, vSizes [][]int
+		for i := range max(len(audio), len(video)) {
+			if i < len(audio) {
+				aOffs, aSizes = append(aOffs, at+uint32(len(mdat))), append(aSizes, []int{len(audio[i]) / 2, len(audio[i]) - len(audio[i])/2})
+				mdat = append(mdat, audio[i]...)
+			}
+			if i < len(video) {
+				vOffs, vSizes = append(vOffs, at+uint32(len(mdat))), append(vSizes, []int{len(video[i])})
+				mdat = append(mdat, video[i]...)
+			}
+		}
+		kids := slices.Concat(MP4Mvhd(1000, 1000), MP4Trak("soun", 1, slices.Concat(MP4StsdAudio(), MP4SampleTables(aOffs, aSizes))))
+		if len(video) > 0 {
+			kids = append(kids, MP4Trak("vide", 2, MP4SampleTables(vOffs, vSizes))...)
+		}
+		return slices.Concat(MP4Ftyp(), MP4Atom("moov", slices.Concat(kids, slices.Concat(moovKids...))), MP4Atom("mdat", mdat))
+	}
+	return build(uint32(bytes.Index(build(0), []byte("mdat")) + 4))
+}
+
+// MP4FrameCountedFile is a file whose sound track counts audio frames, as QuickTime writes
+// uncompressed and fixed-ratio audio: one stts entry of duration 1, and an stsz that gives one
+// size for all. Its two chunks of frames samples each lie around 300 bytes that are no audio;
+// chunkBytes is what each chunk really holds. It returns where the first chunk starts, where the
+// bytes between start, and where the second chunk starts.
+func MP4FrameCountedFile(entry []byte, frames, stszSize, chunkBytes int) (data []byte, first, between, second int) {
+	build := func(at uint32) []byte {
+		stbl := slices.Concat(MP4Stsd(entry),
+			MP4Atom("stts", slices.Concat([]byte{0, 0, 0, 0}, BE32(1), BE32(2*frames), BE32(1))),
+			MP4Atom("stsc", slices.Concat([]byte{0, 0, 0, 0}, BE32(1), BE32(1), BE32(frames), BE32(1))),
+			MP4Atom("stsz", slices.Concat([]byte{0, 0, 0, 0}, BE32(stszSize), BE32(2*frames))),
+			MP4Atom("stco", slices.Concat([]byte{0, 0, 0, 0}, BE32(2), BE32(int(at)), BE32(int(at)+chunkBytes+300))))
+		mdat := slices.Concat(bytes.Repeat([]byte{0xA1}, chunkBytes), bytes.Repeat([]byte{0xEE}, 300), bytes.Repeat([]byte{0xA2}, chunkBytes))
+		return slices.Concat(MP4Ftyp(), MP4Atom("moov", MP4Trak("soun", 1, stbl)), MP4Atom("mdat", mdat))
+	}
+	at := bytes.Index(build(0), []byte("mdat")) + 4
+	return build(uint32(at)), at, at + chunkBytes, at + chunkBytes + 300
 }

@@ -128,3 +128,94 @@ func TestMP4FreeformKeyMatroskaNativeSpellings(t *testing.T) {
 		}
 	}
 }
+
+// ffmpeg writes its own metadata names into an mdta keys index; each reads as the key its ilst
+// atom does.
+func TestMP4MdtaKeyFFmpegNames(t *testing.T) {
+	for name, want := range map[string]tag.Key{
+		"album_artist": tag.AlbumArtist, "track": tag.TrackNumber, "disc": tag.DiscNumber,
+		"sort_name": tag.TitleSort, "sort_artist": tag.ArtistSort, "sort_album": tag.AlbumSort,
+		"sort_album_artist": tag.AlbumArtistSort, "sort_composer": tag.ComposerSort,
+		"sort_show": tag.ShowSort, "synopsis": tag.LongDescription,
+		"compilation": tag.Compilation, "gapless_playback": tag.ITunesGapless,
+		"media_type": tag.MediaType, "rating": tag.ITunesAdvisory, "tmpo": tag.BPM,
+		"show": tag.Show, "episode_id": tag.EpisodeID, "network": tag.Network,
+		"episode_sort": tag.EpisodeNumber, "season_number": tag.SeasonNumber,
+		"com.apple.quicktime.album_artist": tag.AlbumArtist,
+		"albumartist":                      tag.AlbumArtist, "USLT": tag.Lyrics, "TOTALTRACKS": tag.TrackTotal,
+		"year": tag.RecordingDate,
+	} {
+		if k, ok := MP4MdtaKey(name); !ok || k != want {
+			t.Errorf("MP4MdtaKey(%q) = %q, %v; want %s", name, k, ok, want)
+		}
+	}
+	if k, _ := MP4MdtaKey("custom_key"); k != "CUSTOM_KEY" {
+		t.Errorf("MP4MdtaKey(custom_key) = %q, want the folded custom key", k)
+	}
+	// A custom key is written in capitals: one spelled like a name of the table is still itself.
+	for name := range mp4Mdta {
+		custom := tag.Key(strings.ToUpper(name))
+		if custom.Known() {
+			continue
+		}
+		if _, alias := tag.AliasKey(string(custom)); alias {
+			continue // an alias cannot be a custom key: the editor resolves it
+		}
+		if k, ok := MP4MdtaKey(MP4KeyMdta(custom)); !ok || k != custom {
+			t.Errorf("custom key %s is written as %q, which reads as %s", custom, MP4KeyMdta(custom), k)
+		}
+	}
+}
+
+// A new mdta entry takes ffmpeg's spelling, so ffprobe names the value as it names the ilst atom's.
+func TestMP4KeyMdtaWritesFFmpegSpellings(t *testing.T) {
+	for key, want := range map[tag.Key]string{
+		tag.AlbumArtist: "album_artist", tag.TrackNumber: "track", tag.DiscNumber: "disc",
+		tag.TitleSort: "sort_name", tag.ArtistSort: "sort_artist", tag.AlbumSort: "sort_album",
+		tag.AlbumArtistSort: "sort_album_artist", tag.ComposerSort: "sort_composer",
+		tag.ShowSort: "sort_show", tag.LongDescription: "synopsis", tag.MediaType: "media_type",
+		tag.Compilation: "compilation", tag.ITunesGapless: "gapless_playback",
+		tag.ITunesAdvisory: "rating", tag.BPM: "tmpo", tag.Show: "show",
+		tag.EpisodeID: "episode_id", tag.Network: "network", tag.EpisodeNumber: "episode_sort",
+		tag.SeasonNumber: "season_number", tag.Title: "title", tag.MBReleaseID: "MUSICBRAINZ_ALBUMID",
+	} {
+		if got := MP4KeyMdta(key); got != want {
+			t.Errorf("MP4KeyMdta(%s) = %q, want %q", key, got, want)
+		}
+		if back, ok := MP4MdtaKey(want); !ok || back != key {
+			t.Errorf("MP4MdtaKey(%q) = %q, %v; want %s back", want, back, ok, key)
+		}
+	}
+}
+
+// A freeform name that is an alias reads as the key the alias names, or the key could not be
+// cleared by the name it shows under.
+func TestMP4FreeformKeyFoldsAliases(t *testing.T) {
+	for name, want := range map[string]tag.Key{
+		"USLT": tag.Lyrics, "TOTALTRACKS": tag.TrackTotal, "totaldiscs": tag.DiscTotal,
+		"DATE": tag.RecordingDate, "Year": tag.RecordingDate, "ORGANIZATION": tag.Label,
+		"Album Artist": tag.AlbumArtist,
+	} {
+		if k, ok := MP4FreeformKey(name); !ok || k != want {
+			t.Errorf("MP4FreeformKey(%q) = %q, %v; want %s", name, k, ok, want)
+		}
+	}
+}
+
+// Every canonical key reads back from the name a new mdta entry gives it: a key with no name of
+// ffmpeg's is written under its own spelling, which no name of ffmpeg's may capture.
+func TestMP4MdtaKeyRoundTripsEveryKnownKey(t *testing.T) {
+	for _, k := range tag.KnownKeys() {
+		if k == tag.TrackTotal || k == tag.DiscTotal {
+			continue // stored with the number, or under an alias of its own
+		}
+		if back, ok := MP4MdtaKey(MP4KeyMdta(k)); !ok || back != k {
+			t.Errorf("%s is written as %q, which reads as %q", k, MP4KeyMdta(k), back)
+		}
+	}
+	for name, want := range map[string]tag.Key{"RATING": tag.Rating, "rating": tag.ITunesAdvisory, "com.apple.quicktime.RATING": tag.Rating} {
+		if k, _ := MP4MdtaKey(name); k != want {
+			t.Errorf("MP4MdtaKey(%q) = %s, want %s", name, k, want)
+		}
+	}
+}

@@ -714,11 +714,7 @@ func decodeTextTrack(src core.ReaderAtSized, trak node, ed trackEdits, movieTime
 	if err != nil || !ok {
 		return trackChapters{}, false, err
 	}
-	minf, ok := mdia.find("minf")
-	if !ok {
-		return trackChapters{}, false, nil
-	}
-	stbl, ok := minf.find("stbl")
+	stbl, ok := sampleTableOf(trak)
 	if !ok {
 		return trackChapters{}, false, nil
 	}

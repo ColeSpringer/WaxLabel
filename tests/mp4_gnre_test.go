@@ -91,3 +91,23 @@ func TestMP4GenreTextFallback(t *testing.T) {
 		t.Errorf("custom genre round-trip = %v, want [Chiptune Surf]", g)
 	}
 }
+
+// A numeric re-encoding of the genre is an edit of it: the gnre atom another value sat in goes.
+func TestMP4NumericGenreSettlesASecondGenreAtom(t *testing.T) {
+	stale := testfile.MP4Atom("gnre", testfile.MP4Data(0, []byte{0, 9}))
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9gen", "Rock"), stale)
+	plan, err := mustParseBytes(t, data).Edit().Prepare(wl.WithNumericGenre())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.IsNoOp() {
+		t.Fatal("the re-encoding planned nothing")
+	}
+	out := applyToBytes(t, data, plan)
+	if bytes.Contains(out, stale) || bytes.Contains(out, []byte("\xa9gen")) {
+		t.Error("the text atom or the second gnre atom survived the re-encoding")
+	}
+	if _, val := gnreDataAtom(t, out); len(val) != 2 || binary.BigEndian.Uint16(val) != 18 {
+		t.Errorf("gnre value = % x, want Rock's index", val)
+	}
+}

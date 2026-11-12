@@ -105,7 +105,8 @@ func TestRestoreUnstorablePairSlots(t *testing.T) {
 			for k, v := range c.edited {
 				edited.Set(k, v)
 			}
-			out, restored := restoreUnstorableSlots(base, edited)
+			out, kept := restoreUnstorableSlots(base, edited)
+			restored := len(kept) > 0
 			if restored != c.wantRestored {
 				t.Fatalf("restored = %v, want %v", restored, c.wantRestored)
 			}

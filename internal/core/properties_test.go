@@ -70,6 +70,18 @@ func TestCanonicalCodec(t *testing.T) {
 		{"MAC3", "MAC3", ""},
 		{"mac3", "MAC3", "mac3"},
 		{"MAC6", "MAC6", ""},
+		{"mlpa", "TrueHD", "mlpa"},
+		{"TRUEHD", "TrueHD", "TRUEHD"},
+		{"TrueHD", "TrueHD", ""},
+		{"MLP", "MLP", ""},
+		{"DTS", "DTS", ""},
+		{"dtsc", "DTS", "dtsc"},
+		{"dtsh", "DTS", "dtsh"},
+		{"dtsl", "DTS", "dtsl"},
+		{"dtse", "DTS", "dtse"},
+		{"dtsx", "DTS", "dtsx"},
+		{"DTS-HD Master Audio", "DTS", "DTS-HD Master Audio"},
+		{"DTS Express", "DTS", "DTS Express"},
 	}
 	for _, c := range cases {
 		codec, profile := CanonicalCodec(c.raw)

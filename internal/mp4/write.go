@@ -37,9 +37,33 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// already holds, so an unrelated edit does not undo an earlier --numeric-genre run.
 	numericGenre := numericGenreEncoding(d.items, edited.Tags, opts.NumericGenre)
 
+	// What the rebuild renders. trkn/disk numbers are fixed binary uint16s and the integer and
+	// BPM atoms fixed-width too, so an edit that makes a slot unstorable would clear it and
+	// erase a good value: such a slot keeps the value it has.
+	itunesAtoms := !mdtaStore(d)
+	stored := edited
+	var kept map[tag.Key]bool
+	if itunesAtoms {
+		if patched, keys := restoreUnstorableSlots(base.Tags, edited.Tags); len(keys) > 0 {
+			ec := *edited
+			ec.Tags = patched
+			stored, kept = &ec, keys
+		}
+	}
+	// An edit that names a key several items hold settles it, even with the value it has; one
+	// whose value for it is not stored settles nothing.
+	named := namedKeys(opts.Touched, kept)
+	cf := ilstConflicts(d, base, stored, opts, named)
+	extraOps := cf.ops()
+	if encodingRewrite {
+		extraOps = append(extraOps, core.EncodingRewriteOp("genre"))
+	}
+	// What a rewrite changes that the canonical view cannot show.
+	structural := encodingRewrite || cf.settled || storesDisagree(d, stored.Tags, named)
+
 	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/ WriteTo
 	// still produce a whole file) flagged NoOp so SaveBack skips it.
-	if !tagsChanged && !picturesChanged && !chaptersChanged && !opts.PaddingExplicit && !encodingRewrite {
+	if !tagsChanged && !picturesChanged && !chaptersChanged && !opts.PaddingExplicit && !structural {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
@@ -68,8 +92,20 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Surface canonical values the iTunes atoms cannot represent. The predicates read the
 	// strings the encoder consumes, and both rewrite paths build from edited.Tags, so the
 	// shared report covers both.
-	itunesAtoms := !mdtaStore(d)
-	for _, dv := range itunesDroppedValues(edited.Tags, itunesAtoms) {
+	// A frozen key the edit leaves as it was is kept byte for byte: nothing of it is dropped or
+	// coerced. One the edit gave a value that is not stored is still the edit's to hear about.
+	// One the second store alone holds is text there, whatever the store written would make of it.
+	rendered := edited.Tags.Clone()
+	for k := range cf.frozen {
+		was, _ := base.Tags.Get(k)
+		if now, _ := rendered.Get(k); slices.Equal(was, now) {
+			rendered.Delete(k)
+		}
+	}
+	for k := range cf.elsewhere {
+		rendered.Delete(k)
+	}
+	for _, dv := range itunesDroppedValues(rendered, itunesAtoms) {
 		msg := fmt.Sprintf("%s value %q cannot be represented in this format and was dropped", dv.Key, dv.Value)
 		if dv.ZeroUnset {
 			// The 0 bytes are written (0/N), but decodePair treats a 0 slot as unset and reads
@@ -78,7 +114,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped, msg, dv.Key)
 	}
-	for _, cv := range itunesCoercedValues(edited.Tags, itunesAtoms) {
+	for _, cv := range itunesCoercedValues(rendered, itunesAtoms) {
 		// The boolean atoms (cpil, pgap, shwm) each hold a single byte, so a non-boolean is
 		// stored as 0 (false), not dropped.
 		var msg string
@@ -90,14 +126,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueCoerced, msg, cv.Key)
 	}
 	// A structured single-atom key given more than one value stores only the first.
-	for _, ev := range itunesExtraStructuredValues(edited.Tags, itunesAtoms) {
+	for _, ev := range itunesExtraStructuredValues(rendered, itunesAtoms) {
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped,
 			fmt.Sprintf("%s holds multiple values but its MP4 atom stores only the first; dropped %q", ev.Key, ev.Value), ev.Key)
 	}
 	// Warn for each multi-valued field this edit wrote. The ilst stores it as several data
 	// atoms under one item; WaxLabel round-trips them, but many readers show only the first.
-	for _, k := range multiValueDataKeys(edited.Tags) {
-		vals, _ := edited.Tags.Get(k)
+	for _, k := range multiValueDataKeys(rendered) {
+		vals, _ := rendered.Get(k)
 		if bv, _ := base.Tags.Get(k); slices.Equal(bv, vals) {
 			continue // the field was already multi-valued and this edit did not touch it
 		}
@@ -105,28 +141,20 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			fmt.Sprintf("%s has %d values, stored as %d MP4 data atoms; some readers surface only the first", k, len(vals), len(vals)), k)
 	}
 
-	// trkn/disk numbers are fixed binary uint16s and the integer and BPM atoms fixed-width
-	// too, so an edit that makes a slot unstorable would clear it and erase a good value.
-	if patched, restored := restoreUnstorableSlots(base.Tags, edited.Tags); restored && itunesAtoms {
-		ec := *edited
-		ec.Tags = patched
-		edited = &ec
-	}
+	edited = stored
 
 	// A chapter edit rewrites the whole moov.udta (folding any ilst change into one
 	// delta); a tag/picture-only edit keeps the lighter in-place ilst path.
 	if chaptersChanged {
 		// An encoding rewrite forces the ilst rebuild too: without needIlst, buildChapterUdta
 		// splices the source ilst back in verbatim and drops the request.
-		pl, err := planChapters(d, base, edited, tagsChanged || picturesChanged || encodingRewrite, picturesChanged, opts, report)
+		pl, err := planChapters(d, base, edited, tagsChanged || picturesChanged || structural, picturesChanged, cf, opts, report)
 		if err != nil || pl == nil {
 			return pl, err
 		}
-		if encodingRewrite {
-			// Appended afterwards: both chapter paths take report by value and assign
-			// report.Operations wholesale, so a line added before the call would be discarded.
-			pl.Report.Operations = append(pl.Report.Operations, core.EncodingRewriteOp("genre"))
-		}
+		// Appended afterwards: both chapter paths take report by value and assign
+		// report.Operations wholesale, so a line added before the call would be discarded.
+		pl.Report.Operations = append(pl.Report.Operations, extraOps...)
 		// Collapse a chapter edit that re-projected to base's exact chapters, tags, and
 		// pictures into a no-op, so re-applying an identical list does not rewrite the
 		// file. --add-chapter builds chapters with End==0 while a parse derives End, so
@@ -143,7 +171,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			// pl.Report.Warnings (not the outer report): planChapters took report by value, so
 			// warnings appended during planning live only on pl.Report.
 			if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, pl.Result,
-				base.Tags.Equal(pl.Result.Tags), encodingRewrite, pl.Report.Warnings); np != nil {
+				base.Tags.Equal(pl.Result.Tags), structural, pl.Report.Warnings); np != nil {
 				return np, nil
 			}
 		}
@@ -154,19 +182,28 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// (unknown atoms, foreign freeforms) verbatim. An unchanged covr is carried as parsed,
 	// so a tag-only edit never rewrites a cover through coverType's JPEG default.
 	covr := coverItemsToWrite(edited.Pictures, d.items, picturesChanged)
-	newItems, newKeys := buildIlstItems(d, edited.Tags, covr, numericGenre)
+	newItems, newKeys, respelled := buildIlstItems(d, edited.Tags, covr, numericGenre, cf)
+	extraOps = append(extraOps, respelledOps(respelled)...)
 	if err := checkBuiltItems(newItems, d.items, opts.Limits.MaxAllocBytes); err != nil {
 		return nil, err
 	}
 	// Resolve which QuickTime store this edit writes to and what changes outside the ilst
-	// region (a grown mdta keys index, udta-level text atoms synced to the canonical
-	// value). Any such change rebuilds the whole udta.
-	qw, err := planQTMeta(d, edited, newKeys, true)
+	// region: a grown mdta keys index, udta-level text atoms and a second store synced to the
+	// canonical value.
+	// A padding floor is reserved beside an ilst, so with one the udta text atoms alone will not do.
+	qw, err := planQTMeta(d, edited, newKeys, opts.Padding.Min <= 0, picturesChanged)
 	if err != nil {
 		return nil, err
 	}
-	if qw.needsUdtaRegion() {
-		return planQTMetaWrite(d, base, edited, newItems, qw, encodingRewrite, opts, report)
+	if qw.needsRegions() {
+		return planQTMetaWrite(d, base, edited, newItems, qw, extraOps, structural, opts, report)
+	}
+	// A file with no ilst gains no empty one: only a padding floor reserves space there. What
+	// the edit asked to store and could not is still reported.
+	if d.ilst == nil && len(newItems) == 0 && opts.Padding.Min <= 0 {
+		np := core.NoOpPlan(core.WriteReport{Format: core.FormatMP4, BytesBefore: edited.Identity.Size}, edited.Identity.Size, base)
+		np.Report.Warnings = report.Warnings
+		return np, nil
 	}
 	var ilstPayload []byte
 	for _, it := range newItems {
@@ -209,17 +246,64 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	report.BytesAfter = total
 	report.PaddingAfter = lay.freeContent
-	report.Operations = operations(d, lay, delta, len(edited.Pictures))
-	if encodingRewrite {
-		report.Operations = append(report.Operations, core.EncodingRewriteOp("genre"))
-	}
+	report.Operations = append(operations(d, lay, delta, len(edited.Pictures)), extraOps...)
 
-	result := buildResult(edited, d, newItems, lay, delta)
-	// Collapse to a no-op when the ilst rebuild re-projected to base's values.
-	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), delta != 0 || encodingRewrite, report.Warnings); np != nil {
+	result := buildResult(edited, d, newItems, lay)
+	// Collapse to a no-op when the ilst rebuild re-projected to base's values: an edit that
+	// stores nothing writes nothing. A size change stands only where the padding was asked for.
+	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), structural || opts.PaddingExplicit && delta != 0, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
+}
+
+// namedKeys returns the keys an edit names, less those in kept: a key whose value the edit does
+// not get stored is not named.
+func namedKeys(touched, kept map[tag.Key]bool) map[tag.Key]bool {
+	named := map[tag.Key]bool{}
+	for k := range touched {
+		if !kept[k] {
+			named[k] = true
+		}
+	}
+	return named
+}
+
+// ilstConflicts settles the values the file's items hold unread against what an edit changes or
+// names. A genre re-encoding rewrites the genre.
+func ilstConflicts(d *doc, base, edited *core.Media, opts core.WriteOptions, named map[tag.Key]bool) conflicts {
+	changed := core.ChangedKeys(base.Tags, edited.Tags, named)
+	if opts.NumericGenre && genreEncodingChanged(d.items, edited.Tags) {
+		changed[tag.Genre] = true
+	}
+	cf := resolveConflicts(d.reading(), changed)
+	cf.elsewhere = viewStores(d).secondOnly
+	return cf
+}
+
+// storesDisagree reports whether a udta text atom or the second store holds, for a key the edit
+// names, another value than the one written: naming the key settles it, as any other write would.
+func storesDisagree(d *doc, tags tag.TagSet, named map[tag.Key]bool) bool {
+	for _, u := range d.udtaTexts {
+		if vals, _ := tags.Get(u.key); named[u.key] {
+			if _, changed := udtaTextEdit(u, fitting(vals)); changed {
+				return true
+			}
+		}
+	}
+	if d.second == nil {
+		return false
+	}
+	read, _, _, _ := storeContribs(readItems(d.second.items))
+	held := core.BuildTagSet(read)
+	tag.NormalizeNumberPairs(&held)
+	for _, k := range held.Keys() {
+		was, _ := held.Get(k)
+		if now, _ := tags.Get(k); named[k] && !slices.Equal(was, now) {
+			return true
+		}
+	}
+	return false
 }
 
 // paddingClampWarning appends the clamp warning shared by every path that emits fresh
@@ -245,12 +329,12 @@ func checkCoverFormats(pics []core.Picture) error {
 	return nil
 }
 
-// preservedItems returns the items the canonical rebuild does not own (unknown
-// atoms, foreign-mean freeforms, parse failures), to be kept verbatim.
-func preservedItems(items []item) []item {
+// preservedItems returns the items a rebuild keeps verbatim: those it does not own (unknown
+// atoms, foreign-mean freeforms, parse failures) and those holding a frozen key.
+func preservedItems(rd reading, frozen map[tag.Key]bool) []item {
 	var out []item
-	for _, it := range items {
-		if !owned(it) {
+	for i, it := range rd.items {
+		if !rd.results[i].owned || slices.ContainsFunc(rd.keys[i], func(k tag.Key) bool { return frozen[k] }) {
 			out = append(out, it)
 		}
 	}
@@ -272,59 +356,43 @@ type layout struct {
 // maxPadding caps the metadata padding the MP4 writer allocates for a free atom.
 const maxPadding = 256 << 20
 
-// planLayout decides how to place the new ilst: reuse the existing ilst+free
-// region in place when it fits (delta 0, media never moves), grow it with fresh
-// padding when it does not, or create the moov/udta/meta/ilst path when the file
-// had no tags.
-func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) {
-	newLen := int64(len(newIlst))
-	pad := opts.Padding.ClampTarget()
-	// Clamp a too-large padding request before it reaches make([]byte, pad). Only the
-	// branches that emit fresh padding (grow/create) report padClamped, so a reuse-in-place
-	// edit never raises a spurious warning.
-	padClamped := false
-	if pad > maxPadding {
-		pad, padClamped = maxPadding, true
+// ilstPadding sizes the padding beside a rebuilt ilst of newLen bytes in a region of regionLen:
+// what the region has left, when the policy reuses it in place and that is no padding or a whole
+// free atom of at least the policy's floor, and else the policy's target, capped at maxPadding.
+func ilstPadding(newLen, regionLen int64, pol core.PaddingPolicy) (padContent int64, inPlace bool) {
+	left := regionLen - newLen
+	switch {
+	case !pol.ReuseInPlace:
+	case left == 0 && pol.Min <= 0:
+		return 0, true
+	case left >= freeAtomHeaderLen && left-freeAtomHeaderLen >= pol.Min:
+		return left - freeAtomHeaderLen, true
 	}
+	// Does not fit, leaves a 1-7 byte remainder a free atom cannot represent, falls below the
+	// floor, or is not to be reused.
+	return min(pol.ClampTarget(), maxPadding), false
+}
 
+// padClamped reports whether fresh padding under pol is cut to maxPadding.
+func padClamped(pol core.PaddingPolicy) bool { return pol.ClampTarget() > maxPadding }
+
+// planLayout decides how to place the new ilst: within the existing ilst+free region as
+// ilstPadding sizes it (in place, so the media never moves, when the policy reuses it), or by
+// creating the moov/udta/meta/ilst path when the file had no tags.
+func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) {
 	if d.ilst != nil {
-		regionStart := d.ilst.offset
-		regionEnd := d.ilst.end()
-		if d.free != nil {
-			regionStart = min(regionStart, d.free.offset)
-			regionEnd = max(regionEnd, d.free.end())
-		}
-		regionLen := regionEnd - regionStart
-		leftover := regionLen - newLen
-		// floor is the --padding "reserve at least N" minimum (PaddingPolicy.Min). Reuse in
-		// place only while the leftover padding meets it; otherwise the region must grow.
-		floor := opts.Padding.Min
-
-		lay := layout{regionStart: regionStart, regionEnd: regionEnd}
-		lay.ancestors = []atomRef{*d.moov, *d.udta, *d.meta}
-		switch {
-		case leftover == 0 && floor <= 0:
-			// Exact fit: the ilst alone, no padding. A zero-leftover region cannot satisfy a
-			// positive floor.
-			lay.regionBytes = newIlst
-		case leftover >= freeAtomHeaderLen && leftover-freeAtomHeaderLen >= floor:
-			// Fits with room for a free atom whose padding still meets the floor: reuse
-			// the region in place (delta 0).
-			lay.regionBytes, lay.freeContent = appendFree(newIlst, leftover-freeAtomHeaderLen)
-		default:
-			// Does not fit, leaves a 1-7 byte remainder a free atom cannot represent, or
-			// the leftover would fall below the floor: grow with fresh padding (ClampTarget
-			// floors it to Min) so a later edit fits in place again.
-			lay.regionBytes, lay.freeContent = appendFree(newIlst, pad)
-			lay.paddingClamped = padClamped
-		}
+		regionStart, regionEnd := d.ilstRegion()
+		pad, inPlace := ilstPadding(int64(len(newIlst)), regionEnd-regionStart, opts.Padding)
+		lay := layout{regionStart: regionStart, regionEnd: regionEnd, ancestors: d.tagAncestors()}
+		lay.regionBytes, lay.freeContent = appendFree(newIlst, pad)
+		lay.paddingClamped = !inPlace && padClamped(opts.Padding)
 		return lay, nil
 	}
 
 	// No ilst: create the missing path. Insert into the deepest existing of
 	// moov/udta/meta, at its end (the new atom becomes that container's last child;
 	// everything after shifts and the ancestor sizes grow).
-	inner, withFree, freeContent, err := buildCreated(d, newIlst, pad)
+	inner, withFree, freeContent, err := buildCreated(d, newIlst, min(opts.Padding.ClampTarget(), maxPadding))
 	if err != nil {
 		return layout{}, err
 	}
@@ -341,7 +409,7 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 	return layout{
 		regionStart: regionStart, regionEnd: at, regionBytes: withFree,
 		ancestors: createdAncestors(d), freeContent: freeContent, created: true,
-		paddingClamped: padClamped,
+		paddingClamped: padClamped(opts.Padding),
 	}, nil
 }
 
@@ -512,13 +580,18 @@ func largestItemPayload(items []item) int64 {
 // patchTables renders the offset-fixup edits for every table in the given groups,
 // skipping any the skip predicate rejects (nil skips none).
 func patchTables(delta, insertion int64, skip func(offsetTable) bool, groups ...[]offsetTable) ([]edit, error) {
+	return patchTablesBy(func(e uint64) (uint64, bool) { return shiftOffset(e, insertion, delta) }, skip, groups...)
+}
+
+// patchTablesBy is patchTables for any rule that moves a chunk offset.
+func patchTablesBy(shift func(uint64) (uint64, bool), skip func(offsetTable) bool, groups ...[]offsetTable) ([]edit, error) {
 	var out []edit
 	for _, g := range groups {
 		for _, t := range g {
 			if skip != nil && skip(t) {
 				continue
 			}
-			e, err := offsetPatch(t, delta, insertion)
+			e, err := offsetPatch(t, shift)
 			if err != nil {
 				return nil, err
 			}
@@ -526,6 +599,42 @@ func patchTables(delta, insertion int64, skip func(offsetTable) bool, groups ...
 		}
 	}
 	return out, nil
+}
+
+// closeMoov completes region edits that all lie inside moov: its size follows their summed length
+// change, and every chunk offset moves by that of the edits ahead of it.
+func closeMoov(d *doc, edits []edit) ([]edit, int64, error) {
+	delta := sumDelta(edits)
+	if delta == 0 {
+		return edits, 0, nil
+	}
+	if err := checkSizes([]atomRef{*d.moov}, delta); err != nil {
+		return nil, 0, err
+	}
+	moved := newShifts(edits)
+	es, err := patchTablesBy(func(e uint64) (uint64, bool) {
+		if e > math.MaxInt64 {
+			return e, true
+		}
+		shifted := int64(e) + moved.at(int64(e))
+		return uint64(shifted), shifted >= 0
+	}, nil, d.offTables, d.auxTables)
+	if err != nil {
+		return nil, 0, err
+	}
+	return append(append(slices.Clip(edits), sizePatch(*d.moov, delta)), es...), delta, nil
+}
+
+// firstOffset returns the lowest offset an edit starts at, 0 for none.
+func firstOffset(edits []edit) int64 {
+	if len(edits) == 0 {
+		return 0
+	}
+	first := edits[0].off
+	for _, e := range edits[1:] {
+		first = min(first, e.off)
+	}
+	return first
 }
 
 // shiftedTableCount counts the tables patchTables moves an entry of: those the skip predicate
@@ -557,16 +666,16 @@ func appendShiftOp(ops []string, d *doc, delta, insertion int64, skip func(offse
 }
 
 // offsetPatch re-renders an offset table (a chunk-offset stco/co64, or a
-// sample-auxiliary saio) with every entry past the insertion point shifted by delta,
-// so the media resolves to its new position after the metadata grew.
-func offsetPatch(t offsetTable, delta, insertion int64) (edit, error) {
+// sample-auxiliary saio) with every entry moved by shift, so the media resolves to its
+// new position after the metadata changed size.
+func offsetPatch(t offsetTable, shift func(uint64) (uint64, bool)) (edit, error) {
 	width := 4
 	if t.co64 {
 		width = 8
 	}
 	buf := make([]byte, len(t.entries)*width)
 	for i, e := range t.entries {
-		e, ok := shiftOffset(e, insertion, delta)
+		e, ok := shift(e)
 		if !ok {
 			return edit{}, fmt.Errorf("%w: an offset in %s does not resolve to a position in the rewritten file; it points inside the metadata region being replaced",
 				waxerr.ErrInvalidData, t.id())
@@ -646,7 +755,7 @@ func operations(d *doc, lay layout, delta int64, pics int) []string {
 	case delta == 0:
 		ops = append(ops, "ilst rewrite in place (media not moved)")
 	default:
-		ops = append(ops, fmt.Sprintf("ilst rewrite (+%d bytes metadata)", delta))
+		ops = append(ops, fmt.Sprintf("ilst rewrite (%+d bytes metadata)", delta))
 	}
 	ops = appendShiftOp(ops, d, delta, lay.regionStart, nil)
 	if pics > 0 {

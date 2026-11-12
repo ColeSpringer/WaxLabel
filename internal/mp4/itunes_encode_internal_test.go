@@ -197,7 +197,8 @@ func TestITunesRestoreUnstorableSlots(t *testing.T) {
 			base, edited := tag.NewTagSet(), tag.NewTagSet()
 			base.Set(c.key, c.baseVal)
 			edited.Set(c.key, c.ed)
-			out, restored := restoreUnstorableSlots(base, edited)
+			out, kept := restoreUnstorableSlots(base, edited)
+			restored := len(kept) > 0
 			if restored != c.wantRestored {
 				t.Fatalf("restored = %v, want %v", restored, c.wantRestored)
 			}

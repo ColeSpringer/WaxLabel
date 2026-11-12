@@ -28,7 +28,7 @@ func TestMP4ALACSampleRateFromCookie(t *testing.T) {
 
 	digest := essenceOf(t, build(96000))
 	if digest.ExtentVersion != "mp4-mdat-v3" {
-		t.Errorf("extent = %q, want mp4-mdat-v3", digest.ExtentVersion)
+		t.Errorf("extent = %q, want mp4-mdat-v3: the file holds no sample tables", digest.ExtentVersion)
 	}
 	if other := essenceOf(t, build(44100)); !digest.Equal(other) {
 		t.Errorf("digest changed with the cookie rate: %s vs %s (the cookie is outside the salt)", digest, other)

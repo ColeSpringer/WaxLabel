@@ -1,6 +1,7 @@
 package waxlabel_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"slices"
@@ -364,5 +365,56 @@ func TestMP4DroppedCoverDrawsNoSanityNote(t *testing.T) {
 	}
 	if !reportHasWarning(planForce.Report().Warnings, wl.WarnPictureUnsupported) {
 		t.Errorf("expected a picture-unsupported warning for the dropped exotic cover; got %v", planForce.Report().Warnings)
+	}
+}
+
+// Bytes behind the last atom that form none are kept where they are and reported, whatever they
+// look like: a size under 8, a 64-bit size with no room for its field or under its own header,
+// fewer than 8 bytes.
+func TestMP4TrailingJunkPreserved(t *testing.T) {
+	for name, tail := range map[string]string{
+		"size 5":             "\x00\x00\x00\x05junk",
+		"cut 64-bit header":  "\x00\x00\x00\x01junk",
+		"64-bit size of 9":   "\x00\x00\x00\x01junk\x00\x00\x00\x00\x00\x00\x00\x09",
+		"three bytes":        "abc",
+		"size 5, then atoms": "\x00\x00\x00\x05junk" + string(testfile.MP4Atom("free", make([]byte, 8))),
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := slices.Concat(testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T")), []byte(tail))
+			doc, err := wl.Parse(context.Background(), wl.BytesSource(data))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if !hasWarning(doc, wl.WarnTrailingBytes) || !hasLintCode(doc, "trailing-bytes") {
+				t.Errorf("warnings = %v, want trailing-bytes", doc.Warnings())
+			}
+			if got := doc.Fields().Title; got != "T" {
+				t.Errorf("TITLE = %q", got)
+			}
+			plan, err := doc.Edit().Set(tag.Title, strings.Repeat("Long ", 2000)).SetChapters(chaptersFromTitles("A", "B")...).Prepare(wl.WithVerifyEssence())
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := applyToBytes(t, data, plan)
+			if !bytes.HasSuffix(out, []byte(tail)) {
+				t.Error("the bytes behind the last atom are not the file's last after an edit")
+			}
+			re := mustParseBytes(t, out)
+			if len(re.Chapters()) != 2 || !hasWarning(re, wl.WarnTrailingBytes) {
+				t.Errorf("after the edit: %d chapters, warnings %v", len(re.Chapters()), re.Warnings())
+			}
+			// A second chapter write reclaims the first one's mdat, which sits ahead of the bytes.
+			plan, err = re.Edit().SetChapters(chaptersFromTitles("C")...).Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if again := applyToBytes(t, out, plan); !bytes.HasSuffix(again, []byte(tail)) || bytes.Count(again, []byte("mdat")) != 2 {
+				t.Errorf("a second chapter write left %d mdat atoms or moved the tail", bytes.Count(again, []byte("mdat")))
+			}
+		})
+	}
+	// What opens the file must still be an atom.
+	if _, err := wl.Parse(context.Background(), wl.BytesSource(slices.Concat(testfile.MP4Ftyp(), []byte("\x00\x00\x00\x05junk")))); err == nil {
+		t.Error("a file of one atom and junk, with no moov, parsed")
 	}
 }

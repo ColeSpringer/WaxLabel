@@ -21,7 +21,7 @@ func sizeOf(t *testing.T, path string) int64 {
 func TestPaddingFlagsApplyAlone(t *testing.T) {
 	td := func(name string) string { return filepath.Join("..", "..", "testdata", name) }
 
-	for _, fix := range []string{"sample.flac", "sample.mp3", "sample.aac"} {
+	for _, fix := range []string{"sample.flac", "sample.mp3", "sample.aac", "sample.m4a"} {
 		t.Run("no-padding strips "+fix, func(t *testing.T) {
 			f := copyFixture(t, td(fix))
 			// Seed padding region first.
@@ -75,17 +75,67 @@ func TestPaddingFlagsApplyAlone(t *testing.T) {
 func TestPaddingPresetsApplyAlone(t *testing.T) {
 	td := func(name string) string { return filepath.Join("..", "..", "testdata", name) }
 
-	t.Run("minimal strips padding", func(t *testing.T) {
-		f := copyFixture(t, td("sample.flac"))
-		if _, _, code := runCLI(t, "set", f, "--padding", "8192"); code != 0 {
-			t.Fatalf("--padding 8192: code %d", code)
+	for _, fix := range []string{"sample.flac", "sample.m4a"} {
+		t.Run("minimal strips padding of "+fix, func(t *testing.T) {
+			f := copyFixture(t, td(fix))
+			if _, _, code := runCLI(t, "set", f, "--padding", "8192"); code != 0 {
+				t.Fatalf("--padding 8192: code %d", code)
+			}
+			padded := sizeOf(t, f)
+			out, errb, code := runCLI(t, "set", f, "--preset", "minimal")
+			if code != 0 {
+				t.Fatalf("--preset minimal: code %d, %s", code, errb)
+			}
+			if after := sizeOf(t, f); after >= padded {
+				t.Errorf("--preset minimal did not strip padding: %d -> %d", padded, after)
+			}
+			if strings.Contains(out+errb, "+-") {
+				t.Errorf("a shrink is reported with two signs:\n%s%s", out, errb)
+			}
+		})
+	}
+
+	// A padding floor is reserved beside an ilst, so a file whose tags are QuickTime text atoms
+	// gains one: at once, and in the run that clears its tags too.
+	for name, first := range map[string][]string{"padding alone": {"--padding", "4096"}, "with a clear": {"--clear", "ENCODER", "--padding", "4096"}} {
+		t.Run("a floor on a text-atom file, "+name, func(t *testing.T) {
+			f := copyFixture(t, td("mp3.mov"))
+			before := sizeOf(t, f)
+			out, errb, code := runCLI(t, append([]string{"set", f}, first...)...)
+			if code != 0 || sizeOf(t, f) < before+4000 {
+				t.Fatalf("%v: code %d, size %d -> %d:\n%s%s", first, code, before, sizeOf(t, f), out, errb)
+			}
+			settled := sizeOf(t, f)
+			out, errb, code = runCLI(t, append([]string{"set", f}, first...)...)
+			if code != 0 || !strings.Contains(out+errb, "no changes") || sizeOf(t, f) != settled {
+				t.Errorf("a second run: code %d, size %d -> %d:\n%s%s", code, settled, sizeOf(t, f), out, errb)
+			}
+			dump, _, _ := runCLI(t, "dump", f)
+			if name == "padding alone" && !strings.Contains(dump, "Lavf") {
+				t.Errorf("the encoder tag did not survive:\n%s", dump)
+			}
+		})
+	}
+
+	// A file with no tag store and nothing to store gains none from a padding policy, so a clear
+	// that empties the file settles in one run.
+	t.Run("a clear under minimal settles in one run", func(t *testing.T) {
+		f := copyFixture(t, td("mp3.mov"))
+		if _, errb, code := runCLI(t, "set", f, "--clear", "ENCODER", "--preset", "minimal"); code != 0 {
+			t.Fatalf("first run: code %d, %s", code, errb)
 		}
-		padded := sizeOf(t, f)
-		if _, errb, code := runCLI(t, "set", f, "--preset", "minimal"); code != 0 {
-			t.Fatalf("--preset minimal: code %d, %s", code, errb)
+		settled := sizeOf(t, f)
+		for _, args := range [][]string{{"--clear", "ENCODER", "--preset", "minimal"}, {"--preset", "compatible"}, {"--padding", "0"}, {"--no-padding"}} {
+			out, errb, code := runCLI(t, append([]string{"set", f}, args...)...)
+			if code != 0 || !strings.Contains(out+errb, "no changes") || sizeOf(t, f) != settled {
+				t.Errorf("%v on a tagless file: code %d, size %d -> %d:\n%s%s", args, code, settled, sizeOf(t, f), out, errb)
+			}
 		}
-		if after := sizeOf(t, f); after >= padded {
-			t.Errorf("--preset minimal did not strip padding: %d -> %d", padded, after)
+		if _, errb, code := runCLI(t, "set", f, "--padding", "4096"); code != 0 {
+			t.Fatalf("--padding 4096: code %d, %s", code, errb)
+		}
+		if after := sizeOf(t, f); after < settled+4096 {
+			t.Errorf("--padding 4096 on a tagless file reserved nothing: %d -> %d", settled, after)
 		}
 	})
 

@@ -475,6 +475,29 @@ func parityInputs(t *testing.T) []parityInput {
 	mp4Tagged := testfile.MP4AssembleUdta(mp4Tags)
 	openMdat := slices.Clone(mp4Tagged)
 	binary.BigEndian.PutUint32(openMdat[bytes.LastIndex(openMdat, []byte("mdat"))-4:], 0)
+	freeform := func(name, value string) []byte {
+		mean := testfile.MP4Atom("mean", append([]byte{0, 0, 0, 0}, "com.apple.iTunes"...))
+		nm := testfile.MP4Atom("name", append([]byte{0, 0, 0, 0}, name...))
+		return testfile.MP4Atom("----", slices.Concat(mean, nm, testfile.MP4Data(1, []byte(value))))
+	}
+	trkn := func(num, total byte) []byte {
+		return testfile.MP4Atom("trkn", testfile.MP4Data(0, []byte{0, 0, 0, num, 0, total, 0, 0}))
+	}
+	frameCounted, _, _, _ := testfile.MP4FrameCountedFile(testfile.MP4StsdEntry("twos", 2, 16, 8000), 100, 1, 400)
+	moovMeta := testfile.MP4Meta(testfile.MP4HdlrMdta(), testfile.MP4Keys("title", "artist", "location"),
+		testfile.MP4Ilst(testfile.MP4KeyItem(1, "Meta Title"), testfile.MP4KeyItem(2, "Meta Artist"), testfile.MP4KeyItem(3, "+48.85+002.35/")))
+	// moovFile is a movie of one sound track and kids.
+	moovFile := func(trak func(int, uint32, ...[]byte) []byte, kids ...[]byte) []byte {
+		return testfile.MP4TracksFile(nil, func(audio, _, _ uint32) []byte {
+			return slices.Concat(testfile.MP4Mvhd(1000, 1000), trak(1, audio), slices.Concat(kids...))
+		})
+	}
+	moovMetaEdits := []parityEdit{
+		tags("new key", setTag(tag.Album, "New Album"), chaps("two", setChapters(ch(0, "A"), ch(msec(500), "B")))),
+		chaps("two with tags", func(_ *Document, e *Editor) { e.SetChapters(ch(0, "A"), ch(msec(500), "B")).Set(tag.Genre, "Spoken") },
+			tags("artist", setTag(tag.Artist, "A2")), parityEdit{kind: "clear chapters", name: "cleared", edit: clearChapters}),
+		longTitle(70000),
+	}
 	strayStco := slices.Concat(testfile.MP4Ftyp(), testfile.MP4MoovStsd(nil, 4, nil, nil, testfile.MP4StsdAudio(), 44100),
 		testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 120)))
 	threeThenOne := chaps("three", setChapters(ch(0, "Opening"), ch(sec(3), "Middle"), ch(sec(7.5), "Closing")),
@@ -539,6 +562,112 @@ func parityInputs(t *testing.T) []parityInput {
 		parityInput{name: "utf16-titles.m4a", data: testfile.MP4QTFile([]int{0, 3000}, []string{"\xfe\xff\x00C\x00a\x00f\x00\xe9", "\xff\xfeB\x00"},
 			chpl("Caf\u00e9", "B"))},
 		parityInput{name: "empty-track-title.m4a", data: testfile.MP4QTFile([]int{0, 3000}, []string{"", "Two"}, chpl("One", "Two"))},
+		// An mdta keys store under ffmpeg's names, and stores where two items hold one key: the first
+		// is read, and the second stays until its key is edited.
+		parityInput{name: "mdta-ffmpeg-names.m4a", data: testfile.MP4MdtaFile(
+			[]string{"title", "album_artist", "track", "disc", "sort_name", "compilation"}, []string{"T", "AA", "3/12", "1/2", "SN", "1"}),
+			edits: []parityEdit{
+				tags("track number", setTag(tag.TrackNumber, "5"), tags("no total", func(_ *Document, e *Editor) { e.Clear(tag.TrackTotal) })),
+				tags("new keys", func(_ *Document, e *Editor) { e.Set(tag.Show, "SH").Set(tag.DiscTotal, "3").Clear(tag.TrackNumber) }),
+				chaps("two", setChapters(ch(0, "A"), ch(sec(4), "B")), tags("album artist", setTag(tag.AlbumArtist, "BB"))),
+			}},
+		parityInput{name: "mdta-key-twice.m4a", data: testfile.MP4MdtaFile(
+			[]string{"software", "creationdate", "date", "encoder", "title"}, []string{"QuickTime 10", "2021-05-04", "2020", "Lavf60", "T"}),
+			edits: []parityEdit{
+				tags("encoder", setTag(tag.Encoder, "New"), tags("date", setTag(tag.RecordingDate, "2022"))),
+				tags("the same encoder", setTag(tag.Encoder, "QuickTime 10")),
+				chaps("two", setChapters(ch(0, "A"), ch(sec(4), "B"))),
+			}},
+		// Cover art in a keys store: under the key WaxLabel once wrote, and in a four-character item.
+		parityInput{name: "mdta-covr-key.m4a", data: testfile.MP4Assemble(testfile.MP4HdlrMdta(), testfile.MP4Keys("title", "covr"),
+			testfile.MP4Ilst(testfile.MP4KeyItem(1, "T"), testfile.MP4KeyItemData(2, testfile.MP4Data(13, testfile.JPEG())))),
+			edits: []parityEdit{pics("back cover", addCover(PicBackCover), tags("artist", setTag(tag.Artist, "A")))}},
+		parityInput{name: "mdta-covr-item.m4a", data: testfile.MP4Assemble(testfile.MP4HdlrMdta(), testfile.MP4Keys("title"),
+			testfile.MP4Ilst(testfile.MP4KeyItem(1, "T"), testfile.MP4Atom("covr", testfile.MP4Data(13, testfile.JPEG())))),
+			edits: []parityEdit{pics("no cover", func(_ *Document, e *Editor) { e.ClearPictures() })}},
+		// Encodings of the iTunes atoms no rebuild renders: a trkn with no total field, a disk with
+		// a trailing pad, an unsigned stik, an implicit-typed text.
+		parityInput{name: "itunes-other-encodings.m4a", data: testfile.MP4Tagged(
+			testfile.MP4Atom("trkn", testfile.MP4Data(0, []byte{0, 0, 0, 7})), testfile.MP4Atom("disk", testfile.MP4Data(0, []byte{0, 0, 0, 1, 0, 2, 0, 0})),
+			testfile.MP4Atom("stik", testfile.MP4Data(22, []byte{2})), testfile.MP4Atom("\xa9alb", testfile.MP4Data(0, []byte("Album")))),
+			edits: []parityEdit{tags("track total", setTag(tag.TrackTotal, "9")), tags("nothing storable", setTag(tag.BPM, "abc"))}},
+		// Bytes behind the last atom whose size field forms none; udta text atoms beside an ilst,
+		// which a value they cannot hold leaves; the iTunes TV atoms.
+		parityInput{name: "junk-tail.m4a", data: slices.Concat(mp4Tagged, []byte("\x00\x00\x00\x05junk")), edits: []parityEdit{longTitle(70000), threeThenOne}},
+		parityInput{name: "cut-64-bit-tail.m4a", data: slices.Concat(mp4Tagged, []byte("\x00\x00\x00\x01junk")), edits: []parityEdit{threeThenOne}},
+		parityInput{name: "udta-texts-and-ilst.mov", data: testfile.MP4AssembleUdta(udtaText("\xa9cmt", "Old"), udtaText("\xa9ART", "Old"),
+			testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9cmt", "Old"), testfile.MP4Text("\xa9ART", "Old")))),
+			edits: []parityEdit{
+				tags("long comment", setTag(tag.Comment, strings.Repeat("c", 70000)), tags("short again", setTag(tag.Comment, "c"))),
+				tags("two artists", setTag(tag.Artist, "One", "Two")),
+				chaps("two with a long comment", func(_ *Document, e *Editor) {
+					e.SetChapters(ch(0, "A"), ch(msec(500), "B")).Set(tag.Comment, strings.Repeat("c", 70000))
+				}),
+			}},
+		parityInput{name: "tv-atoms.m4a", data: testfile.MP4Tagged(testfile.MP4Text("tvsh", "Show"), testfile.MP4Text("sosn", "Show, The"),
+			testfile.MP4Atom("tves", testfile.MP4Data(21, []byte{0, 0, 0, 2})), testfile.MP4Atom("tvsn", testfile.MP4Data(21, []byte{0, 0, 0, 1}))),
+			edits: []parityEdit{tags("episode", setTag(tag.EpisodeNumber, "3")), tags("episode as text", setTag(tag.EpisodeNumber, "3a")),
+				tags("network", func(_ *Document, e *Editor) { e.Set(tag.Network, "Net").Set(tag.EpisodeID, "S01E03").Clear(tag.Show) })}},
+		// Values an item holds without being read for them: a year beside its date, a total beside
+		// the pair's, a second store's total; an item past the keys table; a track that counts frames.
+		parityInput{name: "year-and-date.m4a", data: testfile.MP4Tagged(freeform("originalyear", "1999"), freeform("originaldate", "1999-05-01")),
+			edits: []parityEdit{tags("date", setTag(tag.OriginalDate, "2001-02-03"))}},
+		parityInput{name: "total-beside-pair.m4a", data: testfile.MP4Tagged(freeform("TRACKTOTAL", "15"), trkn(3, 12)),
+			edits: []parityEdit{tags("number", setTag(tag.TrackNumber, "5")), tags("nothing storable", setTag(tag.TrackNumber, "abc")),
+				tags("the same total", setTag(tag.TrackTotal, "15"))}},
+		parityInput{name: "mdta-total-twice.m4a", data: testfile.MP4MdtaFile([]string{"TOTALTRACKS", "track", "title"}, []string{"15", "3/12", "T"}),
+			edits: []parityEdit{tags("number", setTag(tag.TrackNumber, "5")), tags("the same total", setTag(tag.TrackTotal, "15"))}},
+		parityInput{name: "two-stores-pair.m4a", data: moovFile(testfile.MP4SoundTrak,
+			testfile.MP4Atom("udta", testfile.MP4Meta(testfile.MP4HdlrMdta(), testfile.MP4Keys("track"), testfile.MP4Ilst(testfile.MP4KeyItem(1, "3/12")))),
+			testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(trkn(3, 15), testfile.MP4Text("\xa9ART", "Meta Artist")))),
+			edits: []parityEdit{tags("number", setTag(tag.TrackNumber, "5"))}},
+		parityInput{name: "second-store-own-keys.m4a", data: moovFile(testfile.MP4SoundTrak, testfile.MP4Atom("udta", mp4Tags),
+			testfile.MP4Meta(testfile.MP4HdlrMdta(), testfile.MP4Keys("title", "genre", "com.apple.quicktime.genre", "artist"),
+				testfile.MP4Ilst(testfile.MP4KeyItem(1, "Meta Title"), testfile.MP4KeyItem(2, "Rock"), testfile.MP4KeyItem(3, "Pop"), testfile.MP4KeyItem(4, "Meta Artist")))),
+			edits: []parityEdit{tags("its own artist", setTag(tag.Artist, "New Artist")), tags("the title it has", setTag(tag.Title, "T")),
+				tags("genre", setTag(tag.Genre, "Jazz")), chaps("two with an artist", func(_ *Document, e *Editor) {
+					e.SetChapters(ch(0, "A"), ch(msec(500), "B")).Set(tag.Artist, "A2")
+				})}},
+		parityInput{name: "mdta-lone-total.m4a", data: testfile.MP4MdtaFile([]string{"title", "track", "SOFTWARE"}, []string{"T", "/12", "x"}),
+			edits: []parityEdit{tags("number", setTag(tag.TrackNumber, "5"))}},
+		parityInput{name: "mdta-orphan-index.m4a", data: testfile.MP4Assemble(testfile.MP4HdlrMdta(), testfile.MP4Keys("title", "artist"),
+			testfile.MP4Ilst(testfile.MP4KeyItem(1, "T"), testfile.MP4KeyItem(3, "Orphan"))),
+			edits: []parityEdit{tags("new keys", func(_ *Document, e *Editor) { e.Set(tag.Genre, "G").Set(tag.Album, "A") })}},
+		parityInput{name: "frame-counted.mov", data: frameCounted, edits: []parityEdit{longTitle(70000), threeThenOne}},
+		parityInput{name: "text-atoms.mov", data: testfile.MP4AssembleUdta(udtaText("\xa9nam", "T"), udtaText("\xa9ART", "A")),
+			edits: []parityEdit{
+				{kind: "padding floor", edit: func(*Document, *Editor) {}, opts: []WriteOption{WithPadding(PaddingPolicy{Target: 4096, Min: 4096, ReuseInPlace: true})}},
+				{kind: "cleared with a floor", edit: func(_ *Document, e *Editor) { e.Clear(tag.Title).Clear(tag.Artist) },
+					opts: []WriteOption{WithPadding(PaddingPolicy{Target: 4096, Min: 4096, ReuseInPlace: true})}},
+			}},
+		parityInput{name: "gnre-and-text.m4a", data: testfile.MP4Tagged(testfile.MP4Atom("gnre", testfile.MP4Data(0, []byte{0, 18})),
+			testfile.MP4Text("\xa9gen", "Custom"), testfile.MP4Text("\xa9nam", "T")),
+			edits: []parityEdit{tags("genre", setTag(tag.Genre, "Jazz"))}},
+		// Sound and video chunks interleaved in one mdat, placed by full sample tables: the essence is
+		// the sound track's chunks, which every edit moves whole.
+		parityInput{name: "interleaved.mp4", data: testfile.MP4AVFile(
+			[][]byte{bytes.Repeat([]byte{0xA1}, 100), bytes.Repeat([]byte{0xA2}, 60)}, [][]byte{bytes.Repeat([]byte{0xB1}, 300), bytes.Repeat([]byte{0xB2}, 80)}),
+			edits: []parityEdit{longTitle(70000), threeThenOne, chaps("two with tags", func(_ *Document, e *Editor) {
+				e.SetChapters(ch(0, "A"), ch(msec(500), "B")).Set(tag.Genre, "Spoken")
+			}, tags("artist", setTag(tag.Artist, "A2")), parityEdit{kind: "clear chapters", name: "cleared", edit: clearChapters})}},
+		parityInput{name: "interleaved-moov-meta.mp4", data: testfile.MP4AVFile(
+			[][]byte{bytes.Repeat([]byte{0xA1}, 100), bytes.Repeat([]byte{0xA2}, 60)}, [][]byte{bytes.Repeat([]byte{0xB1}, 300)}, moovMeta),
+			edits: moovMetaEdits},
+		// A tag store in a meta under moov: alone, ahead of the track whose tables then move with it,
+		// beside udta text atoms, and beside a store under moov.udta.meta, which is the one written.
+		parityInput{name: "moov-meta.mov", data: moovFile(testfile.MP4SoundTrak, moovMeta), edits: moovMetaEdits},
+		parityInput{name: "moov-meta-first.mov", data: testfile.MP4TracksFile(nil, func(audio, _, _ uint32) []byte {
+			return slices.Concat(testfile.MP4Mvhd(1000, 1000), moovMeta, testfile.MP4SoundTrak(1, audio))
+		}), edits: moovMetaEdits},
+		parityInput{name: "moov-meta-mdir.m4a", data: moovFile(testfile.MP4SoundTrak, testfile.MP4Meta(testfile.MP4HdlrMdir(),
+			testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T")), testfile.MP4Atom("free", make([]byte, 40)))), edits: moovMetaEdits},
+		parityInput{name: "moov-meta-udta-texts.mov", data: moovFile(testfile.MP4SoundTrak,
+			testfile.MP4Atom("udta", udtaText("\xa9nam", "Udta Title")), moovMeta), edits: moovMetaEdits},
+		parityInput{name: "moov-meta-and-udta.m4a", data: moovFile(testfile.MP4SoundTrak, moovMeta, testfile.MP4Atom("udta", mp4Tags)),
+			edits: append([]parityEdit{tags("no artist", func(_ *Document, e *Editor) { e.Clear(tag.Artist) })}, moovMetaEdits...)},
+		parityInput{name: "text-and-gnre.m4a", data: testfile.MP4Tagged(testfile.MP4Text("\xa9gen", "Rock"),
+			testfile.MP4Atom("gnre", testfile.MP4Data(0, []byte{0, 9}))),
+			edits: []parityEdit{{kind: "numeric genre", edit: func(*Document, *Editor) {}, opts: []WriteOption{WithNumericGenre()}}}},
 		// Ogg behind a leading tag and bytes, ahead of junk and stacked tags; with bytes between its
 		// pages, renumbered around them; and ending inside its last page ahead of a tag.
 		parityInput{name: "legacy-tags.ogg", data: slices.Concat(v2Title, gap, fixture["sample.ogg"], tailJunk, v1a, v1b),

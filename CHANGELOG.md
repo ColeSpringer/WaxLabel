@@ -327,6 +327,55 @@ All notable changes to this project are documented here.
   chapter with the edits where that falls after the chapter's start.
 - Planning an MP4 chapter write no longer takes time quadratic in the file's tracks and chunk
   offsets (2.4 s for a crafted 1 MiB file of 8,000 tracks, now under 10 ms).
+- An MP4 keys store (`mdta`) reads ffmpeg's names as the canonical keys: `album_artist`,
+  `track`, `disc`, `sort_name` and the other `sort_*`, `synopsis`, `compilation`,
+  `gapless_playback`, `media_type`, `rating` (ITUNESADVISORY) and `tmpo`, and any alias
+  spelling, in a freeform name too (`DATE`, `TOTALTRACKS`). They read as custom keys such as
+  `TRACK`, which `--clear TRACK` could not reach. A new entry takes ffmpeg's name, and a track
+  or disc number shares one `n/total` entry with its total.
+- Two MP4 items holding one key (`gnre` beside `©gen`, `software` beside `encoder`, a freeform
+  beside its atom) no longer merge into one two-valued item on the next edit. The first is
+  read, the others show in the families (`conflicting-families`) and stay where they are until
+  the key is edited, even to the value it has, which leaves one and reports the removal. A bare
+  year beside the full date of its key, as Picard's `originalyear` beside `originaldate`, is
+  no conflict: the date is read.
+- A tag store in a `meta` directly under `moov`, as Apple's recorders write, is read and edited
+  where it is, with a chapter edit too; it went unread, and a write added a second store under
+  `moov.udta`. Beside a store under `moov.udta.meta` it shows in the families, fills the keys
+  that one lacks, keeps the keys it alone holds and follows each write for the others.
+- Cover art in an MP4 keys store is read from Apple's `com.apple.quicktime.artwork` key and
+  written there, where ffmpeg reads it. A tag edit keeps a cover item as it is, and no longer
+  re-keys a `covr` item into an entry ffmpeg cannot read.
+- An `mp4a` entry holding Vorbis, DTS, AC-3, E-AC-3, Opus or QCELP names that codec from its
+  `esds` object type, MPEG audio its layer from the first frame, and any other object type
+  itself, instead of `AAC`.
+- MP4 bitrate counts the audio track's samples, not every `mdat` byte (a video beside it).
+- `--no-padding`, `--padding 0` and `--preset minimal` remove the padding beside an MP4 `ilst`,
+  and a padding policy alone no longer writes an empty `ilst` into a file with none.
+  `--padding N` still reserves the space, now also in a file whose tags are QuickTime text
+  atoms, which gains an `ilst` for it (it reported no changes). A shrink reads `-N bytes`, not
+  `+-N`.
+- An MP4 item in the atom of its key keeps the encoding the file gave it while its value stands
+  (ffmpeg's 8-byte `disk`, an implicit-typed text), so an edit that stores nothing
+  (`--set BPM=abc`) writes nothing. One under another spelling of its key (a freeform `DATE`)
+  still moves to the key's atom with the next edit, which the plan now lists
+  (`1 ilst item respelled`). A `trkn` or `disk` with no total field and an unsigned-typed
+  `stik` or `cpil` are read.
+- An MP4 `moov.udta` text atom whose key takes several values, or more than 65535 bytes, no
+  longer holds it (`native-value-reduced`): the atom goes, or its entry is cleared where other
+  languages share it, and the `ilst` holds the value. It was cut short, or kept the first
+  value, and then disagreed with the `ilst`.
+- Bytes behind an MP4's last atom that form none (a size under 8, a cut 64-bit header) are
+  kept and reported (`trailing-bytes`) instead of failing the parse, as are fewer than 8, which
+  went unreported.
+- TrueHD in MP4 reports its name and the rate and 24-bit word length of its first major sync,
+  where it read `mlpa`, 0 Hz and 16 bits. The DTS fourccs read `DTS`, and Matroska's
+  `A_TRUEHD` and DTS variants take the same names.
+- An MP4 keys item that is no text and hides a value a key would show (Apple's `rating.user`
+  float, or an entry named for a canonical key) warns `invalid-tag-key` instead of going
+  unmentioned.
+- An MP4 keys item whose index lies past the keys table no longer takes the name of a key a
+  write appends there.
 
 ### Changed
 
@@ -351,6 +400,12 @@ All notable changes to this project are documented here.
   the essence, which v1 hashed as audio, and the MP3 and ADTS extents the bytes between the ID3v2
   tag and the first frame too. `verify` labels the change; stored v1 digests stay labeled v1 and
   never compare equal, so those digests need a rehash.
+- **The MP4 essence extent is `mp4-samples-v4`**: the sound tracks' sample chunks, so a video
+  track's and the chapter track's samples are out of the digest and two files with the same
+  sample entry and audio packets hash the same. A file whose sample tables cannot be read, or
+  place a chunk in no `mdat`, keeps `mp4-mdat-v3`, every `mdat` from its first chunk. `verify`
+  labels the change; a stored v3 digest of any other file never compares equal and needs a
+  rehash.
 - The v2 essence ends where the stream says it does: by the WavPack blocks' sample counts (with a
   length every block states, those in the 64 KiB before the tags, so a break at or before the first
   of them, or a stream of that length joined there, reads as part of the stream), a Monkey's Audio
@@ -398,6 +453,10 @@ All notable changes to this project are documented here.
   and the last at info severity.
 - Canonical keys `SHOW`, `SHOWSORT`, `EPISODEID`, `EPISODENUMBER`, `SEASONNUMBER` and
   `NETWORK`. An edit trims the two numbers like other single-token values.
+- MP4 reads and writes them as the iTunes TV atoms (`tvsh`, `sosn`, `tven`, `tves`, `tvsn`,
+  `tvnn`) and, in a keys store, under ffmpeg's `show`, `sort_show`, `episode_id`,
+  `episode_sort`, `season_number` and `network`. A number the integer atom cannot hold as
+  written is stored as text.
 - `WithNoReplace()`, a write option that makes `SaveAsFile` refuse an existing file with
   an error matching `fs.ErrExist`, and `WithLockWait(fn)`, called when an in-place save
   waits on another process's lock.

@@ -1,6 +1,7 @@
 package mp4
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 
@@ -24,6 +25,33 @@ func (it item) id() string { return string(it.name[:]) }
 // atom name.
 func (it item) mdta() bool { return it.key != "" }
 
+// metaStore is the tag store of one meta box: its atoms and the items of its ilst.
+type metaStore struct {
+	meta, ilst, keys, free *atomRef
+	handler                string
+	keyNames               []string
+	items                  []item
+}
+
+func (s *metaStore) clone() *metaStore {
+	if s == nil {
+		return nil
+	}
+	c := *s
+	c.meta, c.ilst, c.keys, c.free = cloneRef(s.meta), cloneRef(s.ilst), cloneRef(s.keys), cloneRef(s.free)
+	c.keyNames, c.items = slices.Clone(s.keyNames), cloneItems(s.items)
+	return &c
+}
+
+func cloneItems(items []item) []item {
+	out := make([]item, len(items))
+	for i, it := range items {
+		it.payload = slices.Clone(it.payload)
+		out[i] = it
+	}
+	return out
+}
+
 // doc is the MP4 native document: the top-level atom layout, references to the tag-path
 // atoms (moov / udta / meta / ilst) and an adjacent free padding atom, the decoded ilst
 // items, every chunk-offset table (for media-offset fixups when the metadata is
@@ -33,10 +61,17 @@ type doc struct {
 
 	moov *atomRef // the movie box read, the first (required for a tagged/writable file)
 	udta *atomRef // moov.udta, if present
-	meta *atomRef // moov.udta.meta, if present
-	ilst *atomRef // moov.udta.meta.ilst, if present
-	keys *atomRef // moov.udta.meta.keys, if present (an mdta-handler store)
-	free *atomRef // a free or skip padding atom adjacent to ilst inside meta, if present (reusable)
+	// The tag store read and written: moov.udta.meta's, else the one under moov.meta that Apple's
+	// recorders write (metaAtMoov). A meta with no ilst is one only under udta, where an ilst is
+	// created.
+	meta       *atomRef
+	ilst       *atomRef // its ilst, if present
+	keys       *atomRef // its keys, if present (an mdta-handler store)
+	free       *atomRef // a free or skip padding atom adjacent to ilst inside meta, if present (reusable)
+	metaAtMoov bool
+	// second is the store under moov.meta when moov.udta.meta holds one too. It shows in the
+	// families, fills the keys the first lacks, and follows every tag write.
+	second *metaStore
 	// chpl is the Nero chapter list read: the first chpl under moov.udta holding chapters, else
 	// the first. chplDups are the others, which a chapter edit removes.
 	chpl     *atomRef
@@ -55,7 +90,9 @@ type doc struct {
 	nextTrackIDOff int64  // absolute offset of mvhd's next_track_ID field (0 if unread)
 
 	items []item // decoded ilst children (nil when no ilst)
-	// metaHandler is moov.udta.meta's hdlr handler_type ("mdir" for iTunes, "mdta" for a
+	// read is how items are read, settled once at parse; nil in a document a result is built from.
+	read *reading
+	// metaHandler is the meta's hdlr handler_type ("mdir" for iTunes, "mdta" for a
 	// keys-indexed store, "" when there is no meta or no readable hdlr). keyNames is the
 	// decoded "keys" index, entry i naming ilst index i+1.
 	metaHandler string
@@ -69,6 +106,11 @@ type doc struct {
 	// locates sample auxiliary information (CENC) rather than a media chunk.
 	auxTables []offsetTable
 	mdats     [][2]int64 // mdat payload ranges (offset, length), in document order
+	// soundChunks holds the byte ranges [start, end) of every sound track's chunks, ascending and
+	// merged. They are the audio essence when sampleExtent is set: each sound track's sample
+	// tables were read and place a chunk in the file. Otherwise the mdats are (essenceMdats).
+	soundChunks  [][2]int64
+	sampleExtent bool
 	// chapMdats names, by ascending payload offset, the mdats the chapter track's samples fill
 	// end to end.
 	chapMdats []int64
@@ -117,6 +159,64 @@ type doc struct {
 
 func (d *doc) Format() core.Format { return core.FormatMP4 }
 
+// setStore makes s the store read and written.
+func (d *doc) setStore(s metaStore) {
+	d.meta, d.ilst, d.keys, d.free = s.meta, s.ilst, s.keys, s.free
+	d.metaHandler, d.keyNames, d.items = s.handler, s.keyNames, s.items
+	rd := readItems(d.items)
+	d.read = &rd
+}
+
+// reading returns how the items are read.
+func (d *doc) reading() reading {
+	if d.read != nil {
+		return *d.read
+	}
+	return readItems(d.items)
+}
+
+// secondItems returns the items of the store beside the one written, nil when there is none.
+func (d *doc) secondItems() []item {
+	if d.second == nil {
+		return nil
+	}
+	return d.second.items
+}
+
+// tagAncestors returns the atoms enclosing the ilst read, outermost first.
+func (d *doc) tagAncestors() []atomRef {
+	if d.metaAtMoov {
+		return []atomRef{*d.moov, *d.meta}
+	}
+	return []atomRef{*d.moov, *d.udta, *d.meta}
+}
+
+// chunkTable returns the chunk-offset table read from stbl. The tables lie in file order.
+func (d *doc) chunkTable(stbl node) (offsetTable, bool) {
+	i, _ := slices.BinarySearchFunc(d.offTables, stbl.offset, func(t offsetTable, off int64) int { return cmp.Compare(t.offset, off) })
+	if i < len(d.offTables) && d.offTables[i].offset < stbl.end() {
+		return d.offTables[i], true
+	}
+	return offsetTable{}, false
+}
+
+// ilstRegion returns the span a rebuilt ilst may fill: the ilst and the padding beside it.
+func (d *doc) ilstRegion() (start, end int64) {
+	start, end = d.ilst.offset, d.ilst.end()
+	if d.free != nil {
+		start, end = min(start, d.free.offset), max(end, d.free.end())
+	}
+	return start, end
+}
+
+// storePath names the meta read, for reports and the native view.
+func (d *doc) storePath() string {
+	if d.metaAtMoov {
+		return "moov.meta"
+	}
+	return "moov.udta.meta"
+}
+
 // refuseWrite reports why this document cannot be rewritten at all, or nil when it can.
 func (d *doc) refuseWrite() error {
 	switch {
@@ -163,11 +263,8 @@ func (d *doc) Clone() core.NativeDoc {
 	c.mvhd = cloneRef(d.mvhd)
 	c.chapters = core.CloneChapters(d.chapters)
 	c.udtaRaw = slices.Clone(d.udtaRaw)
-	c.items = make([]item, len(d.items))
-	for i, it := range d.items {
-		it.payload = slices.Clone(it.payload)
-		c.items[i] = it
-	}
+	c.items = cloneItems(d.items) // c.read stays the source's: it is never written, and reads the same
+	c.second = d.second.clone()
 	c.offTables = make([]offsetTable, len(d.offTables))
 	for i, t := range d.offTables {
 		t.entries = slices.Clone(t.entries)
@@ -179,6 +276,7 @@ func (d *doc) Clone() core.NativeDoc {
 		c.auxTables[i] = t
 	}
 	c.mdats = slices.Clone(d.mdats)
+	c.soundChunks = slices.Clone(d.soundChunks)
 	c.chapMdats = slices.Clone(d.chapMdats)
 	return &c
 }
@@ -262,18 +360,10 @@ func (d *doc) Describe() []core.NativeEntry {
 		}
 	}
 	if d.ilst != nil {
-		note := fmt.Sprintf("%d item%s", len(d.items), pluralS(len(d.items)))
-		if d.metaHandler != "" {
-			note += " (" + d.metaHandler + " handler)"
-		}
-		out = append(out, core.NativeEntry{Kind: "moov.udta.meta.ilst", Size: int(d.ilst.size), Note: note})
-		for _, it := range d.items {
-			rowNote := ""
-			if !owned(it) {
-				rowNote = "preserved"
-			}
-			out = append(out, core.NativeEntry{Kind: "  " + itemDisplay(it), Size: len(it.payload) + 8, Note: rowNote})
-		}
+		out = describeStore(out, d.storePath()+".ilst", d.ilst, d.metaHandler, d.items)
+	}
+	if d.second != nil {
+		out = describeStore(out, "moov.meta.ilst", d.second.ilst, d.second.handler, d.second.items)
 	}
 	if d.chpl != nil {
 		note := fmt.Sprintf("%d chapters (Nero, v%d)", d.chplCount, d.chplVersion)
@@ -286,6 +376,23 @@ func (d *doc) Describe() []core.NativeEntry {
 		out = append(out, core.NativeEntry{
 			Kind: "moov chapter track", Note: "QuickTime chapter text track",
 		})
+	}
+	return out
+}
+
+// describeStore lists one ilst and its items.
+func describeStore(out []core.NativeEntry, kind string, ilst *atomRef, handler string, items []item) []core.NativeEntry {
+	note := fmt.Sprintf("%d item%s", len(items), pluralS(len(items)))
+	if handler != "" {
+		note += " (" + handler + " handler)"
+	}
+	out = append(out, core.NativeEntry{Kind: kind, Size: int(ilst.size), Note: note})
+	for _, it := range items {
+		rowNote := ""
+		if !owned(it) {
+			rowNote = "preserved"
+		}
+		out = append(out, core.NativeEntry{Kind: "  " + itemDisplay(it), Size: len(it.payload) + 8, Note: rowNote})
 	}
 	return out
 }

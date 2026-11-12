@@ -165,7 +165,7 @@ A corrupt file (exit 4) outranks a mistyped path (exit 6).
 | Ogg FLAC (`.oga`) | read/write | Vorbis comments and chapters as above; cover art is a native FLAC `PICTURE` block, not a comment. |
 | MP3 | read/write | ID3v2 (`CHAP`/`CTOC`, `SYLT`); new tags are ID3v2.3. Trailing ID3v1, APEv2 and Lyrics3 as legacy. |
 | WAV / RF64 / BW64 | read/write | RIFF LIST/INFO plus embedded `id3 `; chunks preserved. RF64/BW64 form kept on save-back; `ds64` recomputed. |
-| MP4 / M4A / M4B / MOV | read/write | iTunes `ilst`, `mdta` keys (ffmpeg `+use_metadata_tags`), classic `moov.udta` text, cover art, Nero and QuickTime chapters. Fragmented MP4 (`moof`) is read-only; `moov` with `mvex` but no fragment writes normally. |
+| MP4 / M4A / M4B / MOV | read/write | iTunes `ilst`, `mdta` keys (ffmpeg `+use_metadata_tags`, and the `moov.meta` store Apple's recorders write), classic `moov.udta` text, cover art, Nero and QuickTime chapters. Fragmented MP4 (`moof`) is read-only; `moov` with `mvex` but no fragment writes normally. |
 | Matroska / WebM | read/write | Scoped SimpleTags, segment title, attachments, default-edition chapters. WebM cannot write cover attachments. |
 | AAC (ADTS) | read/write | Front ID3v2 (new tags ID3v2.4) plus ADTS frames. HE-AAC reports played rate, channels, and profile from frames when the header cannot. Trailing ID3v1, APEv2 and Lyrics3 as legacy. |
 | AIFF / AIFF-C | read/write | Native text chunks plus embedded `ID3 `; chunks preserved. |
@@ -190,7 +190,7 @@ Table below is generated from the same capability model as `waxlabel caps`.
 | AIFF | read full, write full · APIC (ID3 chunk) | read full, write full · ID3v2 CHAP/CTOC frames (ID3 chunk) | read full, write full · ID3v2 SYLT frame | description, language |
 | FLAC | read full, write full · FLAC PICTURE block | read full, write full · VorbisComment CHAPTERxxx | read full, write full · SYNCEDLYRICS comment (LRC) | none |
 | MP3 | read full, write full · APIC frame | read full, write full · ID3v2 CHAP/CTOC frames | read full, write full · ID3v2 SYLT frame | description, language |
-| MP4 | read full, write full · covr atom (JPEG/PNG/BMP) | read full, write full · Nero chpl and a QuickTime chapter text track | read none, write none | none |
+| MP4 | read full, write full · covr atom, or the artwork key of an mdta keys store (JPEG/PNG/BMP) | read full, write full · Nero chpl and a QuickTime chapter text track | read none, write none | none |
 | Matroska | read full, write full · AttachedFile (image attachment) | read full, write full · Chapters > EditionEntry > ChapterAtom (default edition) | read none, write none | language |
 | Monkey's Audio | read full, write full · APEv2 Cover Art item | read none, write none | read none, write none | none |
 | Musepack | read full, write full · APEv2 Cover Art item | read full, write none · SV8 chapter packets | read none, write none | none |

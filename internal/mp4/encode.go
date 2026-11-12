@@ -3,6 +3,8 @@ package mp4
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -70,6 +72,19 @@ func buildItems(edited tag.TagSet, covr []item, preserved []item, numericGenre b
 			if it, ok := boolItem("shwm", vals); ok {
 				out = append(out, it)
 			}
+		case tag.EpisodeNumber, tag.SeasonNumber:
+			if len(vals) == 0 {
+				continue
+			}
+			name := "tves"
+			if key == tag.SeasonNumber {
+				name = "tvsn"
+			}
+			it, ok := tvNumberItem(name, vals)
+			if !ok {
+				it = freeformItem(mapping.MP4KeyFreeform(key), vals)
+			}
+			out = append(out, it)
 		default:
 			if len(vals) == 0 {
 				continue // present-but-empty: nothing to store
@@ -90,6 +105,140 @@ func buildItems(edited tag.TagSet, covr []item, preserved []item, numericGenre b
 
 	out = append(out, covr...)
 	return dedupePreservedItems(out, preserved)
+}
+
+// conflicts is what a rebuild does about the keys that items of more than one identity hold.
+type conflicts struct {
+	// frozen holds the keys of those the edit leaves alone. They are not rebuilt: every item
+	// holding one is kept as it is, so the file's disagreement stays for the user to settle.
+	frozen map[tag.Key]bool
+	// settled records that the edit names such a key, whose values not read go: a change the
+	// canonical view cannot show. removed counts the items that go whole with them, and echoes
+	// those among them that only repeated the year of a date read.
+	settled bool
+	removed int
+	echoes  int
+	// elsewhere holds the keys read from the second store alone, which the store written leaves
+	// to it.
+	elsewhere map[tag.Key]bool
+	changed   map[tag.Key]bool // the keys the edit changes or names
+}
+
+// resolveConflicts settles each value an item holds without being read for it against the keys an
+// edit changes. A track or disc number and its total are settled together, as one item can hold
+// both.
+func resolveConflicts(rd reading, changed map[tag.Key]bool) conflicts {
+	c := conflicts{frozen: map[tag.Key]bool{}, changed: changed}
+	thawed := map[tag.Key]bool{}
+	for i := range rd.items {
+		for _, k := range rd.keys[i] {
+			if rd.read(i, k) {
+				continue
+			}
+			group, into := keyGroup(k), c.frozen
+			if slices.ContainsFunc(group, func(g tag.Key) bool { return changed[g] }) {
+				into, c.settled = thawed, true
+			}
+			for _, g := range group {
+				into[g] = true
+			}
+		}
+	}
+	for i := range rd.items {
+		if !rd.shadowed(i) || !slices.ContainsFunc(rd.keys[i], func(k tag.Key) bool { return thawed[k] }) {
+			continue
+		}
+		if slices.ContainsFunc(rd.results[i].contribs, func(c core.Contribution) bool { return !rd.echo(c) }) {
+			c.removed++
+		} else {
+			c.echoes++
+		}
+	}
+	return c
+}
+
+// keyGroup returns the keys one item can hold together with key.
+func keyGroup(key tag.Key) []tag.Key {
+	if num, ok := pairNumberKey(key); ok {
+		return []tag.Key{num, tag.TotalKey(num)}
+	}
+	return []tag.Key{key}
+}
+
+// ops names what the edit removes, for the report.
+func (c conflicts) ops() []string {
+	var ops []string
+	if c.removed > 0 {
+		ops = append(ops, fmt.Sprintf("%d conflicting ilst item%s removed", c.removed, pluralS(c.removed)))
+	}
+	if c.echoes > 0 {
+		ops = append(ops, fmt.Sprintf("%d year echo%s of an edited date removed", c.echoes, map[bool]string{true: "es"}[c.echoes > 1]))
+	}
+	return ops
+}
+
+// rebuilt returns the tags a rebuild renders: all but the frozen keys and those the second store
+// alone holds.
+func (c conflicts) rebuilt(ts tag.TagSet) tag.TagSet {
+	if len(c.frozen)+len(c.elsewhere) == 0 {
+		return ts
+	}
+	out := ts.Clone()
+	for k := range c.frozen {
+		out.Delete(k)
+	}
+	for k := range c.elsewhere {
+		out.Delete(k)
+	}
+	return out
+}
+
+// respelled counts the items read whose keys the edit leaves alone and whose atom the rebuild
+// did not write: their values moved to the atom of their key (a freeform DATE to the date atom).
+func (c conflicts) respelled(rd reading, out []item) int {
+	written := map[itemKey]bool{}
+	for _, it := range out {
+		written[itemIdentity(it)] = true
+	}
+	n := 0
+	for i := range rd.items {
+		if len(rd.keys[i]) == 0 || rd.shadowed(i) || written[rd.ids[i]] {
+			continue
+		}
+		touched := slices.ContainsFunc(rd.keys[i], func(k tag.Key) bool {
+			return slices.ContainsFunc(keyGroup(k), func(g tag.Key) bool { return c.changed[g] })
+		})
+		if !touched {
+			n++
+		}
+	}
+	return n
+}
+
+// reuseParsedItems puts the parsed item in place of each built one that says the same: the same
+// atom holding the same values. The file's own encoding of a value (a trkn with no total field,
+// an 8-byte disk, an implicit-typed text) then survives every edit that leaves the value alone.
+func reuseParsedItems(built []item, parsed reading) []item {
+	byID := map[itemKey][]int{}
+	for i, r := range parsed.results {
+		if r.owned && len(r.pics) == 0 {
+			byID[parsed.ids[i]] = append(byID[parsed.ids[i]], i)
+		}
+	}
+	for i, it := range built {
+		cands := byID[itemIdentity(it)]
+		if len(cands) == 0 {
+			continue
+		}
+		r := decodeItem(it)
+		for _, c := range cands {
+			if p := parsed.results[c]; r.owned && r.numericGenre == p.numericGenre && slices.Equal(r.contribs, p.contribs) {
+				built[i] = parsed.items[c]
+				break
+			}
+		}
+	}
+	return built
 }
 
 // dedupePreservedItems appends the preserved items (unknown atoms and foreign freeforms
@@ -152,20 +301,27 @@ func covrItems(items []item) []item {
 // the four-cc test alone would miss it and a tag-only edit would carry no cover forward.
 func isCoverItem(it item) bool {
 	if it.mdta() {
-		return it.key == mdtaCoverKey
+		return isMdtaCoverKey(it.key)
 	}
 	return it.name == atomName("covr")
 }
 
+// coverWrite is the cover art a rebuild writes: the parsed items as they are, or fresh ones
+// rendered from the edited pictures.
+type coverWrite struct {
+	items []item
+	fresh bool
+}
+
 // coverItemsToWrite resolves the covr ilst item(s) to emit past the fast path.
-func coverItemsToWrite(pics []core.Picture, parsed []item, picturesChanged bool) []item {
+func coverItemsToWrite(pics []core.Picture, parsed []item, picturesChanged bool) coverWrite {
 	if !picturesChanged {
-		return covrItems(parsed)
+		return coverWrite{items: covrItems(parsed)}
 	}
 	if len(pics) > 0 {
-		return []item{coverItem(pics)}
+		return coverWrite{items: []item{coverItem(pics)}, fresh: true}
 	}
-	return nil
+	return coverWrite{fresh: true}
 }
 
 // structuredSingleAtomKeys are the canonical keys buildItems routes to a structured
@@ -357,6 +513,20 @@ func intItem(name string, width int, vals []string) (item, bool) {
 		n >>= 8
 	}
 	return item{name: atomName(name), payload: renderData(typeSignedInt, v)}, true
+}
+
+// tvNumberItem builds a TV season or episode atom, a signed 32-bit integer, from one value written
+// as a plain decimal that fits. Any other value is the caller's to store as text: unlike the other
+// integer atoms' keys, these take free text elsewhere, and nothing is dropped for the atom's sake.
+func tvNumberItem(name string, vals []string) (item, bool) {
+	if len(vals) != 1 {
+		return item{}, false
+	}
+	n, err := strconv.ParseUint(vals[0], 10, 31)
+	if err != nil || strconv.FormatUint(n, 10) != vals[0] {
+		return item{}, false
+	}
+	return item{name: atomName(name), payload: renderData(typeSignedInt, binary.BigEndian.AppendUint32(nil, uint32(n)))}, true
 }
 
 // tmpoItem builds the iTunes "tmpo" BPM atom (a two-byte big-endian integer) from the
@@ -592,10 +762,10 @@ func uint16ValueDropped(s string) bool {
 var pairSlotKeys = []tag.Key{tag.TrackNumber, tag.TrackTotal, tag.DiscNumber, tag.DiscTotal}
 
 // restoreUnstorableSlots returns a copy of edited with any fixed-width slot whose edited
-// value is unstorable restored from base, plus whether any slot was restored.
-func restoreUnstorableSlots(base, edited tag.TagSet) (tag.TagSet, bool) {
+// value is unstorable restored from base, and the keys restored.
+func restoreUnstorableSlots(base, edited tag.TagSet) (tag.TagSet, map[tag.Key]bool) {
 	out := edited
-	restored := false
+	var restored map[tag.Key]bool
 	restore := func(key tag.Key, dropped func(string) bool) {
 		ev, _ := edited.First(key)
 		if !dropped(ev) {
@@ -605,11 +775,11 @@ func restoreUnstorableSlots(base, edited tag.TagSet) (tag.TagSet, bool) {
 		if !ok || bv == "" || dropped(bv) {
 			return // base has no storable value to restore for this slot
 		}
-		if !restored {
-			out = edited.Clone()
-			restored = true
+		if restored == nil {
+			out, restored = edited.Clone(), map[tag.Key]bool{}
 		}
 		out.Set(key, bv)
+		restored[key] = true
 	}
 	for _, key := range pairSlotKeys {
 		restore(key, uint16ValueDropped)
