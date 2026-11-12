@@ -31,13 +31,16 @@ func (it item) mdta() bool { return it.key != "" }
 type doc struct {
 	topLevel []atomRef // every top-level atom in order
 
-	moov *atomRef // the movie box (required for a tagged/writable file)
+	moov *atomRef // the movie box read, the first (required for a tagged/writable file)
 	udta *atomRef // moov.udta, if present
 	meta *atomRef // moov.udta.meta, if present
 	ilst *atomRef // moov.udta.meta.ilst, if present
 	keys *atomRef // moov.udta.meta.keys, if present (an mdta-handler store)
 	free *atomRef // a free or skip padding atom adjacent to ilst inside meta, if present (reusable)
-	chpl *atomRef // moov.udta.chpl Nero chapter list, if present
+	// chpl is the Nero chapter list read: the first chpl under moov.udta holding chapters, else
+	// the first. chplDups are the others, which a chapter edit removes.
+	chpl     *atomRef
+	chplDups []atomRef
 
 	// QuickTime chapter-write refs (the chapter text track lives in moov as a sibling trak
 	// referenced from the audio track's tref "chap").
@@ -62,7 +65,7 @@ type doc struct {
 	metaHandler string
 	keyNames    []string
 	// udtaTexts holds the classic QuickTime text atoms decoded from direct moov.udta
-	// children (a plain .mov's whole tag store).
+	// children (a plain .mov's whole tag store), one per name with its duplicates.
 	udtaTexts []udtaText
 	udtaKids  []atomRef
 	offTables []offsetTable // every stbl stco/co64 in moov, in document order
@@ -70,6 +73,9 @@ type doc struct {
 	// locates sample auxiliary information (CENC) rather than a media chunk.
 	auxTables []offsetTable
 	mdats     [][2]int64 // mdat payload ranges (offset, length), in document order
+	// chapMdats names, by ascending payload offset, the mdats the chapter track's samples fill
+	// end to end.
+	chapMdats []int64
 	// mdatTruncated records that an mdat atom's declared size overran EOF and was
 	// clamped (a truncated file). Set from the atom walk's own clamp, so a 64-bit mdat
 	// size that would overflow an offset+size computation never reaches one.
@@ -79,15 +85,24 @@ type doc struct {
 	// hasIloc records an iloc item-location box inside moov.udta.meta. Its absolute file
 	// offsets sit in the very region an ilst rewrite replaces, so a write is refused.
 	hasIloc bool
+	// mdatOpenEnded records a final mdat of declared size 0, running to the end of the file.
+	mdatOpenEnded bool
+	// moovUnsized records that the moov read reaches the end of the file by a declared size of
+	// 0 or a clamp.
+	moovUnsized bool
 
 	// udtaRaw is the verbatim moov.udta payload (nil when there is no udta). A
 	// chapter rewrite splices the new ilst/chpl byte ranges into it and copies
 	// every other udta byte unchanged, so unknown user-data siblings survive.
 	udtaRaw []byte
 
-	cfg        fmtCfg
-	track      core.AudioTrack
-	size       int64
+	cfg   fmtCfg
+	track core.AudioTrack
+	size  int64
+	// appendAt is where a new top-level atom goes: behind the last whole one, ahead of stray
+	// bytes and of a final atom, neither an mdat nor the moov read, that reaches the end of the
+	// file only by a declared size of 0 or a clamp and would take in anything written after it.
+	appendAt   int64
 	majorBrand string // ftyp major brand (e.g. "M4A ", "M4B "), for the native view
 
 	// Chapter model.
@@ -95,6 +110,9 @@ type doc struct {
 	chplVersion   uint8
 	chplCount     int // chapters in the chpl atom specifically (for the native view)
 	hasQTChapters bool
+	// legacyTitles names the code page the titles shown were read through when one of them was
+	// not UTF-8, and is empty otherwise.
+	legacyTitles string
 	// oversizedAtom names a final top-level atom whose declared size overran EOF and was
 	// clamped, which is also what bytes appended after the last atom look like. mdat and
 	// moov are excluded: they carry their own truncated-audio warnings.
@@ -132,13 +150,13 @@ func (d *doc) Clone() core.NativeDoc {
 	c.ilst = cloneRef(d.ilst)
 	c.free = cloneRef(d.free)
 	c.chpl = cloneRef(d.chpl)
+	c.chplDups = slices.Clone(d.chplDups)
 	c.keys = cloneRef(d.keys)
 	c.keyNames = slices.Clone(d.keyNames)
 	c.udtaKids = slices.Clone(d.udtaKids)
 	c.udtaTexts = make([]udtaText, len(d.udtaTexts))
 	for i, u := range d.udtaTexts {
-		u.entries = slices.Clone(u.entries)
-		c.udtaTexts[i] = u
+		c.udtaTexts[i] = u.clone()
 	}
 	c.audioTrak = cloneRef(d.audioTrak)
 	c.audioTref = cloneRef(d.audioTref)
@@ -163,6 +181,7 @@ func (d *doc) Clone() core.NativeDoc {
 		c.auxTables[i] = t
 	}
 	c.mdats = slices.Clone(d.mdats)
+	c.chapMdats = slices.Clone(d.chapMdats)
 	return &c
 }
 
@@ -186,11 +205,15 @@ func (d *doc) PaddingBytes() int64 {
 // Describe summarizes the native atom structure for the dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
 	out := make([]core.NativeEntry, 0, len(d.topLevel)+len(d.items)+2)
+	dups := d.duplicateOffsets()
 	for _, a := range d.topLevel {
 		note := "preserved"
 		switch a.id() {
 		case "moov":
 			note = "movie box"
+			if d.moov != nil && a.offset != d.moov.offset {
+				note = "duplicate"
+			}
 		case "mdat":
 			// The sample entry's four-cc, not d.track.Codec: the native view shows container
 			// structure, and an entry whose codec configuration names an object type would
@@ -225,6 +248,8 @@ func (d *doc) Describe() []core.NativeEntry {
 		for _, c := range d.udtaKids {
 			note := "preserved"
 			switch {
+			case dups[c.offset]:
+				note = "duplicate"
 			case c.id() == "meta":
 				note = "metadata"
 				if d.metaHandler != "" {
@@ -291,6 +316,27 @@ func itemDisplay(it item) string {
 		return it.key
 	}
 	return itemLabel(it.name)
+}
+
+// duplicateOffsets holds the offset of every udta child that duplicates the chpl or a text atom read.
+func (d *doc) duplicateOffsets() map[int64]bool {
+	offs := map[int64]bool{}
+	for _, dup := range d.chplDups {
+		offs[dup.offset] = true
+	}
+	for _, u := range d.udtaTexts {
+		for _, dup := range u.dups {
+			offs[dup.ref.offset] = true
+		}
+	}
+	return offs
+}
+
+// chapterMdat reports whether the mdat whose payload starts at off is one the chapter track's
+// samples fill.
+func (d *doc) chapterMdat(off int64) bool {
+	_, ok := slices.BinarySearch(d.chapMdats, off)
+	return ok
 }
 
 // udtaTextNamed returns the decoded udta text atom with this four-character name, or nil.

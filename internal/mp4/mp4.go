@@ -7,7 +7,7 @@
 // verbatim.
 //
 // Chapters: Nero chpl and QuickTime text track, projected together; an edit rewrites
-// both (chpl plus a new text track via tref "chap", samples in an end-of-file mdat).
+// both (chpl plus a new text track via tref "chap", samples in an mdat behind the last atom).
 //
 // Fragmented MP4 (top-level moof) is readable but ReadOnly; rewrite refused with
 // waxerr.ErrFragmented. mvex without fragments is progressive and writable. Segments

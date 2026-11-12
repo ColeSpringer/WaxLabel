@@ -273,6 +273,64 @@ func mp4SaioEntries(t *testing.T, data []byte) (offsets []uint64, width int) {
 	return offsets, width
 }
 
+// mp4Boxes lists the offset and name of each box tiling data[lo:hi].
+func mp4Boxes(data []byte, lo, hi int) (offs []int, names []string) {
+	for off := lo; off+8 <= hi; {
+		size := int(binary.BigEndian.Uint32(data[off:]))
+		if size < 8 || off+size > hi {
+			break
+		}
+		offs, names = append(offs, off), append(names, string(data[off+4:off+8]))
+		off += size
+	}
+	return offs, names
+}
+
+// mp4FindBox returns the offset and size of the first box named name among those tiling data[lo:hi].
+func mp4FindBox(t *testing.T, data []byte, lo, hi int, name string) (off, size int) {
+	t.Helper()
+	offs, names := mp4Boxes(data, lo, hi)
+	i := slices.Index(names, name)
+	if i < 0 {
+		t.Fatalf("no %s box among %q", name, names)
+	}
+	return offs[i], int(binary.BigEndian.Uint32(data[offs[i]:]))
+}
+
+// mp4UdtaKids names the children of moov.udta, in order.
+func mp4UdtaKids(t *testing.T, data []byte) []string {
+	t.Helper()
+	moov, moovLen := mp4FindBox(t, data, 0, len(data), "moov")
+	udta, udtaLen := mp4FindBox(t, data, moov+8, moov+moovLen, "udta")
+	_, names := mp4Boxes(data, udta+8, udta+udtaLen)
+	return names
+}
+
+// nativeDuplicates counts the atoms the native view marks as duplicates.
+func nativeDuplicates(doc *wl.Document) int {
+	n := 0
+	for _, e := range doc.Native().Describe() {
+		if e.Note == "duplicate" {
+			n++
+		}
+	}
+	return n
+}
+
+// mp4AppendToUdta appends atom to the moov.udta of a file that udta ends, growing both boxes.
+func mp4AppendToUdta(t *testing.T, data, atom []byte) []byte {
+	t.Helper()
+	moov, moovLen := mp4FindBox(t, data, 0, len(data), "moov")
+	udta, udtaLen := mp4FindBox(t, data, moov+8, moov+moovLen, "udta")
+	if udta+udtaLen != len(data) {
+		t.Fatal("udta does not end the file")
+	}
+	out := slices.Concat(data, atom)
+	binary.BigEndian.PutUint32(out[moov:], uint32(moovLen+len(atom)))
+	binary.BigEndian.PutUint32(out[udta:], uint32(udtaLen+len(atom)))
+	return out
+}
+
 // mp4Index returns the mdat payload offset and the stco's first entry value, the
 // two numbers an offset fixup must keep equal.
 func mp4Index(t *testing.T, data []byte) (mdatPayload int64, stcoEntry int64) {

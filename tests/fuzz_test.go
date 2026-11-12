@@ -106,6 +106,39 @@ func FuzzParse(f *testing.F) {
 		testfile.MP4Atom("pgap", testfile.MP4Data(21, []byte{0, 1})),          // 2-byte boolean
 		testfile.MP4Atom("tmpo", testfile.MP4Data(21, []byte{0, 0, 0, 0, 1})), // 5-byte integer
 	))
+	// MP4 shapes read first-wins or sized on write: duplicate chpl and udta text atoms, a title in
+	// Mac OS Roman, two "chap" atoms, two files joined, a final mdat open-ended or cut short, and
+	// bytes after the last atom.
+	staleChpl := mp4Chpl(1, []time.Duration{0, 45 * time.Second}, []string{"Old", "Caf\x8e"})
+	f.Add(testfile.MP4AssembleUdta(mp4Chpl(1, nil, nil), mp4Chpl(1, []time.Duration{0, time.Second}, []string{"One", "Two"}), staleChpl))
+	f.Add(testfile.MP4QTFile([]int{0, 3000}, []string{"Caf\x8e", "B"}, staleChpl, staleChpl))
+	f.Add(testfile.MP4AssembleUdta(mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "")), mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "A")),
+		mp4UdtaText("\xa9nam", mp4QTTextEntry(langDeu, "B"), mp4QTTextEntry(langEng, "C"))))
+	f.Add(mp4TwoChapAtoms())
+	tagged := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
+	f.Add(slices.Concat(tagged, tagged))
+	f.Add(slices.Concat(tagged, testfile.ID3v1("t", "", "", "", "", 255)))
+	f.Add(slices.Concat(tagged, []byte{0, 0, 0, 5}))
+	// Chapter samples leading an mdat whose audio no table names, and a second moov cut short.
+	astray := mp4QTFileSharedMdat([]int{0, 5000}, []string{"A", "B"})
+	binary.BigEndian.PutUint32(astray[bytes.Index(astray, []byte("stco"))+12:], 4)
+	f.Add(astray)
+	moovLast := slices.Concat(testfile.MP4Ftyp(), testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 120)),
+		testfile.MP4Atom("moov", mp4AudioTrakTkhd(1, uint32(len(testfile.MP4Ftyp())+8))))
+	cutMoov := slices.Concat(moovLast, moovLast)
+	binary.BigEndian.PutUint32(cutMoov[bytes.LastIndex(cutMoov, []byte("moov"))-4:], uint32(len(moovLast)))
+	f.Add(cutMoov)
+	// Titles ending at a NUL or in UTF-16, and a "chap" reference naming the audio track itself.
+	f.Add(testfile.MP4QTFile([]int{0, 3000}, []string{"Intro\x00", "\xfe\xff\x00I\x00n"},
+		mp4Chpl(1, []time.Duration{0, time.Second}, []string{"Caf\xe9\x00", "x"})))
+	audioAt := len(testfile.MP4Ftyp()) + len(testfile.MP4Atom("moov", testfile.MP4AudioTrakChap(1, 0))) + 8
+	f.Add(slices.Concat(testfile.MP4Ftyp(), testfile.MP4Atom("moov", testfile.MP4AudioTrakChap(1, uint32(audioAt))),
+		testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 120))))
+	for _, declared := range []uint32{0, 1 << 20} {
+		open := slices.Clone(tagged)
+		binary.BigEndian.PutUint32(open[bytes.LastIndex(open, []byte("mdat"))-4:], declared)
+		f.Add(open)
+	}
 	if b, err := os.ReadFile(notagsMP3); err == nil {
 		f.Add(append(testfile.ID3v2(3, testfile.TextFrame(3, "MVIN", "ab/cd/12")), b...)) // garbage MVIN pair: projects verbatim, round-trips, no panic
 	}

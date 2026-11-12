@@ -118,7 +118,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if chaptersChanged {
 		// An encoding rewrite forces the ilst rebuild too: without needIlst, buildChapterUdta
 		// splices the source ilst back in verbatim and drops the request.
-		pl, err := planChapters(d, edited, tagsChanged || picturesChanged || encodingRewrite, picturesChanged, opts, report)
+		pl, err := planChapters(d, base, edited, tagsChanged || picturesChanged || encodingRewrite, picturesChanged, opts, report)
 		if err != nil || pl == nil {
 			return pl, err
 		}
@@ -528,6 +528,34 @@ func patchTables(delta, insertion int64, skip func(offsetTable) bool, groups ...
 	return out, nil
 }
 
+// shiftedTableCount counts the tables patchTables moves an entry of: those the skip predicate
+// keeps that hold an entry past the insertion point.
+func shiftedTableCount(insertion int64, skip func(offsetTable) bool, groups ...[]offsetTable) int {
+	n := 0
+	for _, g := range groups {
+		for _, t := range g {
+			if skip != nil && skip(t) {
+				continue
+			}
+			if slices.ContainsFunc(t.entries, func(e uint64) bool { return e > uint64(insertion) }) {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// appendShiftOp adds the report line for the offset tables a resize by delta moves an entry of.
+func appendShiftOp(ops []string, d *doc, delta, insertion int64, skip func(offsetTable) bool) []string {
+	if delta == 0 {
+		return ops
+	}
+	if n := shiftedTableCount(insertion, skip, d.offTables, d.auxTables); n > 0 {
+		ops = append(ops, fmt.Sprintf("%d offset table shift(s)", n))
+	}
+	return ops
+}
+
 // offsetPatch re-renders an offset table (a chunk-offset stco/co64, or a
 // sample-auxiliary saio) with every entry past the insertion point shifted by delta,
 // so the media resolves to its new position after the metadata grew.
@@ -619,8 +647,8 @@ func operations(d *doc, lay layout, delta int64, pics int) []string {
 		ops = append(ops, "ilst rewrite in place (media not moved)")
 	default:
 		ops = append(ops, fmt.Sprintf("ilst rewrite (+%d bytes metadata)", delta))
-		ops = append(ops, fmt.Sprintf("%d offset table shift(s)", len(d.offTables)+len(d.auxTables)))
 	}
+	ops = appendShiftOp(ops, d, delta, lay.regionStart, nil)
 	if pics > 0 {
 		ops = append(ops, fmt.Sprintf("pictures: %d", pics))
 	}

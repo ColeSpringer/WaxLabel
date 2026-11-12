@@ -162,9 +162,9 @@ func mp4SaioAheadOfAudio(auxLead int, withSaio bool) []byte {
 }
 
 func TestMP4SaioDoesNotAffectEssenceDigest(t *testing.T) {
-	// Why auxTables is a separate slice: nonChapterTables and firstNonChapterChunk treat every
-	// offTables entry as a chunk locating media, so a merged saio ahead of the first audio chunk
-	// would widen the essence extent.
+	// Why auxTables is a separate slice: the essence walk treats every offTables entry as a
+	// chunk locating media, so a merged saio ahead of the first audio chunk would widen the
+	// essence extent.
 	const auxLead = 32
 	withSaio := essenceOf(t, mp4SaioAheadOfAudio(auxLead, true))
 	without := essenceOf(t, mp4SaioAheadOfAudio(auxLead, false))

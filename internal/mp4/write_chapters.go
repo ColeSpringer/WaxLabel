@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/colespringer/waxlabel/internal/bits"
@@ -14,7 +15,7 @@ import (
 const maxChplChapters = 255
 
 // planChapters computes the rewrite when the chapter list changed.
-func planChapters(d *doc, edited *core.Media, needIlst, picturesChanged bool, opts core.WriteOptions, report core.WriteReport) (*core.WritePlan, error) {
+func planChapters(d *doc, base, edited *core.Media, needIlst, picturesChanged bool, opts core.WriteOptions, report core.WriteReport) (*core.WritePlan, error) {
 	if d.udta != nil && d.udtaRaw == nil {
 		return nil, fmt.Errorf("%w: MP4 udta bytes were not captured for a chapter rewrite", waxerr.ErrInvalidData)
 	}
@@ -25,11 +26,11 @@ func planChapters(d *doc, edited *core.Media, needIlst, picturesChanged bool, op
 	if d.audioTrak != nil && d.audioMdiaOff > 0 {
 		writing := len(edited.Chapters) > 0
 		if d.chapTrak != nil || (writing && d.nextTrackID > 0) || (!writing && d.audioHasChap) {
-			return planChaptersQT(d, edited, needIlst, picturesChanged, opts, report)
+			return planChaptersQT(d, base, edited, needIlst, picturesChanged, opts, report)
 		}
 	}
 
-	newItems, reg, err := buildChapterUdta(d, edited, needIlst, picturesChanged, opts)
+	newItems, reg, textDups, err := buildChapterUdta(d, edited, needIlst, picturesChanged, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +63,7 @@ func planChapters(d *doc, edited *core.Media, needIlst, picturesChanged bool, op
 	report.BytesAfter = total
 	report.PaddingAfter = reg.freeContent
 	report.Warnings = paddingClampWarning(report.Warnings, reg.paddingClamped)
-	report.Operations = chapterOps(d, edited, needIlst, delta)
+	report.Operations = chapterOps(d, edited, needIlst, delta, reg.regionStart)
 	if n := truncatedTitleCount(edited.Chapters); n > 0 {
 		report.Warnings = core.Warn(report.Warnings, core.WarnChapterTitleTruncated,
 			fmt.Sprintf("%d chapter title(s) trimmed to %d bytes (the Nero chpl length prefix is one byte)", n, titleByteMax))
@@ -76,13 +77,46 @@ func planChapters(d *doc, edited *core.Media, needIlst, picturesChanged bool, op
 		resultItems = newItems
 	}
 	result := buildChapterResult(edited, d, resultItems, reg, delta)
+	report.Warnings = droppedDupWarnings(report.Warnings, d, base, result, textDups, true)
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
+}
+
+// droppedDupWarnings reports what the duplicates a write removes hold that the file holds nowhere
+// else: the text atoms dropped with the atom of their name, and on a chapter edit the chpl atoms.
+func droppedDupWarnings(ws []core.Warning, d *doc, base, result *core.Media, texts []core.DuplicateContent, chapterEdit bool) []core.Warning {
+	ws = core.AppendDuplicateBlockDropped(ws, "moov.udta text atom", base.Tags, result.Tags, texts)
+	if !chapterEdit {
+		return ws
+	}
+	held := func(list []core.Chapter, ch core.Chapter) bool {
+		return slices.ContainsFunc(list, func(o core.Chapter) bool { return o.Start == ch.Start && o.Title == ch.Title })
+	}
+	var lost core.DuplicateContent
+	unread := int64(0)
+	for _, dup := range d.chplDups {
+		// A chpl is a udta child, so its payload lies in the captured udta bytes.
+		ups := d.udta.payloadOff()
+		_, chapters, ok := parseChpl(d.udtaRaw[dup.payloadOff()-ups:dup.end()-ups], &titleReader{page: &windows1252})
+		if !ok {
+			unread++
+		}
+		for _, ch := range chapters {
+			if !held(base.Chapters, ch) && !held(result.Chapters, ch) {
+				lost.Chapters++
+			}
+		}
+	}
+	if unread > 0 {
+		lost.Other = []core.ContentCount{{Kind: "unreadable chpl atom(s)", N: unread}}
+	}
+	return core.AppendDuplicateBlockDropped(ws, "chpl atom", base.Tags, result.Tags, []core.DuplicateContent{lost})
 }
 
 // buildChapterUdta renders the new ilst (when tags or pictures changed) and the udta
 // region (the chpl, and the ilst spliced in) that both chapter-write paths, the chpl-only
-// fallback and the QuickTime path, start from.
-func buildChapterUdta(d *doc, edited *core.Media, needIlst, picturesChanged bool, opts core.WriteOptions) ([]item, udtaRegion, error) {
+// fallback and the QuickTime path, start from, with what the duplicate text atoms the region
+// drops hold.
+func buildChapterUdta(d *doc, edited *core.Media, needIlst, picturesChanged bool, opts core.WriteOptions) ([]item, udtaRegion, []core.DuplicateContent, error) {
 	var newItems []item
 	var newIlst []byte
 	var qw qtMetaWrite
@@ -94,7 +128,7 @@ func buildChapterUdta(d *doc, edited *core.Media, needIlst, picturesChanged bool
 		var newKeys []string
 		newItems, newKeys = buildIlstItems(d, edited.Tags, covr, numericGenre)
 		if err := checkBuiltItems(newItems, d.items, opts.Limits.MaxAllocBytes); err != nil {
-			return nil, udtaRegion{}, err
+			return nil, udtaRegion{}, nil, err
 		}
 		var payload []byte
 		for _, it := range newItems {
@@ -106,14 +140,14 @@ func buildChapterUdta(d *doc, edited *core.Media, needIlst, picturesChanged bool
 		// index past the table; udta-level text atoms are kept in sync with the ilst.
 		var err error
 		if qw, err = planQTMeta(d, edited, newKeys, false); err != nil {
-			return nil, udtaRegion{}, err
+			return nil, udtaRegion{}, nil, err
 		}
 	}
 	reg, err := buildUdtaRegion(d, udtaWrite{
 		ilst: newIlst, needIlst: needIlst, chapters: edited.Chapters, chapterEdit: true,
 		reps: qw.reps, appends: qw.appends, metaDelta: qw.metaDelta,
 	}, opts)
-	return newItems, reg, err
+	return newItems, reg, qw.textDups, err
 }
 
 // udtaRegion is the resolved placement of the rewritten user-data box: the source
@@ -216,6 +250,9 @@ func buildUdtaRegion(d *doc, w udtaWrite, opts core.WriteOptions) (udtaRegion, e
 			reps = append(reps, byteRep{start: d.chpl.offset - ups, oldLen: d.chpl.size})
 		case needChpl: // no existing chpl: append a new one
 			appends = append(appends, renderChpl(d.chplVersion, chapters)...)
+		}
+		for _, dup := range d.chplDups {
+			reps = append(reps, byteRep{start: dup.offset - ups, oldLen: dup.size})
 		}
 	}
 
@@ -334,7 +371,7 @@ func truncatedTitleCount(chapters []core.Chapter) int {
 }
 
 // chapterOps describes the chapter rewrite for the report.
-func chapterOps(d *doc, edited *core.Media, needIlst bool, delta int64) []string {
+func chapterOps(d *doc, edited *core.Media, needIlst bool, delta, insertion int64) []string {
 	var ops []string
 	switch {
 	case len(edited.Chapters) == 0:
@@ -347,9 +384,7 @@ func chapterOps(d *doc, edited *core.Media, needIlst bool, delta int64) []string
 	if needIlst {
 		ops = append(ops, "ilst rewrite")
 	}
-	if delta != 0 {
-		ops = append(ops, fmt.Sprintf("%d offset table shift(s)", len(d.offTables)+len(d.auxTables)))
-	}
+	ops = appendShiftOp(ops, d, delta, insertion, nil)
 	if len(edited.Pictures) > 0 {
 		ops = append(ops, fmt.Sprintf("pictures: %d", len(edited.Pictures)))
 	}
@@ -389,7 +424,7 @@ func udtaTextsIn(reg udtaRegion) []udtaText {
 			texts = append(texts, u)
 		}
 	}
-	return texts
+	return foldUdtaTextDups(texts)
 }
 
 // chplRoundTrip simulates the chpl encode->decode round trip (a start rounded to the

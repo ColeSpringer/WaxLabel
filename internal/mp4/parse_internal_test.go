@@ -319,10 +319,11 @@ func TestEssenceMdatsTrimsFrontChapters(t *testing.T) {
 	audioTable := func(entries ...uint64) offsetTable { return offsetTable{offset: 400, entries: entries} }
 
 	for _, c := range []struct {
-		name   string
-		mdats  [][2]int64
-		tables []offsetTable
-		want   [][2]int64
+		name        string
+		mdats       [][2]int64
+		tables      []offsetTable
+		chapterOnly []int64
+		want        [][2]int64
 	}{
 		{
 			// Shared mdat [1000,1500): chapter text at the front (1000), audio after (1100).
@@ -359,9 +360,24 @@ func TestEssenceMdatsTrimsFrontChapters(t *testing.T) {
 			tables: []offsetTable{chapTable(1000)},
 			want:   [][2]int64{{1000, 1500}},
 		},
+		{
+			// The audio table points at no mdat: both count whole but the one chapter samples fill.
+			name:        "no audio chunk in any mdat drops the chapter-only mdat",
+			mdats:       [][2]int64{{1000, 500}, {2000, 200}},
+			tables:      []offsetTable{audioTable(4), chapTable(2000)},
+			chapterOnly: []int64{2000},
+			want:        [][2]int64{{1000, 1500}},
+		},
+		{
+			name:        "a chapter-only mdat an audio chunk lands in stays",
+			mdats:       [][2]int64{{1000, 500}, {2000, 200}},
+			tables:      []offsetTable{audioTable(2100), chapTable(2000)},
+			chapterOnly: []int64{2000},
+			want:        [][2]int64{{2100, 2200}},
+		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			d := &doc{chapTrak: chapTrak, mdats: c.mdats, offTables: c.tables}
+			d := &doc{chapTrak: chapTrak, mdats: c.mdats, offTables: c.tables, chapMdats: c.chapterOnly}
 			got := essenceMdats(d)
 			if len(got) != len(c.want) {
 				t.Fatalf("essenceMdats = %v, want %v", got, c.want)

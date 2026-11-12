@@ -2,6 +2,7 @@ package waxlabel_test
 
 import (
 	"bytes"
+	"encoding/binary"
 	"slices"
 	"testing"
 	"time"
@@ -103,5 +104,59 @@ func TestMP4ChapterEditKeepsForeignTrackMdat(t *testing.T) {
 	// The new chapters still round-trip, proving the edit succeeded (not a silent skip).
 	if chs := mustParseBytes(t, out).Chapters(); len(chs) != 2 || chs[0].Title != "X" {
 		t.Errorf("chapters after edit = %+v, want [X Y]", chs)
+	}
+}
+
+// A trailing mdat that opens with the chapter samples and holds more is not the chapter track's
+// to remove, whether or not a table says what the rest is.
+func TestMP4ChapterEditKeepsMdatHoldingMoreThanChapters(t *testing.T) {
+	// The audio table points at no mdat.
+	astray := mp4QTFileSharedMdat([]int{0, 5000}, []string{"A", "B"})
+	binary.BigEndian.PutUint32(astray[bytes.Index(astray, []byte("stco"))+12:], 4)
+	// The second track's table points at the first track's audio, so none names the bytes behind
+	// the chapter samples.
+	unnamed := mp4QTFileForeignTrackMdat([]int{0, 5000}, []string{"A", "B"})
+	first := bytes.Index(unnamed, []byte("stco"))
+	second := first + 4 + bytes.Index(unnamed[first+4:], []byte("stco"))
+	copy(unnamed[second+12:second+16], unnamed[first+12:first+16])
+	// Two chunks of one 4-byte sample at one offset: their sizes add up to an 8-byte mdat of
+	// which they cover half.
+	overlapping := func(audioAt, textAt int) []byte {
+		table := func(name string, body ...[]byte) []byte {
+			return testfile.MP4Atom(name, slices.Concat(append([][]byte{{0, 0, 0, 0}}, body...)...))
+		}
+		stbl := testfile.MP4Atom("stbl", slices.Concat(
+			table("stts", testfile.BE32(1), testfile.BE32(2), testfile.BE32(1000)),
+			table("stsc", testfile.BE32(1), testfile.BE32(1), testfile.BE32(1), testfile.BE32(1)),
+			table("stsz", testfile.BE32(4), testfile.BE32(2)),
+			table("stco", testfile.BE32(2), testfile.BE32(textAt), testfile.BE32(textAt))))
+		mdia := testfile.MP4Atom("mdia", slices.Concat(
+			testfile.MP4Atom("hdlr", slices.Concat(make([]byte, 8), []byte("text"), make([]byte, 12))),
+			table("mdhd", make([]byte, 8), testfile.BE32(1000), testfile.BE32(0)), testfile.MP4Atom("minf", stbl)))
+		text := testfile.MP4Atom("trak", slices.Concat(table("tkhd", make([]byte, 8), testfile.BE32(2), make([]byte, 4)), mdia))
+		return slices.Concat(testfile.MP4Ftyp(), testfile.MP4Atom("moov", slices.Concat(testfile.MP4AudioTrakChap(2, uint32(audioAt)), text)),
+			testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 120)), testfile.MP4Atom("mdat", []byte("\x00\x02AB\xEE\xEE\xEE\xEE")))
+	}
+	audioAt := bytes.Index(overlapping(0, 0), []byte("mdat")) + 4
+	for name, c := range map[string]struct{ data, rest []byte }{
+		"audio table astray":          {astray, bytes.Repeat([]byte{0xA7}, 120)},
+		"bytes no table names":        {unnamed, bytes.Repeat([]byte{0xBB}, 80)},
+		"overlapping chapter samples": {overlapping(audioAt, audioAt+120+8), bytes.Repeat([]byte{0xEE}, 4)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			essence := essenceOf(t, c.data)
+			out := c.data
+			for _, titles := range [][]string{{"X", "Y"}, nil} {
+				plan, err := mustParseBytes(t, out).Edit().SetChapters(chaptersFromTitles(titles...)...).Prepare(wl.WithVerifyEssence())
+				if err != nil {
+					t.Fatalf("chapters %q: %v", titles, err)
+				}
+				out = applyToBytes(t, out, plan)
+				if re := mustParseBytes(t, out); len(re.Chapters()) != len(titles) || !bytes.Contains(out, c.rest) || !essenceOf(t, out).Equal(essence) {
+					t.Errorf("chapters %q: %d read back, rest kept %v, digest equal %v",
+						titles, len(re.Chapters()), bytes.Contains(out, c.rest), essenceOf(t, out).Equal(essence))
+				}
+			}
+		})
 	}
 }

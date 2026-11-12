@@ -155,18 +155,6 @@ func TestMP4QTTimescaleZeroIgnored(t *testing.T) {
 	}
 }
 
-func TestMP4ChplInvalidUTF8TitleEmptied(t *testing.T) {
-	// An invalid-UTF-8 chpl title decodes to empty (matching the QuickTime path),
-	// not raw bytes a JSON dump would mangle.
-	bad := string([]byte{0xff, 0xfe, 0x41})
-	chpl := mp4Chpl(1, []time.Duration{0, 5 * time.Second}, []string{bad, "Good"})
-	data := testfile.MP4AssembleUdta(testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T"))), chpl)
-	chs := mustParseBytes(t, data).Chapters()
-	if len(chs) != 2 || chs[0].Title != "" || chs[1].Title != "Good" {
-		t.Errorf("chapters = %+v, want [{Title:\"\"}, {Title:\"Good\"}]", chs)
-	}
-}
-
 // equalChapterLists compares two chapter slices field-by-field.
 func equalChapterLists(a, b []wl.Chapter) bool {
 	if len(a) != len(b) {

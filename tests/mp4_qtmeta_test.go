@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -563,5 +565,148 @@ func TestMdtaForeignNamesFoldToCustomKeys(t *testing.T) {
 	}
 	if v, _ := mustParseBytes(t, out).Get("CUSTOM_KEY"); !slices.Equal(v, []string{"v2"}) {
 		t.Errorf("CUSTOM_KEY after edit = %v", v)
+	}
+}
+
+// A chapter write leaves the classic udta text atoms alone, so its plan lists no tag as removed
+// and an edit of the returned Document changes the tag where it is.
+func TestMP4UdtaTextsSurviveChapterWriteResult(t *testing.T) {
+	cases := []struct {
+		name string
+		data []byte
+		key  tag.Key
+	}{
+		{"synthetic", testfile.MP4AssembleUdta(mp4UdtaText("\xa9nam", mp4QTTextEntry(0, "T"))), tag.Title},
+		{"mp3.mov", readFixture(t, "../testdata/mp3.mov"), tag.Encoder},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "in.mov")
+			if err := os.WriteFile(path, tc.data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			doc := mustParseFile(t, path)
+			plan, err := doc.Edit().SetChapters(wl.Chapter{Title: "Intro"}).Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range plan.Changes() {
+				if c.Kind == tag.ChangeRemoved {
+					t.Errorf("the plan lists %s as removed", c.Key)
+				}
+			}
+			ret, _, err := plan.Execute(context.Background(), wl.SaveBack())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if re := mustParseFile(t, path); !ret.Tags().Equal(re.Tags()) || !re.Tags().Equal(doc.Tags()) {
+				t.Errorf("tags: returned %v, reparsed %v, source %v", ret.Tags(), re.Tags(), doc.Tags())
+			}
+			next, err := ret.Edit().Set(tc.key, "Next").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ch := next.Changes(); len(ch) != 1 || ch[0].Key != tc.key || ch[0].Kind != tag.ChangeChanged {
+				t.Errorf("changes = %+v, want %s changed", ch, tc.key)
+			}
+		})
+	}
+}
+
+// A tag edit that follows a chapter write on a keys-indexed file still writes to that store.
+func TestMP4MdtaStoreSurvivesChapterThenTagEdit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "in.m4a")
+	if err := os.WriteFile(path, mp4MdtaFile([]string{"title"}, []string{"Before"}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	plan, err := mustParseFile(t, path).Edit().SetChapters(wl.Chapter{Title: "Intro"}).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ret, _, err := plan.Execute(ctx, wl.SaveBack())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan, err = ret.Edit().Set(tag.Title, "After").Set(tag.Album, "Fresh").Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := plan.Execute(ctx, wl.SaveBack()); err != nil {
+		t.Fatal(err)
+	}
+	out := readFixture(t, path)
+	if bytes.Contains(out, []byte("\xa9nam")) || bytes.Contains(out, []byte("mdirappl")) {
+		t.Error("the tag edit wrote iTunes atoms into the keys-indexed store")
+	}
+	re := mustParseBytes(t, out)
+	if v, _ := re.Get(tag.Album); re.Fields().Title != "After" || !slices.Equal(v, []string{"Fresh"}) || len(re.Chapters()) != 1 {
+		t.Errorf("title %q, album %v, %d chapter(s)", re.Fields().Title, v, len(re.Chapters()))
+	}
+}
+
+// Of several udta text atoms with one name the first holding a value is read. An edit of another
+// key keeps them all, and an edit of theirs leaves one, reporting the value only a removed
+// duplicate held.
+func TestMP4DuplicateUdtaTextFirstWins(t *testing.T) {
+	nam := func(text string) []byte { return mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, text)) }
+	art := mp4UdtaText("\xa9ART", mp4QTTextEntry(langUnd, "Artist"))
+	cases := []struct {
+		name  string
+		data  []byte
+		lossy bool // a duplicate holds a value the file holds nowhere else
+	}{
+		{"second value", testfile.MP4AssembleUdta(nam("First"), art, nam("Second")), true},
+		{"same value", testfile.MP4AssembleUdta(nam("First"), art, nam("First")), false},
+		{"empty first", testfile.MP4AssembleUdta(nam(""), art, nam("First")), false},
+		{"beside an ilst", testfile.MP4AssembleUdta(nam("First"), nam("Second"), art,
+			testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "First")))), true},
+	}
+	namCount := func(data []byte) int {
+		n := 0
+		for _, k := range mp4UdtaKids(t, data) {
+			if k == "\xa9nam" {
+				n++
+			}
+		}
+		return n
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := mustParseBytes(t, tc.data)
+			if v, _ := doc.Get(tag.Title); !hasWarning(doc, wl.WarnDuplicateTagBlock) || !slices.Equal(v, []string{"First"}) || nativeDuplicates(doc) != 1 {
+				t.Fatalf("read: warnings %v, TITLE %q, %d marked duplicate; want duplicate-tag-block, First and 1",
+					warningCodes(doc), v, nativeDuplicates(doc))
+			}
+
+			plan, err := doc.Edit().Set(tag.Artist, "Unrelated").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := applyToBytes(t, tc.data, plan)
+			if v, _ := mustParseBytes(t, out).Get(tag.Title); namCount(out) != 2 || !slices.Equal(v, []string{"First"}) || planHasWarning(plan, wl.WarnDuplicateTagBlockDropped) {
+				t.Errorf("unrelated edit: %d \\xa9nam atom(s), TITLE %q, report %+v", namCount(out), v, plan.Report().Warnings)
+			}
+
+			if plan, err = doc.Edit().Set(tag.Title, "Next").Prepare(); err != nil {
+				t.Fatal(err)
+			}
+			out = applyToBytes(t, tc.data, plan)
+			re := mustParseBytes(t, out)
+			if v, _ := re.Get(tag.Title); namCount(out) != 1 || !slices.Equal(v, []string{"Next"}) || hasWarning(re, wl.WarnDuplicateTagBlock) {
+				t.Errorf("set: %d \\xa9nam atom(s), TITLE %q, warnings %v", namCount(out), v, warningCodes(re))
+			}
+			w, dropped := warningFor(plan, wl.WarnDuplicateTagBlockDropped)
+			if dropped != tc.lossy || dropped && !slices.Equal(w.Keys, []tag.Key{tag.Title}) {
+				t.Errorf("set: duplicate-tag-block-dropped = %v keyed %v, want %v keyed TITLE", dropped, w.Keys, tc.lossy)
+			}
+
+			if plan, err = doc.Edit().Clear(tag.Title).Prepare(); err != nil {
+				t.Fatal(err)
+			}
+			out = applyToBytes(t, tc.data, plan)
+			if re := mustParseBytes(t, out); namCount(out) != 0 || re.Tags().Has(tag.Title) {
+				t.Errorf("clear: %d \\xa9nam atom(s), tags %v", namCount(out), re.Tags())
+			}
+		})
 	}
 }

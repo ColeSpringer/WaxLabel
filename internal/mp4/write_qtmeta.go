@@ -144,44 +144,26 @@ func udtaCanHoldAll(texts []udtaText, tags tag.TagSet) bool {
 // value the edit changed is rewritten, one whose key the edit no longer carries is
 // deleted, and one already holding the canonical value is left alone so an unrelated
 // edit does not rewrite the whole user-data box.
-func planUdtaTexts(d *doc, tags tag.TagSet, create bool, ups int64) ([]byteRep, []byte) {
-	var reps []byteRep
-	var appends []byte
+func planUdtaTexts(d *doc, tags tag.TagSet, create bool, ups int64) (reps []byteRep, appends []byte, dups []core.DuplicateContent) {
 	held := map[tag.Key]bool{}
 	for _, u := range d.udtaTexts {
 		held[u.key] = true
-		vals, ok := tags.Get(u.key)
-		if !ok || len(vals) == 0 {
-			// Drop the atom only when the canonical entry is all it holds. Otherwise blank that
-			// entry: the other-language entries stay, and the key reads back absent either way.
-			if len(u.entries) > 1 {
-				entries := slices.Clone(u.entries)
-				i := canonicalEntry(entries)
-				if entries[i].text == "" {
-					continue
-				}
-				entries[i].text = ""
-				reps = append(reps, byteRep{start: u.ref.offset - ups, oldLen: u.ref.size,
-					repl: renderAtom(u.name, renderQTText(entries))})
-				continue
-			}
-			reps = append(reps, byteRep{start: u.ref.offset - ups, oldLen: u.ref.size})
+		vals, _ := tags.Get(u.key)
+		repl, changed := udtaTextEdit(u, vals)
+		if !changed {
 			continue
 		}
-		entries := slices.Clone(u.entries)
-		if len(entries) == 0 {
-			entries = []qtTextEntry{{lang: langUnd}}
+		reps = append(reps, byteRep{start: u.ref.offset - ups, oldLen: u.ref.size, repl: repl})
+		// The atom's duplicates go with it, or a re-read would promote one in its place.
+		for _, dup := range u.dups {
+			reps = append(reps, byteRep{start: dup.ref.offset - ups, oldLen: dup.ref.size})
 		}
-		i := canonicalEntry(entries)
-		if entries[i].text == vals[0] {
-			continue // already the canonical value: leave the atom's bytes alone
+		if len(u.dups) > 0 {
+			dups = append(dups, u.dupContent())
 		}
-		entries[i].text = vals[0]
-		reps = append(reps, byteRep{start: u.ref.offset - ups, oldLen: u.ref.size,
-			repl: renderAtom(u.name, renderQTText(entries))})
 	}
 	if !create {
-		return reps, nil
+		return reps, nil, dups
 	}
 	for _, k := range tags.Keys() {
 		vals, _ := tags.Get(k)
@@ -195,7 +177,35 @@ func planUdtaTexts(d *doc, tags tag.TagSet, create bool, ups int64) ([]byteRep, 
 		entries := []qtTextEntry{{lang: langUnd, text: vals[0]}}
 		appends = append(appends, renderAtom(atomName(name), renderQTText(entries))...)
 	}
-	return reps, appends
+	return reps, appends, dups
+}
+
+// udtaTextEdit returns the atom's bytes once its key holds vals, nil to delete it; changed is
+// false when the atom already reads that way.
+func udtaTextEdit(u udtaText, vals []string) (repl []byte, changed bool) {
+	entries := slices.Clone(u.entries)
+	if len(vals) == 0 {
+		// Drop the atom only when the canonical entry is all it holds. Otherwise blank that
+		// entry: the other-language entries stay, and the key reads back absent either way.
+		if len(entries) <= 1 {
+			return nil, true
+		}
+		i := canonicalEntry(entries)
+		if entries[i].text == "" {
+			return nil, false
+		}
+		entries[i].text = ""
+		return renderAtom(u.name, renderQTText(entries)), true
+	}
+	if len(entries) == 0 {
+		entries = []qtTextEntry{{lang: langUnd}}
+	}
+	i := canonicalEntry(entries)
+	if entries[i].text == vals[0] {
+		return nil, false
+	}
+	entries[i].text = vals[0]
+	return renderAtom(u.name, renderQTText(entries)), true
 }
 
 // qtMetaWrite is the resolved QuickTime-store decision for one edit.
@@ -213,6 +223,8 @@ type qtMetaWrite struct {
 	metaDelta int64
 	// textsChanged records that some udta text atom was rewritten or deleted.
 	textsChanged bool
+	// textDups is what the duplicate text atoms removed with theirs hold.
+	textDups []core.DuplicateContent
 }
 
 // needsUdtaRegion reports whether this write touches udta bytes outside the ilst region, so
@@ -241,9 +253,9 @@ func planQTMeta(d *doc, edited *core.Media, newKeys []string, allowUdtaOnly bool
 		}
 	}
 	if len(d.udtaTexts) > 0 {
-		reps, appends := planUdtaTexts(d, edited.Tags, w.udtaOnly, ups)
+		reps, appends, dups := planUdtaTexts(d, edited.Tags, w.udtaOnly, ups)
 		w.reps = append(w.reps, reps...)
-		w.appends = appends
+		w.appends, w.textDups = appends, dups
 		w.textsChanged = len(reps) > 0 || len(appends) > 0
 	}
 	// Splicing needs the captured udta payload.
@@ -303,7 +315,7 @@ func planQTMetaWrite(d *doc, base, edited *core.Media, newItems []item, qw qtMet
 	report.BytesAfter = total
 	report.PaddingAfter = reg.freeContent
 	report.Warnings = paddingClampWarning(report.Warnings, reg.paddingClamped)
-	report.Operations = qtMetaOps(d, qw, delta, len(edited.Pictures))
+	report.Operations = qtMetaOps(d, qw, delta, reg.regionStart, len(edited.Pictures))
 	if encodingRewrite {
 		report.Operations = append(report.Operations, core.EncodingRewriteOp("genre"))
 	}
@@ -314,6 +326,7 @@ func planQTMetaWrite(d *doc, base, edited *core.Media, newItems []item, qw qtMet
 		resultItems = d.items
 	}
 	result := buildQTMetaResult(edited, d, resultItems, reg, delta)
+	report.Warnings = droppedDupWarnings(report.Warnings, d, base, result, qw.textDups, false)
 	// Collapse to a no-op when the rebuild re-projected to base's values, as the in-place
 	// ilst path does. A grown region (delta != 0) is a structural change and blocks it.
 	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result,
@@ -324,7 +337,7 @@ func planQTMetaWrite(d *doc, base, edited *core.Media, newItems []item, qw qtMet
 }
 
 // qtMetaOps names what the udta rebuild did, in the same voice as the ilst and chapter paths.
-func qtMetaOps(d *doc, qw qtMetaWrite, delta int64, pics int) []string {
+func qtMetaOps(d *doc, qw qtMetaWrite, delta, insertion int64, pics int) []string {
 	var ops []string
 	if qw.udtaOnly {
 		ops = append(ops, "moov.udta text atom rewrite")
@@ -337,9 +350,7 @@ func qtMetaOps(d *doc, qw qtMetaWrite, delta int64, pics int) []string {
 	if mdtaStore(d) && len(qw.keys) != len(d.keyNames) {
 		ops = append(ops, "moov.udta.meta.keys rewrite")
 	}
-	if delta != 0 {
-		ops = append(ops, fmt.Sprintf("%d offset table shift(s)", len(d.offTables)+len(d.auxTables)))
-	}
+	ops = appendShiftOp(ops, d, delta, insertion, nil)
 	if pics > 0 {
 		ops = append(ops, fmt.Sprintf("pictures: %d", pics))
 	}

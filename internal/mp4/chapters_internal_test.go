@@ -60,7 +60,7 @@ func TestDecodeChplV2SkipsReservedField(t *testing.T) {
 	raw := append(make([]byte, 8), payload...) // 8-byte dummy atom header; payloadOff() = 8
 	n := node{name: [4]byte{'c', 'h', 'p', 'l'}, offset: 0, headerLen: 8, size: int64(len(raw))}
 
-	version, chapters, ok, err := decodeChpl(core.BytesSource(raw), n, int64(len(raw)))
+	version, chapters, ok, err := decodeChpl(core.BytesSource(raw), n, &titleReader{page: &windows1252}, int64(len(raw)))
 	if err != nil || !ok {
 		t.Fatal("decodeChpl(v2) returned ok=false; the reserved field was not skipped for version 2")
 	}
@@ -414,11 +414,51 @@ func TestReadTextSampleReadsTitleAlone(t *testing.T) {
 	sample := append([]byte{0, 5}, "Intro"...)
 	sample = append(sample, make([]byte, 100)...) // style atoms after the title
 	src := &readLog{ReaderAtSized: core.BytesSource(sample)}
-	title, err := readTextSample(src, 0, int64(len(sample)), 5)
+	title, err := readTextSample(src, 0, int64(len(sample)), &titleReader{page: &macRoman}, 5)
 	if err != nil || title != "Intro" {
 		t.Fatalf("readTextSample = %q, %v, want Intro", title, err)
 	}
 	if want := [][2]int64{{0, 2}, {2, 5}}; !slices.Equal(src.reads, want) {
 		t.Errorf("reads (offset, length) = %v, want %v", src.reads, want)
+	}
+}
+
+// The ids read from a tref's "chap" entries are bounded, however many it declares.
+func TestChapterTrackIDsBounded(t *testing.T) {
+	chap := func(ids int) []byte { return renderAtom(atomName("chap"), make([]byte, 4*ids)) }
+	trak := renderAtom(atomName("trak"), renderAtom(atomName("tref"), slices.Concat(chap(700), chap(0), chap(700))))
+	src := core.BytesSource(trak)
+	nodes, err := walkAtoms(src, 0, int64(len(trak)), bits.NewDepth(bits.DefaultLimits.MaxDepth), 1<<20, true)
+	if err != nil || len(nodes) != 1 {
+		t.Fatalf("walk: %d nodes, %v", len(nodes), err)
+	}
+	groups, err := chapterTrackIDs(src, nodes[0], 1<<20)
+	if err != nil || len(groups) != 2 || len(groups[0]) != 700 || len(groups[1]) != maxChapRefs-700 {
+		t.Fatalf("groups %d (err %v), want 700 ids and then the %d left under the bound", len(groups), err, maxChapRefs-700)
+	}
+}
+
+// An mdat is chapter-only when the samples cover it end to end: none that overlap, leave a gap
+// or run past its end make it so.
+func TestChapterOnlyMdats(t *testing.T) {
+	mdats := [][2]int64{{100, 8}, {200, 8}, {300, 0}}
+	for _, c := range []struct {
+		name    string
+		samples []sampleOffset
+		want    []int64
+	}{
+		{"tiled, out of order", []sampleOffset{{104, 4}, {100, 4}}, []int64{100}},
+		{"both filled", []sampleOffset{{100, 8}, {200, 3}, {203, 5}}, []int64{100, 200}},
+		{"overlapping halves", []sampleOffset{{100, 4}, {100, 4}}, nil},
+		{"overlap that still covers", []sampleOffset{{100, 6}, {102, 6}}, []int64{100}},
+		{"gap in the middle", []sampleOffset{{100, 4}, {106, 2}}, nil},
+		{"gap at the start", []sampleOffset{{102, 6}}, nil},
+		{"past the end", []sampleOffset{{100, 4}, {104, 9}}, nil},
+		{"filled, and one past the end", []sampleOffset{{100, 8}, {104, 9}}, nil},
+		{"none", nil, nil},
+	} {
+		if got := chapterOnlyMdats(c.samples, mdats); !slices.Equal(got, c.want) {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
 	}
 }

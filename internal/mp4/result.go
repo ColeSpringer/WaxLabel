@@ -29,7 +29,7 @@ func buildResult(edited *core.Media, base *doc, newItems []item, lay layout, del
 
 // shiftEssence sets what setEssence reads, as a metadata region that changed size by delta
 // leaves it: every chunk-offset table entry past the insertion point and every table atom,
-// mdat range and chapter track at or past regionEnd move by delta.
+// mdat range, chapter-only mdat and chapter track at or past regionEnd move by delta.
 func shiftEssence(nd, base *doc, insertion, regionEnd, delta int64) {
 	nd.offTables = shiftTables(base.offTables, insertion, regionEnd, delta)
 	nd.mdats = make([][2]int64, len(base.mdats))
@@ -39,6 +39,9 @@ func shiftEssence(nd, base *doc, insertion, regionEnd, delta int64) {
 			off += delta
 		}
 		nd.mdats[i] = [2]int64{off, m[1]}
+		if base.chapterMdat(m[0]) {
+			nd.chapMdats = append(nd.chapMdats, off)
+		}
 	}
 	if base.chapTrak != nil {
 		t := *base.chapTrak

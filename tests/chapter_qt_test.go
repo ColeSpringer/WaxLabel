@@ -699,3 +699,107 @@ func TestMP4ChapterSampleOutsideTheFile(t *testing.T) {
 		}
 	}
 }
+
+// mp4TwoChapAtoms is a file whose audio tref holds two "chap" atoms, the first naming no track and
+// the second the chapter text track of chapters A and B.
+func mp4TwoChapAtoms() []byte {
+	titles := []string{"A", "B"}
+	tref := testfile.MP4Atom("tref", slices.Concat(
+		testfile.MP4Atom("chap", testfile.BE32(99)), testfile.MP4Atom("chap", testfile.BE32(2))))
+	audio := bytes.Repeat([]byte{0xA7}, 120)
+	build := func(audioStco, textStco uint32) []byte {
+		moov := testfile.MP4Atom("moov", slices.Concat(mp4AudioTrakTkhd(1, audioStco, tref),
+			testfile.MP4TextTrak(2, 1000, []int{0, 3000}, titles, textStco)))
+		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", slices.Concat(audio, testfile.MP4SamplesBlob(titles))))
+	}
+	at := bytes.Index(build(0, 0), []byte("mdat")) + 4
+	return build(uint32(at), uint32(at+len(audio)))
+}
+
+// Every "chap" atom of the audio track's tref is read, so a chapter track behind a reference that
+// names no track is found, and a clear removes them all.
+func TestMP4ChapterTrackNamedByASecondChapAtom(t *testing.T) {
+	data := mp4TwoChapAtoms()
+	doc := mustParseBytes(t, data)
+	if chs := doc.Chapters(); len(chs) != 2 || chs[1].Title != "B" {
+		t.Fatalf("chapters = %+v, want A and B from the text track", chs)
+	}
+	plan, err := doc.Edit().ClearChapters().Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if re := mustParseBytes(t, out); len(re.Chapters()) != 0 || bytes.Contains(out, []byte("chap")) || bytes.Contains(out, []byte("text")) {
+		t.Errorf("after the clear: %d chapter(s), chap reference %v, text track %v",
+			len(re.Chapters()), bytes.Contains(out, []byte("chap")), bytes.Contains(out, []byte("text")))
+	}
+}
+
+// A "chap" reference naming the audio track itself names no chapter track: the audio stays the
+// audio, in the digest and through a chapter write.
+func TestMP4ChapReferenceToTheAudioTrackItself(t *testing.T) {
+	synth := func(trak func(stco uint32) []byte) []byte {
+		file := func(stco uint32) []byte {
+			return slices.Concat(testfile.MP4Ftyp(), testfile.MP4Atom("moov", trak(stco)), testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 120)))
+		}
+		return file(uint32(bytes.Index(file(0), []byte("mdat")) + 4))
+	}
+	// The fixture's audio track, with real sample tables, names track 2; make it name itself.
+	real := readFixture(t, sampleM4B)
+	_, id, ok := bytes.Cut(real, []byte("chap"))
+	if !ok || binary.BigEndian.Uint32(id) != 2 {
+		t.Fatal("setup: the fixture's chap reference is not to track 2")
+	}
+	binary.BigEndian.PutUint32(id, 1)
+	for name, data := range map[string][]byte{
+		"one chunk":    synth(func(stco uint32) []byte { return testfile.MP4AudioTrakChap(1, stco) }),
+		"real fixture": real,
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc := mustParseBytes(t, data)
+			if hasWarning(doc, wl.WarnNoAudioFrames) {
+				t.Fatalf("warnings %v: the audio reads as no audio", warningCodes(doc))
+			}
+			essence := essenceOf(t, data)
+			for step, edit := range map[string]func(*wl.Editor) *wl.Editor{
+				"tag edit":      func(e *wl.Editor) *wl.Editor { return e.Set(tag.Title, "T") },
+				"chapter write": func(e *wl.Editor) *wl.Editor { return e.SetChapters(chaptersFromTitles("A", "B")...) },
+			} {
+				plan, err := edit(doc.Edit()).Prepare(wl.WithVerifyEssence())
+				if err != nil {
+					t.Fatalf("%s: %v", step, err)
+				}
+				out := applyToBytes(t, data, plan)
+				if re := mustParseBytes(t, out); re.Properties().Tracks[0].SampleRate != 44100 || !essenceOf(t, out).Equal(essence) {
+					t.Errorf("%s: audio track %+v, digest equal %v", step, re.Properties().Tracks[0], essenceOf(t, out).Equal(essence))
+				}
+			}
+		})
+	}
+	plain := synth(func(stco uint32) []byte { return mp4AudioTrakTkhd(1, stco) })
+	if one := synth(func(stco uint32) []byte { return testfile.MP4AudioTrakChap(1, stco) }); !essenceOf(t, one).Equal(essenceOf(t, plain)) {
+		t.Error("the digest differs from that of the file with no reference")
+	}
+}
+
+// Only a text track's samples are chapter storage: where the "chap" reference names a track of
+// another kind, a chapter write leaves the mdat its samples fill.
+func TestMP4ChapterWriteKeepsSamplesOfATrackThatIsNoTextTrack(t *testing.T) {
+	rewrite := func(src []byte, titles ...string) []byte {
+		plan, err := mustParseBytes(t, src).Edit().SetChapters(chaptersFromTitles(titles...)...).Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return applyToBytes(t, src, plan)
+	}
+	data := rewrite(testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T")), "Alpha", "Beta")
+	// The written track's handler type sits 16 bytes ahead of its handler name.
+	at := bytes.Index(data, []byte("SubtitleHandler")) - 16
+	if at < 0 || string(data[at:at+4]) != "text" {
+		t.Fatal("setup: no text handler in the written chapter track")
+	}
+	copy(data[at:], "soun")
+	if out := rewrite(data, "Gamma"); !bytes.Contains(out, []byte("Alpha")) || !bytes.Contains(out, []byte("Beta")) {
+		t.Error("the write removed the samples of a track that is no text track")
+	}
+}

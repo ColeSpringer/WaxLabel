@@ -2,9 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
 // sampleM4A has TRACKNUMBER=2 / TRACKTOTAL=10 for preservation tests.
@@ -72,5 +76,25 @@ func TestMP4NumberZeroAndClearUnchanged(t *testing.T) {
 	}
 	if got := trackNumberOf(t, clearFile); len(got) != 0 {
 		t.Errorf("TRACKNUMBER after clear = %v, want absent", got)
+	}
+}
+
+// A chapter write behind an mdat declared as running to the end of the file leaves the audio
+// digest alone, so --verify passes it.
+func TestSetVerifyChaptersOnOpenEndedMdat(t *testing.T) {
+	t.Parallel()
+	data := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
+	binary.BigEndian.PutUint32(data[bytes.LastIndex(data, []byte("mdat"))-4:], 0)
+	file := writeTempFile(t, "open.m4a", data)
+	before, _, _ := runCLI(t, "verify", file)
+	if out, errb, code := runCLI(t, "set", file, "--add-chapter", "0:00=Intro", "--verify"); code != 0 {
+		t.Fatalf("set --verify exit = %d; stdout=%q stderr=%q", code, out, errb)
+	}
+	after, _, code := runCLI(t, "verify", file)
+	if code != 0 || before == "" || after != before {
+		t.Errorf("verify after the write (exit %d):\n%s\nbefore:\n%s", code, after, before)
+	}
+	if out, _, _ := runCLI(t, "dump", file); !strings.Contains(out, "Intro") {
+		t.Errorf("dump lacks the chapter:\n%s", out)
 	}
 }

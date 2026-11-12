@@ -266,6 +266,46 @@ All notable changes to this project are documented here.
   stream whose audio shares a page with its headers, as read-only.
 - `copy`, `dump` and `caps` name the Ogg mapping (`Ogg Vorbis`, `Ogg Opus`, `Ogg FLAC`)
   where they printed `Ogg`.
+- A chapter edit on a QuickTime file whose tags are classic `udta` text atoms (a plain `.mov`)
+  no longer plans every tag as removed.
+- Of several `chpl` atoms the first holding chapters is read, and of several `udta` text atoms
+  of one name the first holding a value, where a clear left the second `chpl` to read back and
+  both text values were read. The file is reported (`duplicate-tag-block`) and `dump --native`
+  marks the duplicates; an edit of anything else keeps them, and an edit of the chapters or of
+  that key removes them, warning `duplicate-tag-block-dropped` (`--strict` refuses) when one
+  held chapters or a value the file holds nowhere else, or did not decode. Of several `moov`
+  atoms, as in two files joined end to end, the first is read where the last was, reported the
+  same way, and a write leaves the others as they are.
+- A final `mdat` declared as running to the end of the file takes its real size before a
+  chapter track's samples go behind it. The appended samples read as audio, so every chapter
+  edit changed the digest and `--verify` refused it. Such an `mdat` over 4 GiB, or one cut short
+  of its declared size, refuses the chapter track as unsupported (exit 3); tag edits still write.
+- An MP4 chapter track's samples go behind the last whole atom, ahead of bytes that are none:
+  an ID3v1 tag appended to the file, stray bytes, a final box of declared size 0, a second
+  `moov` cut short. Written after them the samples read as part of those bytes, so each
+  chapter rewrite left the previous ones in the file, a clear removed none, and a four-byte
+  tail failed the write as `invalid-data`. Bytes there that a track's table names stay where
+  they are, the samples going after them. A `moov` that runs to the end of the file by its
+  declared size is sized by a chapter write that leaves its length alone.
+- A chapter rewrite removes the old chapter samples' trailing `mdat` only when a text track's
+  samples fill it end to end: one that opens with them and holds more, which lost those bytes,
+  stays whole. An `mdat` they fill elsewhere in the file, which cannot be removed, is marked
+  `free`.
+- An MP4 whose chunk offsets land in no `mdat` keeps its digest through a chapter write: the
+  fallback that hashes every `mdat` whole leaves out the ones chapter samples fill.
+- Reading an MP4 with tens of thousands of `mdat` atoms and chunk offsets no longer takes time
+  quadratic in them (16 s for a crafted 1 MiB file, now under a second).
+- MP4 plans report `offset table shift(s)` only for a table an entry of which moves: none when
+  the audio sits ahead of the `moov`, never the replaced chapter track's own table, and one on
+  a first tag write ahead of the audio, which reported none.
+- An MP4 chapter track named by a second `chap` entry of the audio track's `tref` is read.
+- An MP4 chapter title that is not UTF-8 is read through a code page and reported
+  (`invalid-text`), where it read as empty: Windows-1252 in a Nero `chpl`, Mac OS Roman in a
+  chapter track, and the `chpl`'s page in a track beside such a list, so the two agree. A
+  chapter edit stores it as UTF-8. A title ends at its first NUL, so a NUL-terminated one no
+  longer makes `--add-chapter` or `copy` refuse the file.
+- A `chap` reference naming the audio track itself is not followed. A chapter write replaced
+  the audio track with the chapter track.
 
 ### Changed
 

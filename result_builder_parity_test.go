@@ -78,9 +78,7 @@ type drift struct{ surfaces, reason string }
 // knownDrift holds the disagreements left to fix. The match is exact: an entry whose case reads the
 // same as the written bytes, or differs on other surfaces, fails the test. An input's own entry, even
 // one with no surfaces, takes precedence over its format's: that exempts an input that does not drift.
-var knownDrift = map[driftKey]drift{
-	{"mp3.mov", "add chapter"}: {"tags", "the QuickTime chapter-track builder drops the classic udta text atoms (an inherited ENCODER) from the result"},
-}
+var knownDrift = map[driftKey]drift{}
 
 // TestResultBuilderParity: the result a codec builds at Prepare reads the same as a parse of the
 // bytes the plan writes, on every surface production reads from it, for every writable input and
@@ -449,7 +447,45 @@ func parityInputs(t *testing.T) []parityInput {
 	// The first audio page's checksum fails: it reads only as the page that follows a header page.
 	damaged := gapped("sample.oga")
 	damaged[bytes.LastIndex(oga, []byte("OggS"))+len(gap)-1] ^= 0x01
+	// MP4 atoms a file holds more than one of, the first read; a final mdat declared open-ended, which
+	// a chapter write sizes; tables that place no chunk in any mdat; and bytes after the last atom,
+	// which a chapter mdat goes ahead of.
+	chpl := func(titles ...string) []byte {
+		body := []byte{1, 0, 0, 0, 0, 0, 0, 0, byte(len(titles))}
+		for i, title := range titles {
+			body = binary.BigEndian.AppendUint64(body, uint64(i)*30_000_000)
+			body = append(append(body, byte(len(title))), title...)
+		}
+		return testfile.MP4Atom("chpl", body)
+	}
+	udtaText := func(name, text string) []byte {
+		return testfile.MP4Atom(name, slices.Concat(testfile.BE16(len(text)), testfile.BE16(0x55C4), []byte(text)))
+	}
+	mp4Tags := testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T")))
+	mp4Tagged := testfile.MP4AssembleUdta(mp4Tags)
+	openMdat := slices.Clone(mp4Tagged)
+	binary.BigEndian.PutUint32(openMdat[bytes.LastIndex(openMdat, []byte("mdat"))-4:], 0)
+	strayStco := slices.Concat(testfile.MP4Ftyp(), testfile.MP4MoovStsd(nil, 4, nil, nil, testfile.MP4StsdAudio(), 44100),
+		testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 120)))
+	threeThenOne := chaps("three", setChapters(ch(0, "Opening"), ch(sec(3), "Middle"), ch(sec(7.5), "Closing")),
+		chaps("one", setChapters(ch(0, "Only")), parityEdit{kind: "clear chapters", name: "cleared", edit: clearChapters}))
 	return append(inputs,
+		parityInput{name: "duplicate-chpl.m4a", data: testfile.MP4AssembleUdta(mp4Tags, chpl("One", "Two"), chpl("Old One", "Old Two")),
+			edits: []parityEdit{tags("album", setTag(tag.Album, "Unrelated"), chaps("one", setChapters(ch(0, "Only"))))}},
+		parityInput{name: "duplicate-chpl-track.m4a", data: testfile.MP4QTFile([]int{0, 3000}, []string{"A", "Caf\x8e"},
+			chpl(), chpl("A", "Caf\x8e"), chpl("Stale"))},
+		parityInput{name: "duplicate-udta-text.mov", data: testfile.MP4AssembleUdta(udtaText("\xa9nam", ""), udtaText("\xa9ART", "Artist"),
+			udtaText("\xa9nam", "First"), udtaText("\xa9nam", "Second")),
+			edits: []parityEdit{tags("artist", setTag(tag.Artist, "New Artist"), tags("clear title", func(_ *Document, e *Editor) { e.Clear(tag.Title) }))}},
+		parityInput{name: "joined.m4a", data: slices.Concat(mp4Tagged, mp4Tagged), edits: []parityEdit{longTitle(70000), threeThenOne}},
+		parityInput{name: "open-mdat.m4a", data: openMdat, edits: []parityEdit{threeThenOne}},
+		parityInput{name: "stray-stco.m4a", data: strayStco, edits: []parityEdit{threeThenOne,
+			chaps("two", setChapters(ch(0, "A"), ch(sec(3), "B")), longTitle(70000))}},
+		parityInput{name: "id3v1-tail.m4a", data: slices.Concat(mp4Tagged, v1a), edits: []parityEdit{longTitle(70000), threeThenOne}},
+		parityInput{name: "stray-tail.m4a", data: slices.Concat(mp4Tagged, []byte{0, 0, 0, 5}), edits: []parityEdit{threeThenOne}},
+		// Titles that end at a NUL, in a list read as Windows-1252 and a track beside it.
+		parityInput{name: "nul-titles.m4a", data: testfile.MP4QTFile([]int{0, 3000}, []string{"Intro\x00", "Caf\xe9\x00\x00"},
+			chpl("Intro\x00", "Caf\xe9\x00\x00"))},
 		// Ogg behind a leading tag and bytes, ahead of junk and stacked tags; with bytes between its
 		// pages, renumbered around them; and ending inside its last page ahead of a tag.
 		parityInput{name: "legacy-tags.ogg", data: slices.Concat(v2Title, gap, fixture["sample.ogg"], tailJunk, v1a, v1b),

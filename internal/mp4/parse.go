@@ -5,6 +5,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"slices"
+	"sort"
+	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
@@ -45,13 +48,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 
 	d := &doc{size: size}
-	// A top-level atom whose declared size ran past EOF is clamped so the complete earlier
-	// atoms still read. mdat and moov get their own truncated-audio warnings below.
-	if last := top[len(top)-1]; last.truncated && last.id() != "mdat" && last.id() != "moov" {
-		d.oversizedAtom = last.id()
-	}
 	var moov node
-	haveMoov := false
+	haveMoov, extraMoov := false, false
 	for _, a := range top {
 		d.topLevel = append(d.topLevel, refOf(a))
 		switch a.id() {
@@ -75,7 +73,13 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			if a.truncated {
 				d.mdatTruncated = true
 			}
+			d.mdatOpenEnded = d.mdatOpenEnded || a.openEnded
 		case "moov":
+			// The first decides, as in ffmpeg: a second one is what joining two files leaves.
+			if haveMoov {
+				extraMoov = true
+				continue
+			}
 			moov, haveMoov = a, true
 		}
 	}
@@ -95,6 +99,20 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		return nil, fmt.Errorf("%w: MP4 has no moov box", waxerr.ErrInvalidData)
 	}
 	d.moov = refPtr(moov)
+	d.moovUnsized = moov.truncated || moov.openEnded
+	// The moov read is resized by whatever grows it and an mdat is sized or refused where one
+	// is appended; any other final atom that reaches EOF by its declared size stays last.
+	last := top[len(top)-1]
+	unsized := (last.truncated || last.openEnded) && last.id() != "mdat" && last.offset != moov.offset
+	d.appendAt = last.end()
+	if unsized {
+		d.appendAt = last.offset
+	}
+	// A top-level atom whose declared size ran past EOF is clamped so the complete earlier
+	// atoms still read. An mdat and the moov read get their own truncated-audio warnings below.
+	if unsized && last.truncated {
+		d.oversizedAtom = last.id()
+	}
 
 	// A gap between moov's last child and moov.end() corrupts a create-ilst edit as the
 	// meta gap below does: with no udta, buildCreated appends the new tag path at
@@ -117,15 +135,23 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if err := collectOffsetTables(ctx, src, moov, d, limit); err != nil {
 		return nil, err
 	}
+	// Bytes behind the last whole atom that a table names cannot move unpatched, so a new atom
+	// goes after them.
+	if d.appendAt < size && tablesReach(d.appendAt, d.offTables, d.auxTables) {
+		d.appendAt = size
+	}
 	d.hasIloc = hasIlocBox(top, moov)
-	if err := parseProperties(src, moov, d, limit); err != nil {
+	tracks, err := readTracks(src, moov, limit)
+	if err != nil {
+		return nil, err
+	}
+	if err := parseProperties(src, moov, tracks, d, limit); err != nil {
 		return nil, err
 	}
 
 	// Tag path: moov.udta.meta.ilst. Each level is optional; record what exists so
 	// the writer can either rewrite the ilst or create the missing wrappers.
-	var chplNode node
-	haveChpl := false
+	var chpls []node
 	if udta, ok := moov.find("udta"); ok {
 		d.udta = refPtr(udta)
 		// Capture the udta payload verbatim so a chapter rewrite can splice the new ilst/chpl
@@ -140,10 +166,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		for _, c := range udta.children {
 			d.udtaKids = append(d.udtaKids, refOf(c))
 		}
-		if chpl, ok := udta.find("chpl"); ok {
-			d.chpl = refPtr(chpl)
-			chplNode, haveChpl = chpl, true
-		}
+		chpls = nodesNamed(udta.children, "chpl")
 		// Classic QuickTime keeps its tags as direct udta children ("\xa9nam", "\xa9swr",
 		// ...) with no meta wrapper. The two stores carry distinct source labels, so a
 		// disagreement surfaces as a conflicting family.
@@ -195,13 +218,13 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 	// Chapters: a Nero chpl list and/or a QuickTime chapter text track project
 	// into one deduplicated list; a disagreement between them is warned.
-	chapterConflict, err := resolveChapters(src, moov, chplNode, haveChpl, d, limit)
+	chapterConflict, err := resolveChapters(src, moov, chpls, tracks, d, limit)
 	if err != nil {
 		return nil, err
 	}
 	// Capture the structural refs a chapter write needs to rebuild the QuickTime
 	// chapter text track (read-only; tolerant of anything it cannot find).
-	if err := collectChapterRefs(src, moov, d, limit); err != nil {
+	if err := collectChapterRefs(src, moov, tracks, d, limit); err != nil {
 		return nil, err
 	}
 
@@ -213,6 +236,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	media.Families = families
 	media.Warnings = mediaWarnings(tags, numericGenre)
 	media.Warnings = append(media.Warnings, invalidKeyWarnings(d)...)
+	media.Warnings = append(media.Warnings, duplicateWarnings(d)...)
+	if extraMoov {
+		media.Warnings = core.Warn(media.Warnings, core.WarnDuplicateTagBlock,
+			"more than one moov atom; the first is read and the rest are kept as they are")
+	}
 	if d.oversizedAtom != "" {
 		media.Warnings = core.Warn(media.Warnings, core.WarnOversizedChunk,
 			fmt.Sprintf("the %q atom declares more bytes than the file holds and was clamped to EOF; "+
@@ -221,6 +249,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if chapterConflict {
 		media.Warnings = core.Warn(media.Warnings, core.WarnChapterSourceConflict,
 			"the Nero chpl list and the QuickTime chapter text track disagree")
+	}
+	if d.legacyTitles != "" {
+		media.Warnings = core.Warn(media.Warnings, core.WarnInvalidText,
+			"a chapter title is not valid UTF-8; read as "+d.legacyTitles)
 	}
 	// An mdat atom declared more bytes than the file holds: a truncated MP4.
 	if d.mdatTruncated {
@@ -269,6 +301,29 @@ func mediaWarnings(tags tag.TagSet, numericGenre bool) []core.Warning {
 				ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+core.WarnSnippet(v))
 			}
 		}
+	}
+	return ws
+}
+
+// duplicateWarnings reports the chpl and udta text atoms the file holds more than one of.
+func duplicateWarnings(d *doc) []core.Warning {
+	var ws []core.Warning
+	if len(d.chplDups) > 0 {
+		ws = core.Warn(ws, core.WarnDuplicateTagBlock,
+			"more than one chpl atom; the first holding chapters, else the first, is authoritative and a chapter edit drops the rest")
+	}
+	var names []string
+	var keys []tag.Key
+	for _, u := range d.udtaTexts {
+		if len(u.dups) > 0 {
+			names = append(names, itemLabel(u.name))
+			keys = append(keys, u.key)
+		}
+	}
+	if len(names) > 0 {
+		ws = core.WarnKeyed(ws, core.WarnDuplicateTagBlock, fmt.Sprintf(
+			"more than one moov.udta text atom named %s; the first holding a value, else the first, is authoritative and an edit of it drops the rest",
+			strings.Join(names, ", ")), keys...)
 	}
 	return ws
 }
@@ -451,9 +506,10 @@ func decodeIlst(ctx context.Context, src core.ReaderAtSized, ilst node, d *doc, 
 }
 
 // decodeUdtaTexts decodes the classic QuickTime text atoms sitting directly under udta into
-// d.udtaTexts. Only the mapped four-character names are decoded; every other udta child
-// (chpl, meta, and anything foreign) is left to the verbatim d.udtaRaw splice.
+// d.udtaTexts, one per name. Only the mapped four-character names are decoded; every other udta
+// child (chpl, meta, and anything foreign) is left to the verbatim d.udtaRaw splice.
 func decodeUdtaTexts(src core.ReaderAtSized, udta node, d *doc, limit int64) error {
+	var all []udtaText
 	for _, c := range udta.children {
 		if _, ok := mapping.MP4UdtaTextKey(c.id()); !ok {
 			continue
@@ -466,9 +522,10 @@ func decodeUdtaTexts(src core.ReaderAtSized, udta node, d *doc, limit int64) err
 			continue
 		}
 		if u, ok := decodeUdtaText(refOf(c), payload); ok {
-			d.udtaTexts = append(d.udtaTexts, u)
+			all = append(all, u)
 		}
 	}
+	d.udtaTexts = foldUdtaTextDups(all)
 	return nil
 }
 
@@ -506,11 +563,11 @@ func adjacentFree(meta, ilst node) *atomRef {
 
 // parseProperties fills the audio track from the first 'soun' trak: the duration
 // from mdhd and the codec/geometry from the first stsd sample entry.
-func parseProperties(src core.ReaderAtSized, moov node, d *doc, limit int64) error {
-	trak, found, err := trakOfHandler(src, moov.findAll("trak", nil), "soun", limit)
-	if err != nil || !found {
-		return err
+func parseProperties(src core.ReaderAtSized, moov node, tracks movieTracks, d *doc, limit int64) error {
+	if tracks.audio < 0 {
+		return nil
 	}
+	trak := tracks.traks[tracks.audio]
 	mdia, _ := trak.find("mdia")
 	var timescale uint32
 	if mdhd, ok := mdia.find("mdhd"); ok {
@@ -844,47 +901,68 @@ func setEssence(d *doc, media *core.Media) {
 	}
 }
 
-// essenceMdats returns the mdat ranges that hold media essence, as [start, end).
+// essenceMdats returns the mdat ranges that hold media essence, as [start, end): each mdat from
+// the first chunk a media table places in it. When the tables place none anywhere, as damaged ones
+// do, every mdat counts whole but those chapter samples fill.
 func essenceMdats(d *doc) [][2]int64 {
-	ranges := make([][2]int64, len(d.mdats))
+	first := chunkStarts(d.mdats, nonChapterTables(d))
+	var out, whole [][2]int64
 	for i, m := range d.mdats {
-		ranges[i] = [2]int64{m[0], m[0] + m[1]}
-	}
-	nonChapter := nonChapterTables(d)
-	if len(nonChapter) == 0 {
-		return ranges
-	}
-	out := ranges[:0:0]
-	for _, r := range ranges {
-		if first := firstNonChapterChunk(r, nonChapter); first >= 0 {
-			out = append(out, [2]int64{first, r[1]})
+		end := m[0] + m[1]
+		if first[i] >= 0 {
+			out = append(out, [2]int64{first[i], end})
+		}
+		if !d.chapterMdat(m[0]) {
+			whole = append(whole, [2]int64{m[0], end})
 		}
 	}
-	// If no mdat held a referenced non-chapter chunk, keep every mdat whole. Real files
-	// reference their mdats, so this is a damaged-input fallback.
 	if len(out) == 0 {
-		return ranges
+		return whole
 	}
 	return out
 }
 
-// firstNonChapterChunk returns the smallest non-chapter chunk offset within the mdat
-// range [r[0], r[1]), or -1 if the mdat holds no non-chapter chunk (chapter-only).
-func firstNonChapterChunk(r [2]int64, tables []offsetTable) int64 {
-	first := int64(-1)
+// chunkStarts returns, for each mdat payload (offset, length; in file order), the smallest
+// offset the tables place in it, or -1 when they place none there.
+func chunkStarts(mdats [][2]int64, tables []offsetTable) []int64 {
+	first := make([]int64, len(mdats))
+	for i := range first {
+		first[i] = -1
+	}
 	for _, t := range tables {
 		for _, e := range t.entries {
-			// A co64 offset >= 2^63 cannot be a valid position in an int64-addressed file;
-			// skip it rather than let int64(e) wrap negative and spuriously fail the range test.
+			// A co64 offset >= 2^63 is no position in an int64-addressed file.
 			if e > math.MaxInt64 {
 				continue
 			}
-			if off := int64(e); r[0] <= off && off < r[1] && (first < 0 || off < first) {
-				first = off
+			off := int64(e)
+			if i := mdatAt(mdats, off); i >= 0 && (first[i] < 0 || off < first[i]) {
+				first[i] = off
 			}
 		}
 	}
 	return first
+}
+
+// mdatAt returns the index of the mdat payload (offset, length; in file order) holding off, or -1.
+func mdatAt(mdats [][2]int64, off int64) int {
+	i := sort.Search(len(mdats), func(i int) bool { return mdats[i][0]+mdats[i][1] > off })
+	if i < len(mdats) && off >= mdats[i][0] {
+		return i
+	}
+	return -1
+}
+
+// tablesReach reports whether any table places a chunk at or past off.
+func tablesReach(off int64, groups ...[]offsetTable) bool {
+	for _, g := range groups {
+		for _, t := range g {
+			if slices.ContainsFunc(t.entries, func(e uint64) bool { return e >= uint64(off) }) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // nonChapterTables returns non-empty offset tables outside the chapter text track being
@@ -897,45 +975,6 @@ func nonChapterTables(d *doc) []offsetTable {
 		}
 	}
 	return out
-}
-
-// mdatHoldsChunk reports whether any of tables places a chunk inside the mdat range
-// [r[0], r[1]).
-func mdatHoldsChunk(r [2]int64, tables []offsetTable) bool {
-	for _, t := range tables {
-		if rangeHoldsChunk(r, t.entries) {
-			return true
-		}
-	}
-	return false
-}
-
-// mdatHoldsNonChapterChunk reports whether any non-chapter chunk-offset table places a
-// chunk inside the mdat range [r[0], r[1]). A positive result means the mdat carries media
-// essence and must not be reclaimed as chapter-only storage.
-func mdatHoldsNonChapterChunk(d *doc, r [2]int64) bool {
-	return mdatHoldsChunk(r, nonChapterTables(d))
-}
-
-// rangeHoldsChunk reports whether any chunk offset in entries falls within the mdat
-// range [r[0], r[1]).
-func rangeHoldsChunk(r [2]int64, entries []uint64) bool {
-	for _, e := range entries {
-		if off := int64(e); r[0] <= off && off < r[1] {
-			return true
-		}
-	}
-	return false
-}
-
-// trackOffTable returns the chunk-offset table that lies inside trak's byte range.
-func trackOffTable(d *doc, trak *atomRef) (offsetTable, bool) {
-	for _, t := range d.offTables {
-		if trak != nil && t.offset >= trak.offset && t.offset < trak.end() {
-			return t, true
-		}
-	}
-	return offsetTable{}, false
 }
 
 // readPayloadPrefix reads up to prefixLen bytes of an atom's payload, bounded by the

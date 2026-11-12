@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -530,4 +532,78 @@ func TestMP4DifferentialFFmpegHiResALAC(t *testing.T) {
 			t.Errorf("track = %d Hz / %d ch / %q, want 96000/2/FLAC", tr.SampleRate, tr.Channels, tr.Codec)
 		}
 	})
+}
+
+// A plan reports an offset table shift only for a table an entry of which moves: none when the
+// audio sits ahead of the moov, and never the table of a chapter track the write replaces.
+func TestMP4OffsetShiftReportedOnlyWhenAnEntryMoves(t *testing.T) {
+	long := strings.Repeat("Longer ", 40)
+	title := func(e *wl.Editor) *wl.Editor { return e.Set(tag.Title, long) }
+	chapters := func(e *wl.Editor) *wl.Editor { return e.SetChapters(chaptersFromTitles("A", "B")...) }
+	// An audio track holding the highest track id leaves none for a chapter track, so chapters go
+	// to the chpl alone.
+	chplOnly := func(moovLast bool) []byte {
+		audio := testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64))
+		if moovLast {
+			moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(-1, uint32(len(testfile.MP4Ftyp())+8)))
+			return slices.Concat(testfile.MP4Ftyp(), audio, moov)
+		}
+		moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(-1, 0))
+		at := len(testfile.MP4Ftyp()) + len(moov) + 8
+		return slices.Concat(testfile.MP4Ftyp(), testfile.MP4Atom("moov", mp4AudioTrakTkhd(-1, uint32(at))), audio)
+	}
+	udtaText := testfile.MP4AssembleUdta(mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "T")))
+	for _, c := range []struct {
+		name string
+		data []byte
+		edit func(*wl.Editor) *wl.Editor
+		want string
+	}{
+		{"ilst grow, moov last", readFixture(t, sampleMP4), title, ""},
+		{"ilst grow, moov first", testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T")), title, "1 offset table shift(s)"},
+		{"ilst creation, moov first", testfile.MP4AssembleUdta(), title, "1 offset table shift(s)"},
+		{"udta text, moov last", readFixture(t, "../testdata/mp3.mov"), title, ""},
+		{"udta text, moov first", udtaText, title, "1 offset table shift(s)"},
+		{"chapter track, moov last", readFixture(t, sampleM4B), chapters, ""},
+		{"chapter track, moov first", testfile.MP4QTFile([]int{0, 3000}, []string{"X", "Y"}), chapters, "1 offset table shift(s)"},
+		{"chpl alone, moov last", chplOnly(true), chapters, ""},
+		{"chpl alone, moov first", chplOnly(false), chapters, "1 offset table shift(s)"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			plan, err := c.edit(mustParseBytes(t, c.data).Edit()).Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ops, got := plan.Report().Operations, ""
+			if i := slices.IndexFunc(ops, func(op string) bool { return strings.Contains(op, "offset table shift") }); i >= 0 {
+				got = ops[i]
+			}
+			if got != c.want {
+				t.Errorf("operations %q, want the shift line %q", ops, c.want)
+			}
+			if out := applyToBytes(t, c.data, plan); !essenceOf(t, out).Equal(essenceOf(t, c.data)) {
+				t.Error("the write changed the audio digest")
+			}
+		})
+	}
+}
+
+// Of two moov atoms, as in two files joined end to end, the first is read and a write leaves the
+// second file's bytes as they are.
+func TestMP4SecondMoovWarnsFirstWins(t *testing.T) {
+	second := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "Second"))
+	data := slices.Concat(testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "First")), second)
+	doc := mustParseBytes(t, data)
+	if !hasWarning(doc, wl.WarnDuplicateTagBlock) || doc.Fields().Title != "First" || nativeDuplicates(doc) != 1 {
+		t.Fatalf("warnings %v, title %q, %d marked duplicate; want duplicate-tag-block, First and 1",
+			warningCodes(doc), doc.Fields().Title, nativeDuplicates(doc))
+	}
+	plan, err := doc.Edit().Set(tag.Title, strings.Repeat("Grown ", 400)).Prepare(wl.WithVerifyEssence())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if re := mustParseBytes(t, out); !strings.HasPrefix(re.Fields().Title, "Grown ") || !bytes.HasSuffix(out, second) {
+		t.Errorf("title %q, second file kept %v", re.Fields().Title, bytes.HasSuffix(out, second))
+	}
 }

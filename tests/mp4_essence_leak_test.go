@@ -5,6 +5,7 @@ import (
 	"slices"
 	"testing"
 
+	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
@@ -83,5 +84,38 @@ func TestMP4EssenceCoversSecondAudioTrack(t *testing.T) {
 	}
 	if d := essenceOf(t, base); d.Equal(essenceOf(t, alt)) {
 		t.Error("essence digest ignored the second audio track's mdat: a change there compared equal")
+	}
+}
+
+// When no chunk offset lands in an mdat every mdat is hashed whole, but never one the chapter
+// track's samples fill, so a chapter write leaves that digest alone: also where the mdat it
+// replaces does not end the file and so stays, as free space.
+func TestMP4EssenceFallbackExcludesChapterMdat(t *testing.T) {
+	// The audio track's one chunk offset points into ftyp.
+	base := slices.Concat(testfile.MP4Ftyp(), mp4Moov(nil, 4), testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 120)))
+	chaptered, err := mustParseBytes(t, base).Edit().SetChapters(chaptersFromTitles("A", "B")...).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	written := applyToBytes(t, base, chaptered)
+	for name, data := range map[string][]byte{
+		"no chapters":                base,
+		"chapter mdat ahead of free": slices.Concat(written, testfile.MP4Atom("free", nil)),
+		"chapter mdat ahead of mdat": slices.Concat(written, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xC3}, 40))),
+	} {
+		t.Run(name, func(t *testing.T) {
+			essence := essenceOf(t, data)
+			out := data
+			for _, titles := range [][]string{{"C", "D"}, {"E"}, nil} {
+				plan, err := mustParseBytes(t, out).Edit().SetChapters(chaptersFromTitles(titles...)...).Prepare(wl.WithVerifyEssence())
+				if err != nil {
+					t.Fatal(err)
+				}
+				out = applyToBytes(t, out, plan)
+				if re := mustParseBytes(t, out); len(re.Chapters()) != len(titles) || !essenceOf(t, out).Equal(essence) {
+					t.Errorf("chapters %q: %d read back, digest equal %v", titles, len(re.Chapters()), essenceOf(t, out).Equal(essence))
+				}
+			}
+		})
 	}
 }

@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"encoding/binary"
+	"slices"
 	"unicode/utf8"
 
 	"github.com/colespringer/waxlabel/internal/core"
@@ -128,9 +129,68 @@ type udtaText struct {
 	name    [4]byte
 	key     tag.Key
 	entries []qtTextEntry
+	// dups are the other atoms of this name, which an edit of this one removes.
+	dups []udtaText
 }
 
 func (u udtaText) id() string { return string(u.name[:]) }
+
+// value is the text the atom contributes, its canonical entry's.
+func (u udtaText) value() string {
+	if len(u.entries) == 0 {
+		return ""
+	}
+	return u.entries[canonicalEntry(u.entries)].text
+}
+
+func (u udtaText) clone() udtaText {
+	u.entries = slices.Clone(u.entries)
+	u.dups = slices.Clone(u.dups)
+	for i := range u.dups {
+		u.dups[i] = u.dups[i].clone()
+	}
+	return u
+}
+
+// foldUdtaTextDups keeps one text atom per name, the first holding a value, else the first, and
+// hangs the others of that name on it.
+func foldUdtaTextDups(all []udtaText) []udtaText {
+	var out []udtaText
+	at := map[[4]byte]int{}
+	for _, u := range all {
+		i, seen := at[u.name]
+		switch {
+		case !seen:
+			at[u.name] = len(out)
+			out = append(out, u)
+		case out[i].value() == "" && u.value() != "":
+			prev := out[i]
+			u.dups, prev.dups = prev.dups, nil
+			u.dups = append(u.dups, prev)
+			out[i] = u
+		default:
+			out[i].dups = append(out[i].dups, u)
+		}
+	}
+	return out
+}
+
+// dupContent is what the atom's duplicates hold that it does not, as values of its key.
+func (u udtaText) dupContent() core.DuplicateContent {
+	held := map[string]bool{}
+	for _, e := range u.entries {
+		held[e.text] = true
+	}
+	ts := tag.NewTagSet()
+	for _, dup := range u.dups {
+		for _, e := range dup.entries {
+			if e.text != "" && !held[e.text] {
+				ts.Add(u.key, e.text)
+			}
+		}
+	}
+	return core.DuplicateContent{Tags: ts}
+}
 
 // parseQTText decodes a udta text atom payload as a back-to-back sequence of [uint16
 // size][uint16 language]<text> entries, where size counts the text bytes only.
@@ -221,14 +281,9 @@ func decodeUdtaText(ref atomRef, payload []byte) (udtaText, bool) {
 func udtaContributions(texts []udtaText) []core.Contribution {
 	var out []core.Contribution
 	for _, u := range texts {
-		if len(u.entries) == 0 {
-			continue
+		if v := u.value(); v != "" {
+			out = append(out, core.Contribution{Key: u.key, Value: v, Source: "udta." + u.id()})
 		}
-		v := u.entries[canonicalEntry(u.entries)].text
-		if v == "" {
-			continue
-		}
-		out = append(out, core.Contribution{Key: u.key, Value: v, Source: "udta." + u.id()})
 	}
 	return out
 }

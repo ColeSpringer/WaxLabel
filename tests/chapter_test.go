@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +31,196 @@ func mp4Chpl(version byte, starts []time.Duration, titles []string) []byte {
 		body = append(body, title...)
 	}
 	return testfile.MP4Atom("chpl", body)
+}
+
+// Of several chpl atoms the first holding chapters is read. An unrelated edit keeps them all and a
+// chapter edit removes them all, reporting the chapters only a removed duplicate held.
+func TestMP4DuplicateChplWarnsAndClearRemovesAll(t *testing.T) {
+	tagged := testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T")))
+	first := mp4Chpl(1, []time.Duration{0, 30 * time.Second}, []string{"One", "Two"})
+	stale := mp4Chpl(1, []time.Duration{0, 45 * time.Second}, []string{"Old One", "Old Two"})
+	cases := []struct {
+		name   string
+		data   []byte
+		titles []string
+		lossy  bool // a duplicate holds chapters the file holds nowhere else
+	}{
+		{"stale duplicate", testfile.MP4AssembleUdta(tagged, first, stale), []string{"One", "Two"}, true},
+		{"identical duplicate", testfile.MP4AssembleUdta(tagged, first, first), []string{"One", "Two"}, false},
+		{"empty first", testfile.MP4AssembleUdta(tagged, mp4Chpl(1, nil, nil), first), []string{"One", "Two"}, false},
+		// A count of five with no entries does not decode.
+		{"unreadable duplicate", testfile.MP4AssembleUdta(tagged, first, testfile.MP4Atom("chpl", []byte{1, 0, 0, 0, 0, 0, 0, 0, 5})),
+			[]string{"One", "Two"}, true},
+		{"beside a chapter track", mp4AppendToUdta(t, readFixture(t, sampleM4B), stale),
+			[]string{"Opening Credits", "Chapter One", "Chapter Two"}, true},
+	}
+	chplCount := func(data []byte) int {
+		n := 0
+		for _, k := range mp4UdtaKids(t, data) {
+			if k == "chpl" {
+				n++
+			}
+		}
+		return n
+	}
+	titlesOf := func(doc *wl.Document) []string {
+		var out []string
+		for _, ch := range doc.Chapters() {
+			out = append(out, ch.Title)
+		}
+		return out
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := mustParseBytes(t, tc.data)
+			if !hasWarning(doc, wl.WarnDuplicateTagBlock) || !slices.Equal(titlesOf(doc), tc.titles) || nativeDuplicates(doc) != 1 {
+				t.Fatalf("read: warnings %v, chapters %q, %d marked duplicate; want duplicate-tag-block, %q and 1",
+					warningCodes(doc), titlesOf(doc), nativeDuplicates(doc), tc.titles)
+			}
+
+			plan, err := doc.Edit().Set(tag.Album, "Unrelated").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := applyToBytes(t, tc.data, plan)
+			if re := mustParseBytes(t, out); chplCount(out) != 2 || !slices.Equal(titlesOf(re), tc.titles) || planHasWarning(plan, wl.WarnDuplicateTagBlockDropped) {
+				t.Errorf("tag edit: %d chpl atom(s), chapters %q, report %+v", chplCount(out), titlesOf(re), plan.Report().Warnings)
+			}
+
+			if plan, err = doc.Edit().ClearChapters().Prepare(); err != nil {
+				t.Fatal(err)
+			}
+			out = applyToBytes(t, tc.data, plan)
+			if re := mustParseBytes(t, out); chplCount(out) != 0 || len(re.Chapters()) != 0 || hasWarning(re, wl.WarnDuplicateTagBlock) {
+				t.Errorf("clear: %d chpl atom(s), chapters %q, warnings %v", chplCount(out), titlesOf(re), warningCodes(re))
+			}
+			if got := planHasWarning(plan, wl.WarnDuplicateTagBlockDropped); got != tc.lossy {
+				t.Errorf("clear: duplicate-tag-block-dropped = %v, want %v (%+v)", got, tc.lossy, plan.Report().Warnings)
+			}
+
+			if plan, err = doc.Edit().SetChapters(wl.Chapter{Title: "Only"}).Prepare(); err != nil {
+				t.Fatal(err)
+			}
+			out = applyToBytes(t, tc.data, plan)
+			if re := mustParseBytes(t, out); chplCount(out) != 1 || !slices.Equal(titlesOf(re), []string{"Only"}) || hasWarning(re, wl.WarnDuplicateTagBlock) {
+				t.Errorf("replace: %d chpl atom(s), chapters %q, warnings %v", chplCount(out), titlesOf(re), warningCodes(re))
+			}
+		})
+	}
+
+	// An edit that writes the chapters only the duplicate held loses none of them.
+	plan, err := mustParseBytes(t, cases[0].data).Edit().SetChapters(
+		wl.Chapter{Title: "Old One"}, wl.Chapter{Start: 45 * time.Second, Title: "Old Two"}).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planHasWarning(plan, wl.WarnDuplicateTagBlockDropped) {
+		t.Errorf("the duplicate's own chapters were written, yet the plan warns: %+v", plan.Report().Warnings)
+	}
+}
+
+// A chapter title that is not UTF-8 reads through a code page and says so: Windows-1252 in a
+// Nero chpl, Mac OS Roman in a chapter track, and the chpl's where both hold such titles, so the
+// two agree. A tag edit leaves its bytes and a chapter edit stores it as UTF-8.
+func TestMP4ChapterTitleNotUTF8(t *testing.T) {
+	starts := []time.Duration{0, 3 * time.Second}
+	windows, mac := []string{"Caf\xe9", "Plain"}, []string{"Caf\x8e", "Plain"}
+	tagged := testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T")))
+	for name, c := range map[string]struct {
+		data []byte
+		raw  string
+		page string
+	}{
+		"chpl":               {testfile.MP4AssembleUdta(tagged, mp4Chpl(1, starts, windows)), windows[0], "Windows-1252"},
+		"chapter track":      {testfile.MP4QTFile([]int{0, 3000}, mac), mac[0], "Mac OS Roman"},
+		"chpl and the track": {testfile.MP4QTFile([]int{0, 3000}, windows, mp4Chpl(1, starts, windows)), windows[0], "Windows-1252"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc := mustParseBytes(t, c.data)
+			var said string
+			for _, w := range doc.Warnings() {
+				if w.Code == wl.WarnInvalidText {
+					said += w.Message
+				}
+			}
+			if chs := doc.Chapters(); len(chs) != 2 || chs[0].Title != "Caf\u00e9" || chs[1].Title != "Plain" ||
+				!strings.Contains(said, c.page) || hasWarning(doc, wl.WarnChapterSourceConflict) {
+				t.Fatalf("chapters %+v, warnings %v (%q); want Caf\u00e9 and Plain with invalid-text naming %s", chs, warningCodes(doc), said, c.page)
+			}
+
+			plan, err := doc.Edit().Set(tag.Album, "Unrelated").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out := applyToBytes(t, c.data, plan); !bytes.Contains(out, []byte(c.raw)) || !hasWarning(mustParseBytes(t, out), wl.WarnInvalidText) {
+				t.Error("a tag edit rewrote the title's bytes")
+			}
+
+			if plan, err = doc.Edit().SetChapters(append(doc.Chapters(), wl.Chapter{Start: 6 * time.Second, Title: "Added"})...).Prepare(); err != nil {
+				t.Fatal(err)
+			}
+			re := mustParseBytes(t, applyToBytes(t, c.data, plan))
+			if chs := re.Chapters(); len(chs) != 3 || chs[0].Title != "Caf\u00e9" || hasWarning(re, wl.WarnInvalidText) {
+				t.Errorf("after a chapter edit: chapters %+v, warnings %v", chs, warningCodes(re))
+			}
+		})
+	}
+}
+
+// A chapter title ends at its first NUL, so one a writer terminated reads clean and an edit that
+// carries it over is accepted. UTF-16 behind a byte-order mark is no 8-bit text and reads empty.
+func TestMP4ChapterTitleEndsAtNUL(t *testing.T) {
+	starts := []time.Duration{0, 3 * time.Second}
+	tagged := testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T")))
+	for name, c := range map[string]struct {
+		raw, want string
+		legacy    bool
+	}{
+		"terminated": {"Intro\x00", "Intro", false},
+		"padded":     {"Intro\x00\x00\x00", "Intro", false},
+		"legacy":     {"Na\xefve\x00", "Na\u00efve", true},
+		"UTF-16":     {"\xfe\xff\x00I\x00n", "", false},
+	} {
+		titles := []string{c.raw, "Plain"}
+		for store, data := range map[string][]byte{
+			"chpl":          testfile.MP4AssembleUdta(tagged, mp4Chpl(1, starts, titles)),
+			"chapter track": testfile.MP4QTFile([]int{0, 3000}, titles, mp4Chpl(1, starts, titles)),
+		} {
+			t.Run(name+" in the "+store, func(t *testing.T) {
+				doc := mustParseBytes(t, data)
+				if chs := doc.Chapters(); len(chs) != 2 || chs[0].Title != c.want || hasWarning(doc, wl.WarnInvalidText) != c.legacy {
+					t.Fatalf("chapters %+v, warnings %v; want %q first", chs, warningCodes(doc), c.want)
+				}
+				plan, err := doc.Edit().SetChapters(append(doc.Chapters(), wl.Chapter{Start: 6 * time.Second, Title: "Added"})...).Prepare()
+				if err != nil {
+					t.Fatalf("an edit carrying the title over: %v", err)
+				}
+				if chs := mustParseBytes(t, applyToBytes(t, data, plan)).Chapters(); len(chs) != 3 || chs[0].Title != c.want {
+					t.Errorf("after the edit: chapters %+v", chs)
+				}
+			})
+		}
+	}
+}
+
+// The warning speaks of the titles shown: one in the list that lost to the other raises none.
+func TestMP4LegacyTitleWarnsOnlyWhenShown(t *testing.T) {
+	starts := []time.Duration{0, 3 * time.Second}
+	legacy, plain := []string{"Caf\xe9", "Other"}, []string{"Track A", "Track B"}
+	for name, c := range map[string]struct {
+		track, chpl []string
+		warn        bool
+	}{
+		"in the chpl, the track shown": {plain, legacy, false},
+		"in the track shown":           {legacy, plain, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc := mustParseBytes(t, testfile.MP4QTFile([]int{0, 3000}, c.track, mp4Chpl(1, starts, c.chpl)))
+			if !hasWarning(doc, wl.WarnChapterSourceConflict) || hasWarning(doc, wl.WarnInvalidText) != c.warn {
+				t.Errorf("warnings %v, want chapter-source-conflict and invalid-text %v", warningCodes(doc), c.warn)
+			}
+		})
+	}
 }
 
 func TestMP4ChplReadVersions(t *testing.T) {

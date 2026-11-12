@@ -47,6 +47,8 @@ type node struct {
 	// sentinel (a declared 0) resolves to the region length before the clamp, so it never
 	// reads as truncated.
 	truncated bool
+	// openEnded records a declared size of 0: the atom runs to the end of the file.
+	openEnded bool
 	children  []node
 }
 
@@ -109,6 +111,7 @@ walkLoop:
 		copy(name[:], head[4:8])
 		size := int64(binary.BigEndian.Uint32(head[0:4]))
 		headerLen := int64(8)
+		openEnded := false
 		switch {
 		case size == 1:
 			// A 64-bit atom needs a 16-byte header; reject one that does not fit the region.
@@ -132,7 +135,7 @@ walkLoop:
 			if !topLevel {
 				break walkLoop
 			}
-			size = end - off
+			size, openEnded = end-off, true
 		case size < 8:
 			return nil, fmt.Errorf("%w: atom %q size %d below 8", waxerr.ErrInvalidData, name, size)
 		}
@@ -151,7 +154,7 @@ walkLoop:
 			truncated = true
 			size = end - off
 		}
-		n := node{name: name, offset: off, headerLen: headerLen, size: size, truncated: truncated}
+		n := node{name: name, offset: off, headerLen: headerLen, size: size, truncated: truncated, openEnded: openEnded}
 		if containerAtoms[name] {
 			cs, err := childStart(src, n, limit)
 			if err != nil {

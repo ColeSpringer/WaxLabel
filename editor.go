@@ -335,7 +335,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// Reject a NUL byte or invalid UTF-8 in any value, chapter title, or picture
 	// description this edit introduces. A NUL truncates the field on C-string
 	// formats; invalid UTF-8 is reprojected on read (ID3 to U+FFFD, an MP4 chapter
-	// title to ""), so the written result would not equal a fresh parse.
+	// title as Mac OS Roman), so the written result would not equal a fresh parse.
 	if err := e.rejectInvalidValues(editedTags, patchKeys); err != nil {
 		return nil, err
 	}
