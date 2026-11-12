@@ -42,19 +42,15 @@ type doc struct {
 	chpl     *atomRef
 	chplDups []atomRef
 
-	// QuickTime chapter-write refs (the chapter text track lives in moov as a sibling trak
-	// referenced from the audio track's tref "chap").
-	audioTrak    *atomRef // the first "soun" trak, if any
-	audioMdiaOff int64    // absolute offset of the audio trak's mdia (tref goes before it)
-	audioTref    *atomRef // the audio trak's tref, if any
-	audioTrefRaw []byte   // the audio tref payload (to re-emit without "chap" on clear)
-	audioHasChap bool     // the audio tref carries a "chap" reference (may be dangling)
-	chapTrak     *atomRef // the resolved QuickTime chapter text trak, if any
-	chapTrackID  uint32   // the chapter text track's track id (reused when rebuilt)
+	// QuickTime chapter-write refs: the chapter text track is a moov trak other traks name in a
+	// tref "chap" entry.
+	chapRefs    []trefChap // the traks a chapter write may rewrite the "chap" list of
+	chapTrak    *atomRef   // the chapter text trak, if any
+	chapTrackID uint32     // its track id (reused when the track is rebuilt)
 
 	mvhd           *atomRef
-	movieTimescale uint32 // mvhd timescale (chapter track shares it; 0 if unread)
-	movieDuration  uint64 // mvhd duration in movie units (the last chapter's span)
+	movieTimescale uint32 // mvhd timescale (the chapter track's edit list and tkhd use it; 0 if unread)
+	movieDuration  uint64 // mvhd duration in movie units (where an open last chapter ends)
 	nextTrackID    uint32 // a track id free for a new chapter track
 	nextTrackIDOff int64  // absolute offset of mvhd's next_track_ID field (0 if unread)
 
@@ -158,9 +154,11 @@ func (d *doc) Clone() core.NativeDoc {
 	for i, u := range d.udtaTexts {
 		c.udtaTexts[i] = u.clone()
 	}
-	c.audioTrak = cloneRef(d.audioTrak)
-	c.audioTref = cloneRef(d.audioTref)
-	c.audioTrefRaw = slices.Clone(d.audioTrefRaw)
+	c.chapRefs = make([]trefChap, len(d.chapRefs))
+	for i, r := range d.chapRefs {
+		r.tref, r.raw, r.video = cloneRef(r.tref), slices.Clone(r.raw), slices.Clone(r.video)
+		c.chapRefs[i] = r
+	}
 	c.chapTrak = cloneRef(d.chapTrak)
 	c.mvhd = cloneRef(d.mvhd)
 	c.chapters = core.CloneChapters(d.chapters)

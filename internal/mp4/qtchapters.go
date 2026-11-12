@@ -94,8 +94,8 @@ func chapterDinf() []byte {
 	return renderAtom(atomName("dinf"), dref)
 }
 
-// chapterMdhd is the media header (v0): the media timescale (shared with the
-// movie) and the track's total media duration.
+// chapterMdhd is the media header (v0): the media timescale and the track's total
+// media duration.
 func chapterMdhd(timescale uint32, duration uint64) []byte {
 	p := make([]byte, 24) // vf, ctime, mtime, timescale, duration, language, quality
 	binary.BigEndian.PutUint32(p[12:16], timescale)
@@ -115,11 +115,12 @@ func chapterTkhd(trackID uint32, duration uint64) []byte {
 	return renderAtom(atomName("tkhd"), p)
 }
 
-// chapterEdts maps the media into the movie timeline at normal rate.
-func chapterEdts(firstStart, mediaDur uint64) []byte {
+// chapterEdts maps the media into the movie timeline at normal rate: played movie units of it,
+// behind an empty edit of firstStart when the first chapter starts late.
+func chapterEdts(firstStart, played uint64) []byte {
 	normal := make([]byte, 12)
-	binary.BigEndian.PutUint32(normal[0:4], clampU32(mediaDur)) // segment_duration (movie ts)
-	binary.BigEndian.PutUint32(normal[8:12], 0x00010000)        // media_rate 1.0 (media_time 0)
+	binary.BigEndian.PutUint32(normal[0:4], clampU32(played)) // segment_duration (movie ts)
+	binary.BigEndian.PutUint32(normal[8:12], 0x00010000)      // media_rate 1.0 (media_time 0)
 	entries, count := normal, 1
 	if firstStart > 0 {
 		empty := make([]byte, 12)
@@ -156,10 +157,10 @@ func chapterSamples(chapters []core.Chapter) []byte {
 	return out
 }
 
-// chapterDeltas returns each chapter sample's stts duration in the chapter media
-// timescale (mts): the gap to the next chapter, and for the last chapter its own End
-// (or the movie duration) so the track spans the whole movie.
-func chapterDeltas(chapters []core.Chapter, mts, movieTimescale uint32, movieDuration uint64) (deltas []uint32, saturated bool) {
+// chapterDeltas returns the span of each chapter in the chapter media timescale (mts): the gap
+// to the next chapter, and for the last chapter its own End (or the movie duration) so the track
+// spans the whole movie. openTail marks a last chapter that nothing bounds, which gets one unit.
+func chapterDeltas(chapters []core.Chapter, mts, movieTimescale uint32, movieDuration uint64) (deltas []uint32, saturated, openTail bool) {
 	n := len(chapters)
 	starts := make([]uint64, n)
 	for i, ch := range chapters {
@@ -188,7 +189,7 @@ func chapterDeltas(chapters []core.Chapter, mts, movieTimescale uint32, movieDur
 		default:
 			// A one-media-unit tail when nothing else bounds it: the chapter starts at or past
 			// the movie duration, so there is no real end to encode.
-			next = starts[i] + 1
+			next, openTail = starts[i]+1, true
 		}
 		// The input is stably sorted by start, so starts[i] <= next normally holds; a
 		// zero raw gap is a collision (or a last chapter the movie duration does not
@@ -214,42 +215,80 @@ func chapterDeltas(chapters []core.Chapter, mts, movieTimescale uint32, movieDur
 		}
 		deltas[i] = clampU32(delta)
 	}
-	return deltas, saturated
+	return deltas, saturated, openTail
+}
+
+// chapterTiming is the durations a chapter track is written with.
+type chapterTiming struct {
+	deltas []uint32 // each sample's stts duration, in media units
+	media  uint64   // their sum, the media duration
+	// lead is the first chapter's start, written as a leading empty edit, and played the span
+	// the chapters cover, written as the edit that plays the media: both in movie units.
+	lead, played uint64
+	saturated    bool // a value here overflows the 32-bit field it is written to
+}
+
+// chapterTimes lays the chapters out as a track. A late first chapter is placed by the empty
+// edit, and the media runs on by that start so that it ends where the last chapter does on the
+// movie timeline: ffmpeg takes the media duration for that end. It stays as long as the chapters
+// where a field would clamp or a reparse would not read the longer media back as that end.
+func chapterTimes(chapters []core.Chapter, mts, movieTimescale uint32, movieDuration uint64) chapterTiming {
+	deltas, saturated, openTail := chapterDeltas(chapters, mts, movieTimescale, movieDuration)
+	t := chapterTiming{deltas: deltas, lead: chapterFirstStart(movieTimescale, chapters)}
+	for _, d := range deltas {
+		t.media += uint64(d)
+	}
+	t.played = t.media
+	if movieTimescale != 0 && movieTimescale != mts {
+		t.played = durationToUnits(scaleToDuration(t.media, mts), movieTimescale)
+	}
+	if t.lead > 0 {
+		// An edit of no length would read as one that plays the media whole.
+		t.played = max(t.played, 1)
+	}
+	// Four 32-bit duration fields are written: the stts deltas and the mdhd in media units, the
+	// tkhd (lead + played) and the two elst segments in movie units.
+	t.saturated = saturated || t.media > math.MaxUint32 || t.lead+t.played > math.MaxUint32
+	if t.lead == 0 || openTail {
+		return t
+	}
+	last, ed := len(deltas)-1, t.edits(movieTimescale)
+	lastStart := addClamp(scaleToDuration(t.media-uint64(deltas[last]), mts), ed.offset)
+	lead := durationToUnits(chapters[0].Start, mts)
+	run := t.media + lead
+	if run <= math.MaxUint32 && scaleToDuration(run, mts) ==
+		lastChapterEnd(lastStart, run, uint64(deltas[last])+lead, ed, mts, movieTimescale, movieDuration) {
+		deltas[last] += uint32(lead)
+		t.media = run
+	}
+	return t
+}
+
+// edits is the edit list as a reparse reads it back from what chapterEdts writes, clamps and
+// all. A reparse reads none where the movie timescale is unknown.
+func (t chapterTiming) edits(movieTimescale uint32) trackEdits {
+	if movieTimescale == 0 {
+		return trackEdits{}
+	}
+	const elstPayloadOff = 16 // behind the edts and elst headers
+	return readEdits(chapterEdts(t.lead, t.played)[elstPayloadOff:], movieTimescale)
 }
 
 // buildChapterTrak renders the whole chapter text trak with a placeholder chunk offset
 // (the appended mdat's address is not known until the moov delta is).
 func buildChapterTrak(trackID, mts, movieTimescale uint32, movieDuration uint64, chapters []core.Chapter, co64 bool) (trak []byte, stcoEntryOff int, saturated bool) {
-	deltas, saturated := chapterDeltas(chapters, mts, movieTimescale, movieDuration)
-	var totalDur uint64 // the summed media (mts) span; mdhd.duration and the stts deltas use it
-	for _, d := range deltas {
-		totalDur += uint64(d)
-	}
-	// The first chapter's start becomes a leading empty edit, so the track presentation
-	// (tkhd) spans firstStart + the media, while the media itself (mdhd) stays totalDur.
-	firstStart := chapterFirstStart(movieTimescale, chapters)
-	// mdhd.duration and the stts deltas are media-timescale (mts).
-	totalDurMovie := totalDur
-	if movieTimescale != 0 && movieTimescale != mts {
-		totalDurMovie = durationToUnits(scaleToDuration(totalDur, mts), movieTimescale)
-	}
-	// buildChapterTrak writes four clampU32 duration fields: the 90 kHz mdhd (totalDur)
-	// and three movie-unit fields, tkhd (firstStart+totalDurMovie), the elst normal
-	// segment (totalDurMovie), and the elst empty-edit segment (firstStart).
-	tkhdDur := firstStart + totalDurMovie
-	saturated = saturated || totalDur > math.MaxUint32 || tkhdDur > math.MaxUint32
-
+	t := chapterTimes(chapters, mts, movieTimescale, movieDuration)
 	stbl := renderAtom(atomName("stbl"), slices.Concat(
-		chapterStsd(), buildStts(deltas), buildStsc(len(chapters)), buildStsz(chapters), buildStco(co64)))
+		chapterStsd(), buildStts(t.deltas), buildStsc(len(chapters)), buildStsz(chapters), buildStco(co64)))
 	minf := renderAtom(atomName("minf"), slices.Concat(chapterGmhd(), chapterDinf(), stbl))
-	mdia := renderAtom(atomName("mdia"), slices.Concat(chapterMdhd(mts, totalDur), chapterHdlr(), minf))
-	trak = renderAtom(atomName("trak"), slices.Concat(chapterTkhd(trackID, tkhdDur), chapterEdts(firstStart, totalDurMovie), mdia))
+	mdia := renderAtom(atomName("mdia"), slices.Concat(chapterMdhd(mts, t.media), chapterHdlr(), minf))
+	trak = renderAtom(atomName("trak"), slices.Concat(chapterTkhd(trackID, t.lead+t.played), chapterEdts(t.lead, t.played), mdia))
 
 	width := 4
 	if co64 {
 		width = 8
 	}
-	return trak, len(trak) - width, saturated
+	return trak, len(trak) - width, t.saturated
 }
 
 // buildStts renders the time-to-sample table: one run per sample (sample_count 1,
@@ -305,16 +344,11 @@ func qtWriteRoundTrip(chapters []core.Chapter, mts, movieTimescale uint32, movie
 	if len(chapters) == 0 {
 		return nil, false
 	}
-	deltas, _ := chapterDeltas(chapters, mts, movieTimescale, movieDuration)
-	// chapterEdts writes firstStart as a u32 segment_duration via clampU32 and a reparse
-	// reads that clamped value back, so derive the offset from it too; the prediction then
-	// holds past the 2^32-unit edge, and addClamp matches the read's saturating add.
-	clampedFirstStart := clampU32(chapterFirstStart(movieTimescale, chapters))
-	// Saturation has two sources, mirroring the read: an over-range stts delta (a >13.25 h
-	// gap clamped by buildStts, read back as a MaxUint32 delta) and a leading empty-edit
-	// offset whose clamped u32 segment_duration reads back as MaxUint32 (emptyEditOffset).
-	saturated = slices.Contains(deltas, uint32(math.MaxUint32)) || clampedFirstStart == math.MaxUint32
-	offset := scaleToDuration(uint64(clampedFirstStart), movieTimescale)
+	t := chapterTimes(chapters, mts, movieTimescale, movieDuration)
+	deltas, ed := t.deltas, t.edits(movieTimescale)
+	// Saturation has two sources, mirroring the read: a clamped leading empty edit, and an
+	// over-range stts delta (a >13.25 h gap clamped by buildStts, read back as a MaxUint32 delta).
+	saturated = slices.Contains(deltas, uint32(math.MaxUint32)) || ed.saturated
 	cum := make([]uint64, len(chapters))
 	for i := 1; i < len(chapters); i++ {
 		cum[i] = cum[i-1] + uint64(deltas[i-1])
@@ -322,21 +356,14 @@ func qtWriteRoundTrip(chapters []core.Chapter, mts, movieTimescale uint32, movie
 	out = make([]core.Chapter, len(chapters))
 	for i := range chapters {
 		out[i] = core.Chapter{
-			Start: addClamp(scaleToDuration(cum[i], mts), offset),
+			Start: addClamp(scaleToDuration(cum[i], mts), ed.offset),
 			Title: truncateUTF8(chapters[i].Title, titleByteMax),
 		}
 		if i+1 < len(chapters) {
-			out[i].End = addClamp(scaleToDuration(cum[i+1], mts), offset)
+			out[i].End = addClamp(scaleToDuration(cum[i+1], mts), ed.offset)
 		}
 	}
-	// Mirror decodeTextTrack's last-end recovery exactly: the final stts boundary (the
-	// last cumulative sum plus the last delta) is the last chapter's end, reported
-	// verbatim except for the synthetic one-unit placeholder tail on a chapter starting
-	// at/past a known movie duration (isPlaceholderTail), which stays open.
 	last := len(chapters) - 1
-	lastEnd := addClamp(scaleToDuration(cum[last]+uint64(deltas[last]), mts), offset)
-	if !isPlaceholderTail(out[last].Start, uint64(deltas[last]), mts, movieTimescale, movieDuration) {
-		out[last].End = lastEnd
-	}
+	out[last].End = lastChapterEnd(out[last].Start, cum[last]+uint64(deltas[last]), uint64(deltas[last]), ed, mts, movieTimescale, movieDuration)
 	return out, saturated
 }

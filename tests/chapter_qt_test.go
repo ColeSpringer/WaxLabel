@@ -10,6 +10,7 @@ import (
 	"slices"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/testfile"
@@ -139,21 +140,11 @@ func TestMP4ChapterWriteCreatesQTTrack(t *testing.T) {
 	}
 }
 
-// mp4AudioTrakTkhd builds an audio trak with a tkhd carrying the given track id and any extra
-// children, such as a tref.
-func mp4AudioTrakTkhd(trackID int, audioStco uint32, extra ...[]byte) []byte {
-	tkhd := testfile.MP4Atom("tkhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), testfile.BE32(trackID), make([]byte, 4)))
-	stbl := testfile.MP4Atom("stbl", slices.Concat(testfile.MP4StsdAudio(), testfile.MP4Stco(audioStco)))
-	minf := testfile.MP4Atom("minf", stbl)
-	mdia := testfile.MP4Atom("mdia", slices.Concat(testfile.MP4HdlrSoun(), testfile.MP4Mdhd(44100), minf))
-	return testfile.MP4Atom("trak", slices.Concat(tkhd, slices.Concat(extra...), mdia))
-}
-
 func TestMP4ChapterEditKeepsMoovFingerprinted(t *testing.T) {
 	// A chapter edit appends a chapter mdat at end-of-file. On a non-faststart file (moov after the
 	// audio mdat) that would sandwich the moov between two mdats, in the fingerprint's un-hashed gap.
 	build := func(stcoOff uint32) []byte {
-		moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(1, stcoOff))
+		moov := testfile.MP4Atom("moov", testfile.MP4SoundTrak(1, stcoOff))
 		mdat := testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 200))
 		return slices.Concat(testfile.MP4Ftyp(), mdat, moov) // moov AFTER mdat (non-faststart)
 	}
@@ -186,7 +177,7 @@ func TestMP4ChapterEditKeepsMoovFingerprinted(t *testing.T) {
 // warning and still writes a reparsable file. The uint64 Nero chpl keeps the exact start.
 func TestMP4ChapterStartOverflowWarns(t *testing.T) {
 	build := func(stcoOff uint32) []byte {
-		moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(1, stcoOff))
+		moov := testfile.MP4Atom("moov", testfile.MP4SoundTrak(1, stcoOff))
 		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
 	}
 	tmp := build(0)
@@ -218,7 +209,7 @@ func TestMP4ChapterStartOverflowWarns(t *testing.T) {
 // checks the direct-edit warning for MP4's start+title-only chapter storage.
 func TestMP4SetChaptersMetadataDroppedWarns(t *testing.T) {
 	build := func(stcoOff uint32) []byte {
-		moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(1, stcoOff))
+		moov := testfile.MP4Atom("moov", testfile.MP4SoundTrak(1, stcoOff))
 		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
 	}
 	tmp := build(0)
@@ -257,7 +248,7 @@ func TestMP4ChapterMaxTrackIDNoCreate(t *testing.T) {
 	build := func(stcoOff uint32) []byte {
 		// -1 encodes the max track id 0xFFFFFFFF through BE32's uint32 conversion on every int width;
 		// int(uint32(0xFFFFFFFF)) overflows a 32-bit int at compile time.
-		moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(-1, stcoOff))
+		moov := testfile.MP4Atom("moov", testfile.MP4SoundTrak(-1, stcoOff))
 		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
 	}
 	tmp := build(0)
@@ -284,7 +275,7 @@ func TestMP4ChapterTrefPreservesOtherRefs(t *testing.T) {
 	otherRef := testfile.MP4Atom("hint", testfile.BE32(7)) // a non-chap reference
 	tref := testfile.MP4Atom("tref", otherRef)
 	build := func(stcoOff uint32) []byte {
-		moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(1, stcoOff, tref))
+		moov := testfile.MP4Atom("moov", testfile.MP4SoundTrak(1, stcoOff, tref))
 		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
 	}
 	tmp := build(0)
@@ -311,7 +302,7 @@ func TestMP4ChapterClearRemovesDanglingChap(t *testing.T) {
 	chpl := mp4Chpl(1, []time.Duration{0, 5 * time.Second}, []string{"X", "Y"})
 	dangling := testfile.MP4Atom("tref", testfile.MP4Atom("chap", testfile.BE32(99))) // track 99 does not exist
 	build := func(stcoOff uint32) []byte {
-		trak := mp4AudioTrakTkhd(1, stcoOff, dangling)
+		trak := testfile.MP4SoundTrak(1, stcoOff, dangling)
 		moov := testfile.MP4Atom("moov", slices.Concat(trak, testfile.MP4Atom("udta", chpl)))
 		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
 	}
@@ -325,6 +316,10 @@ func TestMP4ChapterClearRemovesDanglingChap(t *testing.T) {
 	plan, err := doc.Edit().ClearChapters().Prepare()
 	if err != nil {
 		t.Fatal(err)
+	}
+	// There is no chapter track to remove, and the plan does not say there is.
+	if ops := plan.Report().Operations; !slices.Contains(ops, "chapter removal (chpl + track references)") {
+		t.Errorf("operations %q, want the chpl and the track references named", ops)
 	}
 	out := applyToBytes(t, data, plan)
 	re := mustParseBytes(t, out)
@@ -548,6 +543,60 @@ func TestMP4ChapterNonZeroStartRoundTrip(t *testing.T) {
 	}
 }
 
+// A late first chapter keeps every start and the last chapter ends with the movie, read from a
+// track whose media runs on to the movie's end, as it is written, and from one whose media ends
+// with the chapters, as earlier versions wrote it.
+func TestMP4ChapterLateFirstStartEndsWithTheMovie(t *testing.T) {
+	const mts = 90000 // the media timescale chapter tracks are written at
+	written := rewriteChapters(t, readFixture(t, sampleM4B), func(e *wl.Editor) *wl.Editor {
+		return e.SetChapters(wl.Chapter{Start: 2 * time.Second, Title: "A"}, wl.Chapter{Start: 5 * time.Second, Title: "B"})
+	})
+	// The chapter trak's media duration and its last stts delta.
+	hdlr := bytes.Index(written, []byte("SubtitleHandler"))
+	mdhd := bytes.LastIndex(written[:hdlr], []byte("mdhd")) + 4 + 16
+	stts := hdlr + bytes.Index(written[hdlr:], []byte("stts")) + 4
+	last := stts + 8 + 8*(int(binary.BigEndian.Uint32(written[stts+4:]))-1) + 4
+	if got := binary.BigEndian.Uint32(written[mdhd:]); got != 9*mts {
+		t.Errorf("the chapter media lasts %d units, want the movie's 9 s (%d)", got, 9*mts)
+	}
+	earlier := slices.Clone(written)
+	for _, at := range []int{mdhd, last} {
+		binary.BigEndian.PutUint32(earlier[at:], binary.BigEndian.Uint32(earlier[at:])-2*mts)
+	}
+	for name, data := range map[string][]byte{"media to the movie's end": written, "media to the chapters' end": earlier} {
+		doc := mustParseBytes(t, data)
+		chs := doc.Chapters()
+		if len(chs) != 2 || chs[0].Start != 2*time.Second || chs[1].Start != 5*time.Second || chs[1].End != 9*time.Second ||
+			chapterWarn(doc, wl.WarnChapterSourceConflict) {
+			t.Errorf("%s: chapters %+v, warnings %v; want 2 s and 5 s, the last ending at 9 s", name, chs, warningCodes(doc))
+		}
+	}
+}
+
+// Behind a late first chapter the last chapter's end reads back as it was set, to the chapter
+// track's 90 kHz grid, and setting the same list again writes nothing.
+func TestMP4ChapterLateFirstStartKeepsTheLastEnd(t *testing.T) {
+	src := readFixture(t, sampleM4B)
+	for name, chs := range map[string][]wl.Chapter{
+		"an end short of the movie's":         {{Start: 2 * time.Second, Title: "A"}, {Start: 5 * time.Second, End: 8 * time.Second, Title: "B"}},
+		"an end off the movie timescale":      {{Start: 2 * time.Second, Title: "A"}, {Start: 5 * time.Second, End: 8*time.Second + 400*time.Microsecond, Title: "B"}},
+		"a chapter shorter than a movie unit": {{Start: 4 * time.Second, End: 4*time.Second + 100*time.Microsecond, Title: "Blip"}},
+		"a first start of one movie unit":     {{Start: time.Millisecond, Title: "A"}, {Start: 5 * time.Second, End: 8 * time.Second, Title: "B"}},
+		"one unit, an end between units":      {{Start: time.Millisecond, Title: "A"}, {Start: 5 * time.Second, End: 8*time.Second + 500*time.Microsecond, Title: "B"}},
+		// Past the movie's end a span of one second marks an open chapter; this one must not grow into it.
+		"an end past the movie's": {{Start: 250 * time.Millisecond, Title: "A"}, {Start: 9 * time.Second, End: 9*time.Second + 750*time.Millisecond, Title: "B"}},
+	} {
+		doc := mustParseBytes(t, rewriteChapters(t, src, func(e *wl.Editor) *wl.Editor { return e.SetChapters(chs...) }))
+		got, want := doc.Chapters(), chs[len(chs)-1].End
+		if len(got) != len(chs) || got[len(got)-1].End != want || chapterWarn(doc, wl.WarnChapterSourceConflict) {
+			t.Errorf("%s: chapters %+v, warnings %v; want the last to end at %v", name, got, warningCodes(doc), want)
+		}
+		if plan, err := doc.Edit().SetChapters(chs...).Prepare(); err != nil || !plan.IsNoOp() {
+			t.Errorf("%s: the same list set again: no-op %v, err %v", name, err == nil && plan.IsNoOp(), err)
+		}
+	}
+}
+
 func TestMP4ChapterSingleNonZeroStart(t *testing.T) {
 	// One chapter at a non-zero start keeps its start and materializes its End at the movie duration:
 	// the text track has no "open" on the wire, so the span to the movie end is what gets reported.
@@ -708,7 +757,7 @@ func mp4TwoChapAtoms() []byte {
 		testfile.MP4Atom("chap", testfile.BE32(99)), testfile.MP4Atom("chap", testfile.BE32(2))))
 	audio := bytes.Repeat([]byte{0xA7}, 120)
 	build := func(audioStco, textStco uint32) []byte {
-		moov := testfile.MP4Atom("moov", slices.Concat(mp4AudioTrakTkhd(1, audioStco, tref),
+		moov := testfile.MP4Atom("moov", slices.Concat(testfile.MP4SoundTrak(1, audioStco, tref),
 			testfile.MP4TextTrak(2, 1000, []int{0, 3000}, titles, textStco)))
 		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", slices.Concat(audio, testfile.MP4SamplesBlob(titles))))
 	}
@@ -776,7 +825,7 @@ func TestMP4ChapReferenceToTheAudioTrackItself(t *testing.T) {
 			}
 		})
 	}
-	plain := synth(func(stco uint32) []byte { return mp4AudioTrakTkhd(1, stco) })
+	plain := synth(func(stco uint32) []byte { return testfile.MP4SoundTrak(1, stco) })
 	if one := synth(func(stco uint32) []byte { return testfile.MP4AudioTrakChap(1, stco) }); !essenceOf(t, one).Equal(essenceOf(t, plain)) {
 		t.Error("the digest differs from that of the file with no reference")
 	}
@@ -801,5 +850,553 @@ func TestMP4ChapterWriteKeepsSamplesOfATrackThatIsNoTextTrack(t *testing.T) {
 	copy(data[at:], "soun")
 	if out := rewrite(data, "Gamma"); !bytes.Contains(out, []byte("Alpha")) || !bytes.Contains(out, []byte("Beta")) {
 		t.Error("the write removed the samples of a track that is no text track")
+	}
+}
+
+// mp4Trak is what a test reads of one trak: its handler type, whether it holds a tref, and the
+// track ids the tref's "chap" entries name.
+type mp4Trak struct {
+	handler string
+	tref    bool
+	chap    []uint32
+}
+
+// mp4Traks reads the traks of the file's moov, in order.
+func mp4Traks(t *testing.T, data []byte) []mp4Trak {
+	t.Helper()
+	moov, moovLen := mp4FindBox(t, data, 0, len(data), "moov")
+	offs, names := mp4Boxes(data, moov+8, moov+moovLen)
+	var out []mp4Trak
+	for i, name := range names {
+		if name != "trak" {
+			continue
+		}
+		var tr mp4Trak
+		lo, hi := offs[i]+8, offs[i]+int(binary.BigEndian.Uint32(data[offs[i]:]))
+		kids, kidNames := mp4Boxes(data, lo, hi)
+		for k, kid := range kidNames {
+			end := kids[k] + int(binary.BigEndian.Uint32(data[kids[k]:]))
+			switch kid {
+			case "tref":
+				tr.tref = true
+				refs, refNames := mp4Boxes(data, kids[k]+8, end)
+				for r, ref := range refNames {
+					if ref != "chap" {
+						continue
+					}
+					for at := refs[r] + 8; at+4 <= refs[r]+int(binary.BigEndian.Uint32(data[refs[r]:])); at += 4 {
+						tr.chap = append(tr.chap, binary.BigEndian.Uint32(data[at:]))
+					}
+				}
+			case "mdia":
+				hdlr, _ := mp4FindBox(t, data, kids[k]+8, end, "hdlr")
+				tr.handler = string(data[hdlr+16 : hdlr+20])
+			}
+		}
+		out = append(out, tr)
+	}
+	return out
+}
+
+// rewriteChapters plans edit on data with the essence verified and returns the written bytes.
+func rewriteChapters(t *testing.T, data []byte, edit func(*wl.Editor) *wl.Editor) []byte {
+	t.Helper()
+	plan, err := edit(mustParseBytes(t, data).Edit()).Prepare(wl.WithVerifyEssence())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return applyToBytes(t, data, plan)
+}
+
+// A video track a "chap" entry names holds chapter thumbnails and is never the chapter track,
+// wherever it sits in the file: the titles come from the text track, a clear removes that track
+// alone and leaves the thumbnail reference, and a rewrite replaces it in place.
+func TestMP4ChapterTrefVideoThumbnailNotChapterTrack(t *testing.T) {
+	titles := []string{"One", "Two"}
+	data := testfile.MP4TracksFile(titles, func(audio, text, thumbs uint32) []byte {
+		return slices.Concat(testfile.MP4VideoTrak(3, thumbs), testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(2, 3)),
+			testfile.MP4TextTrak(2, 1000, []int{0, 3000}, titles, text))
+	})
+	if chs := mustParseBytes(t, data).Chapters(); len(chs) != 2 || chs[0].Title != "One" || chs[1].Title != "Two" || chs[1].Start != 3*time.Second {
+		t.Fatalf("chapters = %+v, want One and Two from the text track", chs)
+	}
+
+	cleared := rewriteChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.ClearChapters() })
+	want := []mp4Trak{{handler: "vide"}, {handler: "soun", tref: true, chap: []uint32{3}}}
+	if got := mp4Traks(t, cleared); !reflect.DeepEqual(got, want) {
+		t.Errorf("after the clear: traks %+v, want %+v", got, want)
+	}
+	if chs := mustParseBytes(t, cleared).Chapters(); len(chs) != 0 {
+		t.Errorf("after the clear: chapters %+v", chs)
+	}
+
+	replaced := rewriteChapters(t, data, func(e *wl.Editor) *wl.Editor {
+		return e.SetChapters(chaptersFromTitles("Uno", "Dos", "Tres")...)
+	})
+	want = []mp4Trak{{handler: "vide"}, {handler: "soun", tref: true, chap: []uint32{2, 3}}, {handler: "text"}}
+	if got := mp4Traks(t, replaced); !reflect.DeepEqual(got, want) {
+		t.Errorf("after the rewrite: traks %+v, want %+v", got, want)
+	}
+	if chs := mustParseBytes(t, replaced).Chapters(); len(chs) != 3 || chs[2].Title != "Tres" {
+		t.Errorf("after the rewrite: chapters %+v, want Uno, Dos and Tres", chs)
+	}
+}
+
+// A clear takes the chapter track's id out of every track's "chap" list, not the audio track's
+// alone, and a list or tref left empty goes with it. Other references in a tref stay.
+func TestMP4ChapterClearRewritesEveryTref(t *testing.T) {
+	titles := []string{"One", "Two"}
+	hint := testfile.MP4Atom("hint", testfile.BE32(1))
+	data := testfile.MP4TracksFile(titles, func(audio, text, thumbs uint32) []byte {
+		videoTref := testfile.MP4Atom("tref", slices.Concat(hint, testfile.MP4Atom("chap", testfile.BE32(2))))
+		return slices.Concat(testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(2)), testfile.MP4VideoTrak(3, thumbs, videoTref),
+			testfile.MP4TextTrak(2, 1000, []int{0, 3000}, titles, text))
+	})
+	if chs := mustParseBytes(t, data).Chapters(); len(chs) != 2 {
+		t.Fatalf("setup: chapters = %+v", chs)
+	}
+	cleared := rewriteChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.ClearChapters() })
+	want := []mp4Trak{{handler: "soun"}, {handler: "vide", tref: true}}
+	if got := mp4Traks(t, cleared); !reflect.DeepEqual(got, want) {
+		t.Errorf("after the clear: traks %+v, want %+v", got, want)
+	}
+	if bytes.Contains(cleared, []byte("chap")) || !bytes.Contains(cleared, hint) {
+		t.Errorf("after the clear: chap reference left %v, hint reference kept %v",
+			bytes.Contains(cleared, []byte("chap")), bytes.Contains(cleared, hint))
+	}
+
+	// A rewrite reuses the track id, so both lists stay as they are.
+	replaced := rewriteChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.SetChapters(chaptersFromTitles("Uno")...) })
+	want = []mp4Trak{{handler: "soun", tref: true, chap: []uint32{2}}, {handler: "vide", tref: true, chap: []uint32{2}}, {handler: "text"}}
+	if got := mp4Traks(t, replaced); !reflect.DeepEqual(got, want) {
+		t.Errorf("after the rewrite: traks %+v, want %+v", got, want)
+	}
+}
+
+// A chapter track only the video track references is read, rewritten in place and cleared.
+func TestMP4ChapterTrackReferencedFromVideoOnly(t *testing.T) {
+	titles := []string{"One", "Two"}
+	data := testfile.MP4TracksFile(titles, func(audio, text, thumbs uint32) []byte {
+		return slices.Concat(testfile.MP4SoundTrak(1, audio), testfile.MP4VideoTrak(3, thumbs, testfile.MP4TrefChap(2)),
+			testfile.MP4TextTrak(2, 1000, []int{0, 3000}, titles, text))
+	})
+	if chs := mustParseBytes(t, data).Chapters(); len(chs) != 2 || chs[1].Title != "Two" {
+		t.Fatalf("chapters = %+v, want One and Two", chs)
+	}
+	replaced := rewriteChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.SetChapters(chaptersFromTitles("Uno")...) })
+	want := []mp4Trak{{handler: "soun"}, {handler: "vide", tref: true, chap: []uint32{2}}, {handler: "text"}}
+	if got := mp4Traks(t, replaced); !reflect.DeepEqual(got, want) {
+		t.Errorf("after the rewrite: traks %+v, want %+v", got, want)
+	}
+	if chs := mustParseBytes(t, replaced).Chapters(); len(chs) != 1 || chs[0].Title != "Uno" {
+		t.Errorf("after the rewrite: chapters %+v, want Uno", chs)
+	}
+	cleared := rewriteChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.ClearChapters() })
+	want = []mp4Trak{{handler: "soun"}, {handler: "vide"}}
+	if got := mp4Traks(t, cleared); !reflect.DeepEqual(got, want) {
+		t.Errorf("after the clear: traks %+v, want %+v", got, want)
+	}
+}
+
+// ffmpeg takes the last "chap" list in the file for the whole movie, so a new chapter track gets
+// one list everywhere: itself, then every thumbnail track any list names. Each sound track and
+// each video track that holds no thumbnails gains it, a trak that keeps a list has it, and a
+// thumbnail track gains none.
+func TestMP4ChapterTrackCreatedIsReferencedFromSoundAndVideo(t *testing.T) {
+	data := testfile.MP4TracksFile(nil, func(audio, _, thumbs uint32) []byte {
+		hint := func(id int, tref []byte) []byte {
+			trak := testfile.MP4VideoTrak(id, thumbs, tref)
+			copy(trak[bytes.Index(trak, []byte("vide")):], "hint")
+			return trak
+		}
+		return slices.Concat(testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(7, 3)), testfile.MP4VideoTrak(3, thumbs),
+			testfile.MP4VideoTrak(4, thumbs), testfile.MP4VideoTrak(5, thumbs),
+			hint(7, testfile.MP4TrefChap(3, 4)), hint(9, testfile.MP4TrefChap(99)))
+	})
+	out := rewriteChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.SetChapters(chaptersFromTitles("A", "B")...) })
+	// Tracks 3 and 4 hold thumbnails, each named by one list. A track of another kind gains no
+	// list, and loses one that names no thumbnails.
+	list := []uint32{10, 3, 4}
+	want := []mp4Trak{{handler: "soun", tref: true, chap: list}, {handler: "vide"}, {handler: "vide"},
+		{handler: "vide", tref: true, chap: list}, {handler: "hint", tref: true, chap: list}, {handler: "hint"}, {handler: "text"}}
+	if got := mp4Traks(t, out); !reflect.DeepEqual(got, want) {
+		t.Errorf("traks %+v, want %+v", got, want)
+	}
+	if chs := mustParseBytes(t, out).Chapters(); len(chs) != 2 || chs[1].Title != "B" {
+		t.Errorf("chapters %+v, want A and B", chs)
+	}
+}
+
+// A rewrite of the chapter track reuses its id and leaves every "chap" list as it is. A clear
+// leaves a list the video tracks it named: the id of the chapter track, of a track that is gone,
+// of a second text track and of the sound track itself go, so no reader finds chapters after it,
+// and the second text track stays in the file.
+func TestMP4ChapterClearLeavesOnlyVideoTracksNamed(t *testing.T) {
+	titles := []string{"One", "Two"}
+	data := testfile.MP4TracksFile(titles, func(audio, text, thumbs uint32) []byte {
+		return slices.Concat(testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(99, 2, 1, 5, 3)), testfile.MP4VideoTrak(3, thumbs),
+			testfile.MP4TextTrak(5, 1000, []int{0, 4000}, titles, text),
+			testfile.MP4TextTrak(2, 1000, []int{0, 3000}, titles, text))
+	})
+	// The list names track 2 ahead of track 5, which comes first in the file.
+	if chs := mustParseBytes(t, data).Chapters(); len(chs) != 2 || chs[1].Start != 3*time.Second {
+		t.Fatalf("chapters = %+v, want those of the text track named first", chs)
+	}
+	replaced := rewriteChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.SetChapters(chaptersFromTitles("Uno")...) })
+	want := []mp4Trak{{handler: "soun", tref: true, chap: []uint32{99, 2, 1, 5, 3}}, {handler: "vide"}, {handler: "text"}, {handler: "text"}}
+	if got := mp4Traks(t, replaced); !reflect.DeepEqual(got, want) {
+		t.Errorf("after the rewrite: traks %+v, want %+v", got, want)
+	}
+	if chs := mustParseBytes(t, replaced).Chapters(); len(chs) != 1 || chs[0].Title != "Uno" {
+		t.Errorf("after the rewrite: chapters %+v, want Uno", chs)
+	}
+	cleared := rewriteChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.ClearChapters() })
+	want = []mp4Trak{{handler: "soun", tref: true, chap: []uint32{3}}, {handler: "vide"}, {handler: "text"}}
+	if got := mp4Traks(t, cleared); !reflect.DeepEqual(got, want) {
+		t.Errorf("after the clear: traks %+v, want %+v", got, want)
+	}
+	// The text track left is the one that was not the chapter track, its 4 s sample and all.
+	if chs := mustParseBytes(t, cleared).Chapters(); len(chs) != 0 || !bytes.Contains(cleared, slices.Concat(testfile.BE32(1), testfile.BE32(4000))) {
+		t.Errorf("after the clear: chapters %+v, the second text track kept %v", chs, bytes.Contains(cleared, slices.Concat(testfile.BE32(1), testfile.BE32(4000))))
+	}
+}
+
+// A list is read whole, however long: a thumbnail track named far down it is still named after a
+// clear.
+func TestMP4ChapterClearKeepsAThumbnailFarDownTheList(t *testing.T) {
+	titles := []string{"One", "Two"}
+	ids := append(slices.Repeat([]int{99}, 1500), 2, 3)
+	data := testfile.MP4TracksFile(titles, func(audio, text, thumbs uint32) []byte {
+		return slices.Concat(testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(ids...)), testfile.MP4VideoTrak(3, thumbs),
+			testfile.MP4TextTrak(2, 1000, []int{0, 3000}, titles, text))
+	})
+	if chs := mustParseBytes(t, data).Chapters(); len(chs) != 2 {
+		t.Fatalf("chapters %+v, want the two of the text track", chs)
+	}
+	cleared := rewriteChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.ClearChapters() })
+	want := []mp4Trak{{handler: "soun", tref: true, chap: []uint32{3}}, {handler: "vide"}}
+	if got := mp4Traks(t, cleared); !reflect.DeepEqual(got, want) {
+		t.Errorf("after the clear: traks %+v, want %+v", got, want)
+	}
+}
+
+// A chapter track whose track id is 0 keeps its references through a rewrite, so the next read
+// finds it and the next rewrite replaces it again.
+func TestMP4ChapterTrackWithTrackIDZero(t *testing.T) {
+	titles := []string{"One", "Two"}
+	data := testfile.MP4TracksFile(titles, func(audio, text, _ uint32) []byte {
+		return slices.Concat(testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(0)), testfile.MP4TextTrak(0, 1000, []int{0, 3000}, titles, text))
+	})
+	if chs := mustParseBytes(t, data).Chapters(); len(chs) != 2 || chs[1].Title != "Two" {
+		t.Fatalf("chapters = %+v, want One and Two", chs)
+	}
+	want := []mp4Trak{{handler: "soun", tref: true, chap: []uint32{0}}, {handler: "text"}}
+	out := data
+	for _, title := range []string{"Uno", "Eins"} {
+		out = rewriteChapters(t, out, func(e *wl.Editor) *wl.Editor { return e.SetChapters(chaptersFromTitles(title)...) })
+		if got := mp4Traks(t, out); !reflect.DeepEqual(got, want) {
+			t.Errorf("after the rewrite to %s: traks %+v, want %+v", title, got, want)
+		}
+		if chs := mustParseBytes(t, out).Chapters(); len(chs) != 1 || chs[0].Title != title {
+			t.Errorf("after the rewrite: chapters %+v, want %s", chs, title)
+		}
+	}
+	cleared := rewriteChapters(t, out, func(e *wl.Editor) *wl.Editor { return e.ClearChapters() })
+	if got, want := mp4Traks(t, cleared), []mp4Trak{{handler: "soun"}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("after the clear: traks %+v, want %+v", got, want)
+	}
+}
+
+// A text track that only its own "chap" list names is no chapter track: a rewrite would replace
+// it, list and all, and leave the new one named by nothing. Chapters written to the file get a
+// track of their own, and the list goes so that no reader takes the old track for them.
+func TestMP4ChapterTrackNamedOnlyByItself(t *testing.T) {
+	titles := []string{"One", "Two"}
+	data := testfile.MP4TracksFile(titles, func(audio, text, _ uint32) []byte {
+		return slices.Concat(testfile.MP4SoundTrak(1, audio),
+			mp4AfterTkhd(testfile.MP4TextTrak(2, 1000, []int{0, 3000}, titles, text), testfile.MP4TrefChap(2)))
+	})
+	if chs := mustParseBytes(t, data).Chapters(); len(chs) != 0 {
+		t.Fatalf("chapters %+v read from a track only it names", chs)
+	}
+	out := rewriteChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.SetChapters(chaptersFromTitles("A", "B")...) })
+	want := []mp4Trak{{handler: "soun", tref: true, chap: []uint32{3}}, {handler: "text"}, {handler: "text"}}
+	if got := mp4Traks(t, out); !reflect.DeepEqual(got, want) {
+		t.Errorf("traks %+v, want %+v", got, want)
+	}
+	if chs := mustParseBytes(t, out).Chapters(); len(chs) != 2 || chs[1].Title != "B" {
+		t.Errorf("chapters %+v, want A and B", chs)
+	}
+}
+
+// mp4AfterTkhd puts atoms behind the tkhd of a trak, where a tref and an edts go.
+func mp4AfterTkhd(trak []byte, atoms ...[]byte) []byte {
+	at := 8 + int(binary.BigEndian.Uint32(trak[8:]))
+	out := slices.Concat(trak[:at], slices.Concat(atoms...), trak[at:])
+	binary.BigEndian.PutUint32(out, uint32(len(out)))
+	return out
+}
+
+// A subtitle track a "chap" entry names is a chapter track like a text track, and one that holds
+// a "chap" list of its own is replaced and removed whole, list and all.
+func TestMP4ChapterTrackWithASubtitleHandlerAndItsOwnReferences(t *testing.T) {
+	titles := []string{"One", "Two"}
+	data := testfile.MP4TracksFile(titles, func(audio, text, thumbs uint32) []byte {
+		chapters := mp4AfterTkhd(testfile.MP4TextTrak(2, 1000, []int{0, 3000}, titles, text), testfile.MP4TrefChap(2, 3))
+		copy(chapters[bytes.Index(chapters, []byte("text")):], "sbtl")
+		return slices.Concat(testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(2)), testfile.MP4VideoTrak(3, thumbs), chapters)
+	})
+	if chs := mustParseBytes(t, data).Chapters(); len(chs) != 2 || chs[1].Title != "Two" {
+		t.Fatalf("chapters = %+v, want One and Two from the subtitle track", chs)
+	}
+	replaced := rewriteChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.SetChapters(chaptersFromTitles("Uno")...) })
+	want := []mp4Trak{{handler: "soun", tref: true, chap: []uint32{2}}, {handler: "vide"}, {handler: "text"}}
+	if got := mp4Traks(t, replaced); !reflect.DeepEqual(got, want) {
+		t.Errorf("after the rewrite: traks %+v, want %+v", got, want)
+	}
+	cleared := rewriteChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.ClearChapters() })
+	want = []mp4Trak{{handler: "soun"}, {handler: "vide"}}
+	if got := mp4Traks(t, cleared); !reflect.DeepEqual(got, want) {
+		t.Errorf("after the clear: traks %+v, want %+v", got, want)
+	}
+}
+
+// utf16Title is a title as QuickTime stores one that is not ASCII: UTF-16 behind a byte-order mark.
+func utf16Title(order binary.AppendByteOrder, title string) string {
+	b := order.AppendUint16(nil, 0xFEFF)
+	for _, u := range utf16.Encode([]rune(title)) {
+		b = order.AppendUint16(b, u)
+	}
+	return string(b)
+}
+
+// A chapter track's UTF-16 titles read as the text the chpl holds in UTF-8, so the two stores
+// agree, and a chapter edit carries every title over into both.
+func TestMP4QTChapterUTF16Titles(t *testing.T) {
+	titles := []string{"Caf\u00e9", "\u65e5\u672c\u8a9e", "Plain"}
+	starts := []time.Duration{0, 3 * time.Second, 6 * time.Second}
+	for name, order := range map[string]binary.AppendByteOrder{"big-endian": binary.BigEndian, "little-endian": binary.LittleEndian} {
+		wide := make([]string, len(titles))
+		for i, title := range titles {
+			wide[i] = utf16Title(order, title)
+		}
+		for store, data := range map[string][]byte{
+			"beside a chpl": testfile.MP4QTFile([]int{0, 3000, 6000}, wide, mp4Chpl(1, starts, titles)),
+			"alone":         testfile.MP4QTFile([]int{0, 3000, 6000}, wide),
+		} {
+			t.Run(name+" "+store, func(t *testing.T) {
+				doc := mustParseBytes(t, data)
+				read := func(doc *wl.Document) (got []string) {
+					for _, ch := range doc.Chapters() {
+						got = append(got, ch.Title)
+					}
+					return got
+				}
+				if got := read(doc); !slices.Equal(got, titles) || hasWarning(doc, wl.WarnChapterSourceConflict) || hasWarning(doc, wl.WarnInvalidText) {
+					t.Fatalf("titles %q, warnings %v; want %q and no warning", got, warningCodes(doc), titles)
+				}
+				plan, err := doc.Edit().SetChapters(append(doc.Chapters(), wl.Chapter{Start: 8 * time.Second, Title: "Added"})...).Prepare()
+				if err != nil {
+					t.Fatal(err)
+				}
+				out := applyToBytes(t, data, plan)
+				re := mustParseBytes(t, out)
+				if got := read(re); !slices.Equal(got, append(slices.Clone(titles), "Added")) || hasWarning(re, wl.WarnChapterSourceConflict) {
+					t.Errorf("after the edit: titles %q, warnings %v", got, warningCodes(re))
+				}
+				// The chpl and the rewritten track each hold the title in UTF-8.
+				if n := bytes.Count(out, []byte(titles[1])); n != 2 {
+					t.Errorf("after the edit the file holds %q %d time(s), want one in each store", titles[1], n)
+				}
+			})
+		}
+	}
+}
+
+// A chapter track title that reads empty takes the chpl's, so the stores agree and an edit keeps
+// the title. A title the track does hold still overrules a different one.
+func TestMP4ChplTitleFillsAnEmptyTrackTitle(t *testing.T) {
+	starts := []time.Duration{0, 3 * time.Second}
+	data := testfile.MP4QTFile([]int{0, 3000}, []string{"", "Two"}, mp4Chpl(1, starts, []string{"One", "Two"}))
+	doc := mustParseBytes(t, data)
+	if chs := doc.Chapters(); len(chs) != 2 || chs[0].Title != "One" || chs[1].Title != "Two" || hasWarning(doc, wl.WarnChapterSourceConflict) {
+		t.Fatalf("chapters %+v, warnings %v; want One and Two with no conflict", chs, warningCodes(doc))
+	}
+	re := execChapters(t, data, func(e *wl.Editor) *wl.Editor {
+		return e.SetChapters(append(doc.Chapters(), wl.Chapter{Start: 6 * time.Second, Title: "Three"})...)
+	})
+	if chs := re.Chapters(); len(chs) != 3 || chs[0].Title != "One" {
+		t.Errorf("after an edit: chapters %+v, want One first", chs)
+	}
+
+	other := testfile.MP4QTFile([]int{0, 3000}, []string{"", "Deux"}, mp4Chpl(1, starts, []string{"One", "Two"}))
+	if doc := mustParseBytes(t, other); !hasWarning(doc, wl.WarnChapterSourceConflict) || doc.Chapters()[1].Title != "Deux" {
+		t.Errorf("a differing track title: chapters %+v, warnings %v; want the track's with a conflict", doc.Chapters(), warningCodes(doc))
+	}
+}
+
+// mp4WidenChapterTitles re-encodes the chapter titles of a file whose chapter track WaxLabel
+// wrote, its samples filling the last mdat, as UTF-16 behind a byte-order mark.
+func mp4WidenChapterTitles(t *testing.T, data []byte, order binary.AppendByteOrder) []byte {
+	t.Helper()
+	offs, names := mp4Boxes(data, 0, len(data))
+	mdat := offs[len(offs)-1]
+	if names[len(names)-1] != "mdat" {
+		t.Fatalf("the file ends in %q, not the chapter mdat", names[len(names)-1])
+	}
+	// The chapter track's sample sizes: its trak is the one a text handler names.
+	at := bytes.Index(data, []byte("SubtitleHandler"))
+	stsz := at + bytes.Index(data[at:], []byte("stsz"))
+	if at < 0 || stsz < at {
+		t.Fatal("no chapter track sample sizes")
+	}
+	out := slices.Clone(data[:mdat])
+	var samples []byte
+	old := data[mdat+8:]
+	for i := range int(binary.BigEndian.Uint32(out[stsz+12:])) {
+		size := out[stsz+16+4*i:]
+		sample := old[:binary.BigEndian.Uint32(size)]
+		old = old[len(sample):]
+		n := int(binary.BigEndian.Uint16(sample))
+		wide := utf16Title(order, string(sample[2:2+n]))
+		// What follows the title, the encoding atom, is kept.
+		sample = slices.Concat(testfile.BE16(len(wide)), []byte(wide), sample[2+n:])
+		binary.BigEndian.PutUint32(size, uint32(len(sample)))
+		samples = append(samples, sample...)
+	}
+	return append(out, testfile.MP4Atom("mdat", samples)...)
+}
+
+// Only moov's own traks are named in a chapter write or taken for the chapter track: one nested
+// in another trak is left as it is, since nothing would size the trak around it.
+func TestMP4ChapterWriteLeavesNestedTraksAlone(t *testing.T) {
+	titles := []string{"One", "Two"}
+	for name, outerTref := range map[string][]byte{"named from a nested trak": nil, "named from the trak around it": testfile.MP4TrefChap(2)} {
+		t.Run(name, func(t *testing.T) {
+			data := testfile.MP4TracksFile(titles, func(audio, text, thumbs uint32) []byte {
+				return testfile.MP4SoundTrak(1, audio, outerTref, testfile.MP4VideoTrak(3, thumbs, testfile.MP4TrefChap(2)),
+					testfile.MP4TextTrak(2, 1000, []int{0, 3000}, titles, text))
+			})
+			if chs := mustParseBytes(t, data).Chapters(); len(chs) != 0 {
+				t.Fatalf("chapters %+v read from a nested trak", chs)
+			}
+			out := rewriteChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.SetChapters(chaptersFromTitles("A", "B")...) })
+			// The nested video trak keeps its reference, and the nested text trak its samples' sizes.
+			if !bytes.Contains(out, testfile.MP4TrefChap(2)) || bytes.Count(out, []byte("stsz")) != 2 {
+				t.Error("the nested traks changed")
+			}
+			want := []mp4Trak{{handler: "soun", tref: true, chap: []uint32{4}}, {handler: "text"}}
+			if got := mp4Traks(t, out); !reflect.DeepEqual(got, want) {
+				t.Errorf("traks %+v, want %+v", got, want)
+			}
+			if chs := mustParseBytes(t, out).Chapters(); len(chs) != 2 || chs[1].Title != "B" {
+				t.Errorf("chapters %+v, want A and B", chs)
+			}
+		})
+	}
+}
+
+// A file with no sound or video track gets no chapter track, which nothing would name: the
+// chapters go in the chpl alone.
+func TestMP4ChapterWriteWithNoTrackToNameAChapterTrack(t *testing.T) {
+	data := testfile.MP4TracksFile(nil, func(audio, _, _ uint32) []byte {
+		hint := testfile.MP4VideoTrak(1, audio)
+		copy(hint[bytes.Index(hint, []byte("vide")):], "hint")
+		return hint
+	})
+	plan, err := mustParseBytes(t, data).Edit().SetChapters(chaptersFromTitles("A", "B")...).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if got, want := mp4Traks(t, out), []mp4Trak{{handler: "hint"}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("traks %+v, want %+v", got, want)
+	}
+	if chs := mustParseBytes(t, out).Chapters(); len(chs) != 2 || chs[1].Title != "B" {
+		t.Errorf("chapters %+v, want A and B from the chpl", chs)
+	}
+}
+
+// An edit list that ends before the last chapter starts, or plays from inside the media as a
+// QuickTime trim does, places no end for that chapter: it ends with the media, not before its
+// own start.
+func TestMP4ChapterEndNeverBeforeItsStart(t *testing.T) {
+	titles := []string{"One", "Two", "Three"}
+	for name, edts := range map[string][]byte{
+		"an edit shorter than the last start": testfile.MP4Edts([2]int64{5000, 0}),
+		"an edit from inside the media":       testfile.MP4Edts([2]int64{7000, 3000}),
+		"an edit that plays the media whole":  testfile.MP4Edts([2]int64{10000, 0}),
+		"no edit list":                        nil,
+	} {
+		data := testfile.MP4TracksFile(titles, func(audio, text, _ uint32) []byte {
+			return slices.Concat(testfile.MP4Mvhd(1000, 10000), testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(2)),
+				mp4AfterTkhd(testfile.MP4TextTrak(2, 1000, []int{0, 3000, 8000, 10000}, titles, text), edts))
+		})
+		if chs := mustParseBytes(t, data).Chapters(); len(chs) != 3 || chs[2].Start != 8*time.Second || chs[2].End != 10*time.Second {
+			t.Errorf("%s: chapters %+v, want the last from 8 s to 10 s", name, chs)
+		}
+	}
+	// An edit that cuts the media short after the last chapter starts ends that chapter.
+	data := testfile.MP4TracksFile(titles, func(audio, text, _ uint32) []byte {
+		return slices.Concat(testfile.MP4Mvhd(1000, 10000), testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(2)),
+			mp4AfterTkhd(testfile.MP4TextTrak(2, 1000, []int{0, 3000, 8000, 20000}, titles, text), testfile.MP4Edts([2]int64{9000, 0})))
+	})
+	if chs := mustParseBytes(t, data).Chapters(); len(chs) != 3 || chs[2].End != 9*time.Second {
+		t.Errorf("media that runs past its edit: chapters %+v, want the last to end at 9 s", chs)
+	}
+}
+
+// A movie timescale finer than the chapter track's makes a long file's edit segment clamp at 32
+// bits. The last chapter then ends with the media, as it did, not at the clamp, whether the
+// first chapter starts at zero or late.
+func TestMP4ChapterEndPastAClampedEdit(t *testing.T) {
+	const movieTS = 1_000_000 // 2^32 units pass after 71.6 minutes
+	data := testfile.MP4TracksFile(nil, func(audio, _, _ uint32) []byte {
+		return slices.Concat(testfile.MP4Mvhd(movieTS, 2*3600*movieTS), testfile.MP4SoundTrak(1, audio))
+	})
+	for name, first := range map[string]time.Duration{"first chapter at zero": 0, "late first chapter": time.Minute} {
+		plan, err := mustParseBytes(t, data).Edit().SetChapters(wl.Chapter{Start: first, Title: "A"}, wl.Chapter{Start: time.Hour, Title: "B"}).Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc := mustParseBytes(t, applyToBytes(t, data, plan))
+		if chs := doc.Chapters(); len(chs) != 2 || chs[0].Start != first || chs[1].End != 2*time.Hour || chapterWarn(doc, wl.WarnChapterSourceConflict) {
+			t.Errorf("%s: chapters %+v, warnings %v; want the last to end at 2 h", name, chs, warningCodes(doc))
+		}
+	}
+}
+
+// A track id names the first text track that holds it, and a track with no header to give it an
+// id is named by none, not by a list that names track 0.
+func TestMP4ChapterTrackByItsTrackID(t *testing.T) {
+	titles := []string{"One", "Two"}
+	shared := testfile.MP4TracksFile(titles, func(audio, text, _ uint32) []byte {
+		return slices.Concat(testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(2)),
+			testfile.MP4TextTrak(2, 1000, []int{0, 3000}, titles, text), testfile.MP4TextTrak(2, 1000, []int{0, 4000}, titles, text))
+	})
+	if chs := mustParseBytes(t, shared).Chapters(); len(chs) != 2 || chs[1].Start != 3*time.Second {
+		t.Errorf("two text tracks of one id: chapters %+v, want those of the first", chs)
+	}
+	headless := testfile.MP4TracksFile(titles, func(audio, text, _ uint32) []byte {
+		trak := testfile.MP4TextTrak(0, 1000, []int{0, 3000}, titles, text)
+		tkhd := 8 + int(binary.BigEndian.Uint32(trak[8:]))
+		trak = slices.Concat(testfile.BE32(len(trak)-tkhd+8), []byte("trak"), trak[tkhd:])
+		return slices.Concat(testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(0)), trak)
+	})
+	if chs := mustParseBytes(t, headless).Chapters(); len(chs) != 0 {
+		t.Errorf("a text track with no tkhd: chapters %+v, want none", chs)
+	}
+	// Nor is a video track with no tkhd the thumbnail track a list names as track 0: it names a
+	// new chapter track like any other.
+	created := rewriteChapters(t, testfile.MP4TracksFile(nil, func(audio, _, thumbs uint32) []byte {
+		trak := testfile.MP4VideoTrak(0, thumbs)
+		tkhd := 8 + int(binary.BigEndian.Uint32(trak[8:]))
+		trak = slices.Concat(testfile.BE32(len(trak)-tkhd+8), []byte("trak"), trak[tkhd:])
+		return slices.Concat(testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(0)), testfile.MP4VideoTrak(0, thumbs), trak)
+	}), func(e *wl.Editor) *wl.Editor { return e.SetChapters(chaptersFromTitles("A")...) })
+	list := []uint32{2, 0}
+	want := []mp4Trak{{handler: "soun", tref: true, chap: list}, {handler: "vide"}, {handler: "vide", tref: true, chap: list}, {handler: "text"}}
+	if got := mp4Traks(t, created); !reflect.DeepEqual(got, want) {
+		t.Errorf("a video track with no tkhd: traks %+v, want %+v", got, want)
 	}
 }

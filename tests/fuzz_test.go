@@ -124,7 +124,7 @@ func FuzzParse(f *testing.F) {
 	binary.BigEndian.PutUint32(astray[bytes.Index(astray, []byte("stco"))+12:], 4)
 	f.Add(astray)
 	moovLast := slices.Concat(testfile.MP4Ftyp(), testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 120)),
-		testfile.MP4Atom("moov", mp4AudioTrakTkhd(1, uint32(len(testfile.MP4Ftyp())+8))))
+		testfile.MP4Atom("moov", testfile.MP4SoundTrak(1, uint32(len(testfile.MP4Ftyp())+8))))
 	cutMoov := slices.Concat(moovLast, moovLast)
 	binary.BigEndian.PutUint32(cutMoov[bytes.LastIndex(cutMoov, []byte("moov"))-4:], uint32(len(moovLast)))
 	f.Add(cutMoov)
@@ -134,6 +134,54 @@ func FuzzParse(f *testing.F) {
 	audioAt := len(testfile.MP4Ftyp()) + len(testfile.MP4Atom("moov", testfile.MP4AudioTrakChap(1, 0))) + 8
 	f.Add(slices.Concat(testfile.MP4Ftyp(), testfile.MP4Atom("moov", testfile.MP4AudioTrakChap(1, uint32(audioAt))),
 		testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 120))))
+	// Chapter tracks named beside a video track of thumbnails, from the video track alone, in a
+	// trak nested in another, and none yet in a file of sound and video; UTF-16 titles beside a
+	// list; and a chapter track whose first chapter starts late.
+	one := []string{"One", "Two"}
+	f.Add(testfile.MP4TracksFile(one, func(audio, text, thumbs uint32) []byte {
+		return slices.Concat(testfile.MP4VideoTrak(3, thumbs), testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(99, 2, 1, 3)),
+			testfile.MP4TextTrak(2, 1000, []int{0, 3000}, one, text))
+	}))
+	f.Add(testfile.MP4TracksFile(one, func(audio, text, thumbs uint32) []byte {
+		return slices.Concat(testfile.MP4SoundTrak(1, audio), testfile.MP4VideoTrak(3, thumbs, testfile.MP4TrefChap(2)),
+			testfile.MP4TextTrak(2, 1000, []int{0, 3000}, one, text))
+	}))
+	f.Add(testfile.MP4TracksFile(one, func(audio, text, thumbs uint32) []byte {
+		return testfile.MP4SoundTrak(1, audio, testfile.MP4VideoTrak(3, thumbs, testfile.MP4TrefChap(2)),
+			testfile.MP4TextTrak(2, 1000, []int{0, 3000}, one, text))
+	}))
+	f.Add(testfile.MP4TracksFile(nil, func(audio, _, thumbs uint32) []byte {
+		return slices.Concat(testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(3)), testfile.MP4VideoTrak(3, thumbs))
+	}))
+	// A chapter track of track id 0, one only its own list names, and one whose edit list ends
+	// before its last chapter starts, in a movie whose header is 64-bit.
+	f.Add(testfile.MP4TracksFile(one, func(audio, text, _ uint32) []byte {
+		return slices.Concat(testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(0)), testfile.MP4TextTrak(0, 1000, []int{0, 3000}, one, text))
+	}))
+	f.Add(testfile.MP4TracksFile(one, func(audio, text, _ uint32) []byte {
+		return slices.Concat(testfile.MP4SoundTrak(1, audio), mp4AfterTkhd(testfile.MP4TextTrak(2, 1000, []int{0, 3000}, one, text), testfile.MP4TrefChap(2)))
+	}))
+	f.Add(testfile.MP4TracksFile(one, func(audio, text, _ uint32) []byte {
+		return slices.Concat(testfile.MP4Mvhd(1_000_000, 2*3600*1_000_000), testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(2)),
+			mp4AfterTkhd(testfile.MP4TextTrak(2, 1000, []int{0, 8000, 10000}, one, text), testfile.MP4Edts([2]int64{-1, -1}, [2]int64{5000, 0})))
+	}))
+	f.Add(testfile.MP4QTFile([]int{0, 3000}, []string{"\xfe\xff\x00C\x00a\x00f\x00\xe9", "\xff\xfe\x3d\xd8"},
+		mp4Chpl(1, []time.Duration{0, 3 * time.Second}, []string{"Caf\xc3\xa9", ""})))
+	if m4b, err := os.ReadFile(sampleM4B); err == nil {
+		doc, err := wl.Parse(context.Background(), wl.BytesSource(m4b))
+		if err != nil {
+			f.Fatal(err)
+		}
+		plan, err := doc.Edit().SetChapters(wl.Chapter{Start: 2 * time.Second, Title: "A"}, wl.Chapter{Start: 5 * time.Second, Title: "B"}).Prepare()
+		if err != nil {
+			f.Fatal(err)
+		}
+		var late writerTo
+		if _, _, err := plan.Execute(context.Background(), wl.WriteTo(&late, wl.BytesSource(m4b))); err != nil {
+			f.Fatal(err)
+		}
+		f.Add(late.b)
+	}
 	for _, declared := range []uint32{0, 1 << 20} {
 		open := slices.Clone(tagged)
 		binary.BigEndian.PutUint32(open[bytes.LastIndex(open, []byte("mdat"))-4:], declared)

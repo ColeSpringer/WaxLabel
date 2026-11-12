@@ -157,12 +157,71 @@ func MP4Tagged(items ...[]byte) []byte {
 // MP4AudioTrakChap is an audio trak (track_id 1) referencing the chapter text track through a tref
 // "chap", with its single stco entry at audioStco.
 func MP4AudioTrakChap(chapTrackID int, audioStco uint32, stblExtra ...[]byte) []byte {
-	tkhd := MP4Atom("tkhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), BE32(1), make([]byte, 4)))
-	tref := MP4Atom("tref", MP4Atom("chap", BE32(chapTrackID)))
 	stbl := MP4Atom("stbl", slices.Concat(MP4StsdAudio(), MP4Stco(audioStco), slices.Concat(stblExtra...)))
 	minf := MP4Atom("minf", stbl)
 	mdia := MP4Atom("mdia", slices.Concat(MP4HdlrSoun(), MP4Mdhd(44100), minf))
-	return MP4Atom("trak", slices.Concat(tkhd, tref, mdia))
+	return MP4Atom("trak", slices.Concat(mp4Tkhd(1), MP4TrefChap(chapTrackID), mdia))
+}
+
+// MP4SoundTrak is an audio trak with one chunk at stco; extra goes between its tkhd and mdia, where
+// a tref does.
+func MP4SoundTrak(trackID int, stco uint32, extra ...[]byte) []byte {
+	stbl := MP4Atom("stbl", slices.Concat(MP4StsdAudio(), MP4Stco(stco)))
+	mdia := MP4Atom("mdia", slices.Concat(MP4HdlrSoun(), MP4Mdhd(44100), MP4Atom("minf", stbl)))
+	return MP4Atom("trak", slices.Concat(mp4Tkhd(trackID), slices.Concat(extra...), mdia))
+}
+
+// MP4VideoTrak is MP4SoundTrak for a video trak.
+func MP4VideoTrak(trackID int, stco uint32, extra ...[]byte) []byte {
+	hdlr := MP4Atom("hdlr", slices.Concat(make([]byte, 8), []byte("vide"), make([]byte, 12)))
+	mdia := MP4Atom("mdia", slices.Concat(hdlr, MP4Mdhd(600), MP4Atom("minf", MP4Atom("stbl", MP4Stco(stco)))))
+	return MP4Atom("trak", slices.Concat(mp4Tkhd(trackID), slices.Concat(extra...), mdia))
+}
+
+func mp4Tkhd(trackID int) []byte {
+	return MP4Atom("tkhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), BE32(trackID), make([]byte, 4)))
+}
+
+// MP4Mvhd is a version 1 movie header of the given timescale and duration, whose next track id
+// is 0 (unset).
+func MP4Mvhd(timescale uint32, duration uint64) []byte {
+	p := make([]byte, 112)
+	p[0] = 1
+	binary.BigEndian.PutUint32(p[20:], timescale)
+	binary.BigEndian.PutUint64(p[24:], duration)
+	return MP4Atom("mvhd", p)
+}
+
+// MP4Edts is an edit list of version 0 entries, each a segment duration in movie units and a
+// media time, -1 for an empty edit.
+func MP4Edts(entries ...[2]int64) []byte {
+	p := slices.Concat([]byte{0, 0, 0, 0}, BE32(len(entries)))
+	for _, e := range entries {
+		p = slices.Concat(p, BE32(int(e[0])), BE32(int(e[1])), BE32(0x00010000))
+	}
+	return MP4Atom("edts", MP4Atom("elst", p))
+}
+
+// MP4TrefChap is a tref whose one "chap" entry names ids.
+func MP4TrefChap(ids ...int) []byte {
+	var list []byte
+	for _, id := range ids {
+		list = append(list, BE32(id)...)
+	}
+	return MP4Atom("tref", MP4Atom("chap", list))
+}
+
+// MP4TracksFile is ftyp, a moov of the traks handed back and an mdat of 120 audio bytes, the chapter
+// samples of titles and 40 thumbnail bytes; traks is told where each of the three starts.
+func MP4TracksFile(titles []string, traks func(audio, text, thumbs uint32) []byte) []byte {
+	audio, thumbs := bytes.Repeat([]byte{0xA7}, 120), bytes.Repeat([]byte{0xD8}, 40)
+	samples := MP4SamplesBlob(titles)
+	build := func(at uint32) []byte {
+		text := at + uint32(len(audio))
+		return slices.Concat(MP4Ftyp(), MP4Atom("moov", traks(at, text, text+uint32(len(samples)))),
+			MP4Atom("mdat", slices.Concat(audio, samples, thumbs)))
+	}
+	return build(uint32(bytes.Index(build(0), []byte("mdat")) + 4))
 }
 
 // MP4TextTrak is a chapter text trak: one sample per title at the given media timescale, its chunk
@@ -199,8 +258,7 @@ func textTrak(trackID, timescale int, startsMS []int, titles []string, chunkOffs
 	mdhd := MP4Atom("mdhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), BE32(timescale), BE32(0)))
 	hdlr := MP4Atom("hdlr", slices.Concat(make([]byte, 8), []byte("text"), make([]byte, 12)))
 	mdia := MP4Atom("mdia", slices.Concat(hdlr, mdhd, MP4Atom("minf", stbl)))
-	tkhd := MP4Atom("tkhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), BE32(trackID), make([]byte, 4)))
-	return MP4Atom("trak", slices.Concat(tkhd, mdia))
+	return MP4Atom("trak", slices.Concat(mp4Tkhd(trackID), mdia))
 }
 
 // MP4SamplesBlob is the length-prefixed UTF-8 text samples the text track's stco points at.

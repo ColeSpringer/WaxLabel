@@ -59,7 +59,7 @@ func TestMP4EssenceIgnoresLeakedChapterMdats(t *testing.T) {
 // multi-track shape whose second audio track the essence digest must still cover.
 func mp4TwoAudioTwoMdat(audio1, audio2 []byte) []byte {
 	build := func(stco1, stco2 uint32) []byte {
-		moov := testfile.MP4Atom("moov", slices.Concat(mp4AudioTrakTkhd(1, stco1), mp4AudioTrakTkhd(2, stco2)))
+		moov := testfile.MP4Atom("moov", slices.Concat(testfile.MP4SoundTrak(1, stco1), testfile.MP4SoundTrak(2, stco2)))
 		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", audio1), testfile.MP4Atom("mdat", audio2))
 	}
 	tmp := build(0, 0)

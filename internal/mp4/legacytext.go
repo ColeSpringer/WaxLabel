@@ -2,7 +2,9 @@ package mp4
 
 import (
 	"bytes"
+	"encoding/binary"
 	"strings"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -37,24 +39,23 @@ var windows1252 = func() codePage {
 	return p
 }()
 
-// titleReader decodes chapter titles: UTF-8, or the code page it is given where the bytes are
-// none, which legacy then records.
+// titleReader decodes chapter titles: UTF-16 behind a byte-order mark, else UTF-8, or the code
+// page it is given where the bytes are neither, which legacy then records.
 type titleReader struct {
 	page   *codePage
 	legacy bool
 }
 
-// read decodes one title, which ends at its first NUL as a C string does. UTF-16 behind a
-// byte-order mark is no 8-bit text and reads empty.
+// read decodes one title. An 8-bit title ends at its first NUL, as a C string does.
 func (t *titleReader) read(raw []byte) string {
+	if s, ok := utf16Text(raw); ok {
+		return s
+	}
 	if i := bytes.IndexByte(raw, 0); i >= 0 {
 		raw = raw[:i]
 	}
 	if utf8.Valid(raw) {
 		return string(raw)
-	}
-	if bytes.HasPrefix(raw, []byte{0xFE, 0xFF}) || bytes.HasPrefix(raw, []byte{0xFF, 0xFE}) {
-		return ""
 	}
 	t.legacy = true
 	var b strings.Builder
@@ -66,4 +67,27 @@ func (t *titleReader) read(raw []byte) string {
 		}
 	}
 	return b.String()
+}
+
+// utf16Text decodes text that opens with a UTF-16 byte-order mark, as QuickTime stores a title
+// that is not ASCII, up to its first NUL code unit. ok is false for text with no such mark.
+func utf16Text(raw []byte) (text string, ok bool) {
+	var order binary.ByteOrder
+	switch {
+	case bytes.HasPrefix(raw, []byte{0xFE, 0xFF}):
+		order = binary.BigEndian
+	case bytes.HasPrefix(raw, []byte{0xFF, 0xFE}):
+		order = binary.LittleEndian
+	default:
+		return "", false
+	}
+	units := make([]uint16, 0, len(raw)/2)
+	for b := raw[2:]; len(b) >= 2; b = b[2:] {
+		u := order.Uint16(b)
+		if u == 0 {
+			break
+		}
+		units = append(units, u)
+	}
+	return string(utf16.Decode(units)), true
 }

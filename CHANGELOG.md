@@ -304,8 +304,29 @@ All notable changes to this project are documented here.
   chapter track, and the `chpl`'s page in a track beside such a list, so the two agree. A
   chapter edit stores it as UTF-8. A title ends at its first NUL, so a NUL-terminated one no
   longer makes `--add-chapter` or `copy` refuse the file.
-- A `chap` reference naming the audio track itself is not followed. A chapter write replaced
-  the audio track with the chapter track.
+- The MP4 chapter track is the first text or subtitle track that another track's `tref`
+  `chap` entry names, in any track. A video track named there holds chapter thumbnails and a
+  sound track is never one: where a list named a video track that came first in the file, the
+  titles went unread, `--clear-chapters` deleted the video track and a chapter write replaced
+  it with the text track, as one naming the audio track itself did to the audio. A chapter
+  track only the video track names is read and edited.
+- An MP4 chapter clear takes the chapter track out of every track's `chap` list, where it
+  rewrote the audio track's alone and left the video track naming a track that was gone
+  (ffmpeg's `Referenced QT chapter track not found`). The list keeps the video tracks it named
+  and nothing else, so no reader takes another track for chapters. A new chapter track is
+  named by every sound track and every video track that holds no thumbnails, in one list of
+  it and the thumbnail tracks: ffmpeg takes the last list it reads for the whole movie.
+- MP4 chapter titles in UTF-16 behind a byte-order mark, as QuickTime stores a title that is
+  not ASCII, are read. They read as empty, raised `chapter-source-conflict` beside a `chpl`,
+  and the next chapter edit wrote the empty titles to both stores. A track title that reads
+  empty takes the `chpl`'s.
+- An MP4 chapter track whose first chapter starts after zero runs its media on to where the
+  last chapter ends. ffmpeg takes the media duration for that end, so it ended the last chapter
+  early by the first chapter's start. Tracks written before read as they did. A chapter track
+  whose media runs past the edit list that plays it, as another writer's can, ends its last
+  chapter with the edits where that falls after the chapter's start.
+- Planning an MP4 chapter write no longer takes time quadratic in the file's tracks and chunk
+  offsets (2.4 s for a crafted 1 MiB file of 8,000 tracks, now under 10 ms).
 
 ### Changed
 

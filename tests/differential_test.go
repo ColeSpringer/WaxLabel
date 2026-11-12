@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -202,6 +203,48 @@ func ffprobeStream(t *testing.T, path string) probeStream {
 		t.Fatalf("ffprobe %s: no sample rate or channel count for the audio stream\n%s", path, out)
 	}
 	return p
+}
+
+// probeChapter is one chapter as ffprobe reads it, its times in seconds.
+type probeChapter struct {
+	Start, End time.Duration
+	Title      string
+}
+
+// ffprobeChapters lists a file's chapters, with whatever ffprobe logs at error level while
+// reading it.
+func ffprobeChapters(t *testing.T, path string) (chapters []probeChapter, log string) {
+	t.Helper()
+	cmd := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error", "-show_chapters", "-of", "json", path)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("ffprobe %s: %v\n%s", path, err, stderr.String())
+	}
+	var probe struct {
+		Chapters []struct {
+			StartTime string `json:"start_time"`
+			EndTime   string `json:"end_time"`
+			Tags      struct {
+				Title string `json:"title"`
+			} `json:"tags"`
+		} `json:"chapters"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatalf("ffprobe %s: %v\n%s", path, err, out)
+	}
+	seconds := func(v string) time.Duration {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			t.Fatalf("ffprobe %s: chapter time %q: %v", path, v, err)
+		}
+		return time.Duration(math.Round(f * float64(time.Second)))
+	}
+	for _, c := range probe.Chapters {
+		chapters = append(chapters, probeChapter{Start: seconds(c.StartTime), End: seconds(c.EndTime), Title: c.Tags.Title})
+	}
+	return chapters, stderr.String()
 }
 
 // ffmpegSine encodes one second of a 1 kHz sine at the given geometry, with codecArgs

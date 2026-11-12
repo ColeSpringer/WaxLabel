@@ -3,6 +3,7 @@ package waxlabel_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"image"
 	"image/color"
@@ -201,6 +202,175 @@ func TestMP4DifferentialQTChapterFaststart(t *testing.T) {
 	}
 	if chs := mustParseFile(t, path).Chapters(); len(chs) != 2 || chs[0].Title != "A" {
 		t.Errorf("chapters wrong after faststart edit: %+v", chs)
+	}
+}
+
+// ffmpeg references the chapter track it writes from the video track and the audio track alike.
+// A clear takes it out of both, so ffmpeg finds no reference to a track that is gone, and the
+// video stream stays.
+func TestMP4DifferentialChapterClearOnVideoFile(t *testing.T) {
+	requireTool(t, "ffmpeg")
+	requireTool(t, "ffprobe")
+	dir := t.TempDir()
+	meta := filepath.Join(dir, "chapters.txt")
+	if err := os.WriteFile(meta, []byte(";FFMETADATA1\n"+
+		"[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=500\ntitle=One\n"+
+		"[CHAPTER]\nTIMEBASE=1/1000\nSTART=500\nEND=1000\ntitle=Two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := ffmpegEncode(t, filepath.Join(dir, "va.mp4"),
+		"-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=5", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+		"-i", meta, "-map", "0:v", "-map", "1:a", "-map_chapters", "2", "-c:v", "mpeg4", "-c:a", "aac")
+	doc := mustParseFile(t, path)
+	if chs := doc.Chapters(); len(chs) != 2 || chs[1].Title != "Two" {
+		t.Fatalf("setup: chapters %+v, want One and Two", chs)
+	}
+	plan, err := doc.Edit().ClearChapters().Prepare(wl.WithVerifyEssence())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
+		t.Fatal(err)
+	}
+	chapters, log := ffprobeChapters(t, path)
+	if len(chapters) != 0 || log != "" {
+		t.Errorf("after the clear ffprobe reads %d chapter(s) and logs %q; want none and nothing", len(chapters), log)
+	}
+	streams, err := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error",
+		"-show_entries", "stream=codec_name", "-of", "csv=p=0", path).Output()
+	if err != nil {
+		t.Fatalf("ffprobe streams: %v", err)
+	}
+	if got := strings.Fields(string(streams)); !slices.Equal(got, []string{"mpeg4", "aac"}) {
+		t.Errorf("streams after the clear: %q, want mpeg4 and aac", got)
+	}
+}
+
+// ffmpeg takes the last "chap" list it reads for the whole movie. A new chapter track is not
+// named from the thumbnail track itself, whose list would be that last one and hide the
+// thumbnails.
+func TestMP4DifferentialThumbnailTrackKeepsItsRole(t *testing.T) {
+	requireTool(t, "ffmpeg")
+	requireTool(t, "ffprobe")
+	path := ffmpegEncode(t, filepath.Join(t.TempDir(), "av.mp4"),
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=5",
+		"-map", "0:a", "-map", "1:v", "-c:a", "aac", "-c:v", "mpeg4")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The audio track, the first, names the video track, the second, as its thumbnails. ffmpeg
+	// writes the moov last, so growing it moves no sample.
+	moov, moovLen := mp4FindBox(t, data, 0, len(data), "moov")
+	trak, trakLen := mp4FindBox(t, data, moov+8, moov+moovLen, "trak")
+	if moov+moovLen != len(data) {
+		t.Fatal("setup: the moov does not end the file")
+	}
+	named := mp4AfterTkhd(data[trak:trak+trakLen], testfile.MP4TrefChap(2))
+	data = slices.Concat(data[:trak], named, data[trak+trakLen:])
+	binary.BigEndian.PutUint32(data[moov:], uint32(moovLen+len(named)-trakLen))
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	thumbnails := func() string {
+		out, err := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error", "-select_streams", "v:0",
+			"-show_entries", "stream_disposition=attached_pic,timed_thumbnails", "-of", "csv=p=0", path).Output()
+		if err != nil {
+			t.Fatalf("ffprobe: %v", err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if got := thumbnails(); got != "1,1" {
+		t.Fatalf("setup: ffprobe reads the video track's thumbnail flags as %q, want 1,1", got)
+	}
+	plan, err := mustParseFile(t, path).Edit().SetChapters(wl.Chapter{Title: "One"}, wl.Chapter{Start: 500 * time.Millisecond, Title: "Two"}).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
+		t.Fatal(err)
+	}
+	if chapters, log := ffprobeChapters(t, path); len(chapters) != 2 || chapters[1].Title != "Two" || log != "" || thumbnails() != "1,1" {
+		t.Errorf("after the write ffprobe reads chapters %+v, logs %q and thumbnail flags %q; want One and Two, nothing and 1,1", chapters, log, thumbnails())
+	}
+}
+
+// ffmpeg reads a chapter track's UTF-16 titles as WaxLabel does, and after a chapter is added
+// both still read every title.
+func TestMP4DifferentialUTF16ChapterTitles(t *testing.T) {
+	requireTool(t, "ffprobe")
+	titles := []string{"Caf\u00e9", "\u65e5\u672c\u8a9e", "Plain"}
+	utf8File := rewriteChapters(t, readFixture(t, sampleM4B), func(e *wl.Editor) *wl.Editor {
+		return e.SetChapters(chaptersFromTitles(titles...)...)
+	})
+	read := func(path string) (ours, theirs []string) {
+		doc := mustParseFile(t, path)
+		for _, ch := range doc.Chapters() {
+			ours = append(ours, ch.Title)
+		}
+		if hasWarning(doc, wl.WarnChapterSourceConflict) {
+			t.Errorf("%s: the chpl and the chapter track disagree", filepath.Base(path))
+		}
+		chapters, log := ffprobeChapters(t, path)
+		for _, ch := range chapters {
+			theirs = append(theirs, ch.Title)
+		}
+		if log != "" {
+			t.Errorf("%s: ffprobe logs %q", filepath.Base(path), log)
+		}
+		return ours, theirs
+	}
+	for name, order := range map[string]binary.AppendByteOrder{"be": binary.BigEndian, "le": binary.LittleEndian} {
+		path := filepath.Join(t.TempDir(), name+".m4b")
+		if err := os.WriteFile(path, mp4WidenChapterTitles(t, utf8File, order), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if ours, theirs := read(path); !slices.Equal(ours, titles) || !slices.Equal(theirs, titles) {
+			t.Fatalf("%s: titles %q, ffprobe %q; want %q from both", name, ours, theirs, titles)
+		}
+		doc := mustParseFile(t, path)
+		plan, err := doc.Edit().SetChapters(append(doc.Chapters(), wl.Chapter{Start: 8 * time.Second, Title: "Added"})...).Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
+			t.Fatal(err)
+		}
+		want := append(slices.Clone(titles), "Added")
+		if ours, theirs := read(path); !slices.Equal(ours, want) || !slices.Equal(theirs, want) {
+			t.Errorf("%s after a chapter is added: titles %q, ffprobe %q; want %q from both", name, ours, theirs, want)
+		}
+	}
+}
+
+// ffmpeg takes the chapter track's media duration for the last chapter's end, so a first chapter
+// that starts late must not cut that short of where the chapter ends.
+func TestMP4DifferentialLateFirstChapter(t *testing.T) {
+	requireTool(t, "ffprobe")
+	for name, c := range map[string]struct {
+		last wl.Chapter
+		end  time.Duration
+	}{
+		"open last chapter ends with the movie": {wl.Chapter{Start: 5 * time.Second, Title: "B"}, 9 * time.Second},
+		"last chapter with an end":              {wl.Chapter{Start: 5 * time.Second, End: 8 * time.Second, Title: "B"}, 8 * time.Second},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := copyToTemp(t, sampleM4B)
+			plan, err := mustParseFile(t, path).Edit().SetChapters(wl.Chapter{Start: 2 * time.Second, Title: "A"}, c.last).Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
+				t.Fatal(err)
+			}
+			want := []probeChapter{{2 * time.Second, 5 * time.Second, "A"}, {5 * time.Second, c.end, "B"}}
+			if got, log := ffprobeChapters(t, path); !slices.Equal(got, want) || log != "" {
+				t.Errorf("ffprobe reads %+v and logs %q; want %+v", got, log, want)
+			}
+			if chs := mustParseFile(t, path).Chapters(); len(chs) != 2 || chs[0].Start != 2*time.Second || chs[1].End != c.end {
+				t.Errorf("chapters %+v; want the first at 2 s and the last ending at %v", chs, c.end)
+			}
+		})
 	}
 }
 
@@ -545,12 +715,12 @@ func TestMP4OffsetShiftReportedOnlyWhenAnEntryMoves(t *testing.T) {
 	chplOnly := func(moovLast bool) []byte {
 		audio := testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64))
 		if moovLast {
-			moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(-1, uint32(len(testfile.MP4Ftyp())+8)))
+			moov := testfile.MP4Atom("moov", testfile.MP4SoundTrak(-1, uint32(len(testfile.MP4Ftyp())+8)))
 			return slices.Concat(testfile.MP4Ftyp(), audio, moov)
 		}
-		moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(-1, 0))
+		moov := testfile.MP4Atom("moov", testfile.MP4SoundTrak(-1, 0))
 		at := len(testfile.MP4Ftyp()) + len(moov) + 8
-		return slices.Concat(testfile.MP4Ftyp(), testfile.MP4Atom("moov", mp4AudioTrakTkhd(-1, uint32(at))), audio)
+		return slices.Concat(testfile.MP4Ftyp(), testfile.MP4Atom("moov", testfile.MP4SoundTrak(-1, uint32(at))), audio)
 	}
 	udtaText := testfile.MP4AssembleUdta(mp4UdtaText("\xa9nam", mp4QTTextEntry(langUnd, "T")))
 	for _, c := range []struct {

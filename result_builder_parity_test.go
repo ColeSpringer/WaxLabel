@@ -292,6 +292,16 @@ func parityInputs(t *testing.T) []parityInput {
 		chaps("start at the edit ceiling", setChapters(ch(4_294_967_295*time.Millisecond, "Edge"))),
 		chaps("non-zero first start", setChapters(ch(sec(4), "Four"), ch(sec(9), "Nine"))),
 		chaps("single non-zero start", setChapters(ch(sec(4), "Only"))),
+		// A late first chapter, whose track media runs on to where the last chapter ends: at the
+		// movie's end, short of it, off the movie timescale's grid, and a first start of one unit.
+		chaps("late first start", setChapters(ch(sec(2), "A"), ch(sec(5), "B")),
+			chaps("one more", setChapters(ch(sec(2), "A"), ch(sec(5), "B"), ch(sec(7), "C")))),
+		chaps("late first start, last ends early", setChapters(ch(sec(2), "A"), Chapter{Start: sec(5), End: sec(8), Title: "B"})),
+		chaps("late first start, end off the grid", setChapters(ch(sec(2.0004), "A"), Chapter{Start: sec(5), End: sec(8) + 400*time.Microsecond, Title: "B"})),
+		chaps("first start of one unit", setChapters(ch(time.Millisecond, "A"), Chapter{Start: sec(5), End: sec(8), Title: "B"})),
+		chaps("late chapter shorter than a unit", setChapters(Chapter{Start: sec(4), End: sec(4) + 100*time.Microsecond, Title: "Blip"})),
+		chaps("first start of one unit, end between units", setChapters(ch(time.Millisecond, "A"), Chapter{Start: sec(5), End: sec(8) + 500*time.Microsecond, Title: "B"})),
+		chaps("late first start in a book past the media field", setChapters(ch(10*time.Minute, "A"), Chapter{Start: 6 * time.Hour, End: 13*time.Hour + 20*time.Minute, Title: "B"})),
 		tags("grow title", setTag(tag.Title, strings.Repeat("Grown Title ", 7)),
 			chaps("two chapters", setChapters(ch(0, "Chained A"), ch(sec(3), "Chained B")))),
 	}
@@ -486,6 +496,49 @@ func parityInputs(t *testing.T) []parityInput {
 		// Titles that end at a NUL, in a list read as Windows-1252 and a track beside it.
 		parityInput{name: "nul-titles.m4a", data: testfile.MP4QTFile([]int{0, 3000}, []string{"Intro\x00", "Caf\xe9\x00\x00"},
 			chpl("Intro\x00", "Caf\xe9\x00\x00"))},
+		// Chapter tracks named beside a video track of thumbnails, from the video track alone, and
+		// created in a file of both; UTF-16 titles beside a UTF-8 list; a track title the list fills.
+		parityInput{name: "thumbnails.m4a", data: testfile.MP4TracksFile([]string{"One", "Two"}, func(audio, text, thumbs uint32) []byte {
+			return slices.Concat(testfile.MP4VideoTrak(3, thumbs), testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(99, 2, 3)),
+				testfile.MP4TextTrak(2, 1000, []int{0, 3000}, []string{"One", "Two"}, text))
+		}), edits: []parityEdit{threeThenOne}},
+		parityInput{name: "video-chap.m4a", data: testfile.MP4TracksFile([]string{"One", "Two"}, func(audio, text, thumbs uint32) []byte {
+			return slices.Concat(testfile.MP4SoundTrak(1, audio), testfile.MP4VideoTrak(3, thumbs, testfile.MP4TrefChap(2)),
+				testfile.MP4TextTrak(2, 1000, []int{0, 3000}, []string{"One", "Two"}, text))
+		}), edits: []parityEdit{threeThenOne}},
+		parityInput{name: "sound-and-video.m4a", data: testfile.MP4TracksFile(nil, func(audio, _, thumbs uint32) []byte {
+			return slices.Concat(testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(3)), testfile.MP4VideoTrak(3, thumbs))
+		}), edits: []parityEdit{threeThenOne}},
+		// A chapter track of track id 0; a text track only its own list names; an edit list that
+		// ends before the last chapter starts; and a movie timescale so fine that a long file's
+		// edit segment clamps.
+		parityInput{name: "chapter-track-id-0.m4a", data: testfile.MP4TracksFile([]string{"One", "Two"}, func(audio, text, _ uint32) []byte {
+			return slices.Concat(testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(0)), testfile.MP4TextTrak(0, 1000, []int{0, 3000}, []string{"One", "Two"}, text))
+		}), edits: []parityEdit{threeThenOne}},
+		parityInput{name: "self-named.m4a", data: testfile.MP4TracksFile([]string{"One", "Two"}, func(audio, text, _ uint32) []byte {
+			own := testfile.MP4TextTrak(2, 1000, []int{0, 3000}, []string{"One", "Two"}, text)
+			tkhd := 8 + int(binary.BigEndian.Uint32(own[8:]))
+			own = slices.Concat(own[:tkhd], testfile.MP4TrefChap(2), own[tkhd:])
+			binary.BigEndian.PutUint32(own, uint32(len(own)))
+			return slices.Concat(testfile.MP4SoundTrak(1, audio), own)
+		}), edits: []parityEdit{threeThenOne}},
+		parityInput{name: "short-edit.m4a", data: testfile.MP4TracksFile([]string{"One", "Two", "Three"}, func(audio, text, _ uint32) []byte {
+			cut := testfile.MP4TextTrak(2, 1000, []int{0, 3000, 8000, 10000}, []string{"One", "Two", "Three"}, text)
+			tkhd := 8 + int(binary.BigEndian.Uint32(cut[8:]))
+			cut = slices.Concat(cut[:tkhd], testfile.MP4Edts([2]int64{5000, 0}), cut[tkhd:])
+			binary.BigEndian.PutUint32(cut, uint32(len(cut)))
+			return slices.Concat(testfile.MP4Mvhd(1000, 10000), testfile.MP4SoundTrak(1, audio, testfile.MP4TrefChap(2)), cut)
+		})},
+		parityInput{name: "fine-timescale.m4a", data: testfile.MP4TracksFile(nil, func(audio, _, _ uint32) []byte {
+			return slices.Concat(testfile.MP4Mvhd(1_000_000, 2*3600*1_000_000), testfile.MP4SoundTrak(1, audio))
+		}), edits: []parityEdit{
+			chaps("from zero past the edit clamp", setChapters(ch(0, "A"), ch(time.Hour, "B")), chaps("one more", setChapters(ch(0, "A"), ch(time.Hour, "B"), ch(90*time.Minute, "C")))),
+			chaps("late start past the edit clamp", setChapters(ch(time.Minute, "A"), ch(90*time.Minute, "B"))),
+			chaps("late start under the edit clamp", setChapters(ch(time.Minute, "A"), Chapter{Start: 30 * time.Minute, End: time.Hour, Title: "B"})),
+		}},
+		parityInput{name: "utf16-titles.m4a", data: testfile.MP4QTFile([]int{0, 3000}, []string{"\xfe\xff\x00C\x00a\x00f\x00\xe9", "\xff\xfeB\x00"},
+			chpl("Caf\u00e9", "B"))},
+		parityInput{name: "empty-track-title.m4a", data: testfile.MP4QTFile([]int{0, 3000}, []string{"", "Two"}, chpl("One", "Two"))},
 		// Ogg behind a leading tag and bytes, ahead of junk and stacked tags; with bytes between its
 		// pages, renumbered around them; and ending inside its last page ahead of a tag.
 		parityInput{name: "legacy-tags.ogg", data: slices.Concat(v2Title, gap, fixture["sample.ogg"], tailJunk, v1a, v1b),

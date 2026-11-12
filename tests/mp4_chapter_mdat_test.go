@@ -173,7 +173,7 @@ func TestMP4ChapterMdatGoesAheadOfTrailingBytes(t *testing.T) {
 	tagged := testfile.MP4Tagged(testfile.MP4Text("\xa9nam", "T"))
 	ftyp := testfile.MP4Ftyp()
 	moovLast := slices.Concat(ftyp, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 120)),
-		testfile.MP4Atom("moov", mp4AudioTrakTkhd(1, uint32(len(ftyp)+8))))
+		testfile.MP4Atom("moov", testfile.MP4SoundTrak(1, uint32(len(ftyp)+8))))
 	// Two files joined, the second moov declaring the given size.
 	joined := func(declare func(size uint32) uint32) (data, tail []byte) {
 		data = slices.Concat(moovLast, moovLast)
@@ -222,7 +222,7 @@ func TestMP4ChapterMdatGoesAheadOfTrailingBytes(t *testing.T) {
 func TestMP4ChapterRewriteSizesAMoovThatRunsToTheEnd(t *testing.T) {
 	ftyp := testfile.MP4Ftyp()
 	base := slices.Concat(ftyp, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 120)),
-		testfile.MP4Atom("moov", mp4AudioTrakTkhd(1, uint32(len(ftyp)+8))))
+		testfile.MP4Atom("moov", testfile.MP4SoundTrak(1, uint32(len(ftyp)+8))))
 	rewrite := func(src []byte, titles ...string) []byte {
 		plan, err := mustParseBytes(t, src).Edit().SetChapters(chaptersFromTitles(titles...)...).Prepare()
 		if err != nil {
@@ -281,7 +281,7 @@ func TestMP4ChapterRewriteReclaimsAnUnsizedChapterMdat(t *testing.T) {
 func TestMP4ChapterMdatStaysBehindBytesATableNames(t *testing.T) {
 	media := bytes.Repeat([]byte{0xD4}, 64)
 	build := func(first, second uint32) []byte {
-		moov := testfile.MP4Atom("moov", slices.Concat(mp4AudioTrakTkhd(1, first), mp4AudioTrakTkhd(2, second)))
+		moov := testfile.MP4Atom("moov", slices.Concat(testfile.MP4SoundTrak(1, first), testfile.MP4SoundTrak(2, second)))
 		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 120)),
 			[]byte{0, 0, 0, 0, 'j', 'u', 'n', 'k'}, media)
 	}

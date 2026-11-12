@@ -3,6 +3,7 @@ package mp4
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"math"
 	"slices"
 	"testing"
@@ -104,20 +105,20 @@ func TestChapterDeltasLastChapterBounded(t *testing.T) {
 	chs := []core.Chapter{{Start: 0}, {Start: 5 * time.Second}}
 	// An unknown movie duration (the sentinel maps to 0) must give the final chapter a
 	// one-unit tail, not the multi-week span a raw 0xFFFFFFFF movieDuration would cause.
-	if d, _ := chapterDeltas(chs, 1000, 1000, 0); d[1] != 1 {
+	if d, _, _ := chapterDeltas(chs, 1000, 1000, 0); d[1] != 1 {
 		t.Errorf("last delta with unknown duration = %d, want 1 (one-unit tail)", d[1])
 	}
 	// A real movie duration bounds the last chapter to the remaining span.
-	if d, _ := chapterDeltas(chs, 1000, 1000, 9000); d[1] != 4000 {
+	if d, _, _ := chapterDeltas(chs, 1000, 1000, 9000); d[1] != 4000 {
 		t.Errorf("last delta with duration 9000 = %d, want 4000", d[1])
 	}
 	// An out-of-order start cannot encode a negative span. Defense in depth behind
 	// the editor's sort: clamp to one unit so every chapter still spans End > Start.
-	if d, _ := chapterDeltas([]core.Chapter{{Start: 5 * time.Second}, {Start: time.Second}}, 1000, 1000, 0); d[0] != 1 {
+	if d, _, _ := chapterDeltas([]core.Chapter{{Start: 5 * time.Second}, {Start: time.Second}}, 1000, 1000, 0); d[0] != 1 {
 		t.Errorf("backwards gap delta = %d, want 1 (clamped to the one-unit minimum)", d[0])
 	}
 	// Two chapters at the same start must still give the first one a nonzero duration.
-	if d, _ := chapterDeltas([]core.Chapter{{Start: time.Second}, {Start: time.Second}}, 1000, 1000, 0); d[0] != 1 {
+	if d, _, _ := chapterDeltas([]core.Chapter{{Start: time.Second}, {Start: time.Second}}, 1000, 1000, 0); d[0] != 1 {
 		t.Errorf("same-start delta = %d, want 1 (one-unit minimum, not a zero-length chapter)", d[0])
 	}
 }
@@ -132,7 +133,7 @@ func TestChapterDeltasRepaysCollisionDebt(t *testing.T) {
 		{Start: 5 * time.Second},
 		{Start: 8 * time.Second},
 	}
-	deltas, saturated := chapterDeltas(chs, 1000, 1000, 10000)
+	deltas, saturated, _ := chapterDeltas(chs, 1000, 1000, 10000)
 	if saturated {
 		t.Error("no delta should saturate for second-scale starts")
 	}
@@ -153,11 +154,11 @@ func TestChapterDeltasRepaysCollisionDebt(t *testing.T) {
 // field (~49.7 days at the movie timescale) sets the saturation flag surfaced as
 // WarnChapterStartOverflow, while an ordinary list does not.
 func TestChapterDeltasSaturationFlag(t *testing.T) {
-	if _, sat := chapterDeltas([]core.Chapter{{Start: 0}, {Start: 5 * time.Second}}, 1000, 1000, 0); sat {
+	if _, sat, _ := chapterDeltas([]core.Chapter{{Start: 0}, {Start: 5 * time.Second}}, 1000, 1000, 0); sat {
 		t.Error("ordinary second-scale chapters must not flag saturation")
 	}
 	huge := []core.Chapter{{Start: 0}, {Start: 50 * 24 * time.Hour}} // ~50 days > MaxUint32 ms units
-	if _, sat := chapterDeltas(huge, 1000, 1000, 0); !sat {
+	if _, sat, _ := chapterDeltas(huge, 1000, 1000, 0); !sat {
 		t.Error("a >49.7-day chapter gap must flag saturation")
 	}
 }
@@ -170,7 +171,7 @@ func TestBuildChapterTrakLeadingOffsetSaturates(t *testing.T) {
 	day := 24 * time.Hour
 	// First chapter at 60 days (> MaxUint32 ms units), the next only 5s later.
 	chs := []core.Chapter{{Start: 60 * day}, {Start: 60*day + 5*time.Second}}
-	if _, satDeltas := chapterDeltas(chs, 1000, 1000, 0); satDeltas {
+	if _, satDeltas, _ := chapterDeltas(chs, 1000, 1000, 0); satDeltas {
 		t.Fatal("setup: the small inter-chapter gap should not saturate the deltas")
 	}
 	if _, _, sat := buildChapterTrak(2, 1000, 1000, 0, chs, false); !sat {
@@ -194,7 +195,7 @@ func TestBuildChapterTrakCumulativeSpanSaturates(t *testing.T) {
 	}
 	// Each gap (13 h, then 30 min) is under the ~13.25 h per-field ceiling, so no per-gap stts
 	// delta clamps; the flag must come from the cumulative span.
-	if _, satDeltas := chapterDeltas(chs, mts, mts, 0); satDeltas {
+	if _, satDeltas, _ := chapterDeltas(chs, mts, mts, 0); satDeltas {
 		t.Fatal("setup: no single inter-chapter gap should saturate the stts deltas")
 	}
 	// Their sum (~13.5 h of 90 kHz units) overflows the mdhd/tkhd/elst 32-bit field.
@@ -264,6 +265,103 @@ func TestChapterEdtsEmptyEdit(t *testing.T) {
 	})
 }
 
+// trakTimes reads back the durations a chapter trak was built with: the stts deltas and the
+// mdhd duration in media units, the tkhd duration and the elst segments in movie units.
+func trakTimes(t *testing.T, trak []byte) (deltas []uint32, mdhd, tkhd uint32, elst []uint32) {
+	t.Helper()
+	be := binary.BigEndian
+	at := func(name string) []byte {
+		i := bytes.Index(trak, []byte(name))
+		if i < 0 {
+			t.Fatalf("no %s in the chapter trak", name)
+		}
+		return trak[i+4:]
+	}
+	stts := at("stts")
+	for i := range int(be.Uint32(stts[4:])) {
+		deltas = append(deltas, be.Uint32(stts[8+8*i+4:]))
+	}
+	segs := at("elst")
+	for i := range int(be.Uint32(segs[4:])) {
+		elst = append(elst, be.Uint32(segs[8+12*i:]))
+	}
+	return deltas, be.Uint32(at("mdhd")[16:]), be.Uint32(at("tkhd")[20:]), elst
+}
+
+// The chapter media runs on to where the track ends on the movie timeline, so a reader that
+// takes the media duration for the last chapter's end, as ffmpeg does, has it right when the
+// first chapter starts late. The edit list still plays only the span the chapters cover.
+func TestBuildChapterTrakMediaReachesTheTrackEnd(t *testing.T) {
+	const mts, movieTS, movieDur = 90000, 1000, 9000
+	sec := func(n uint32) uint32 { return n * mts }
+	for _, c := range []struct {
+		name   string
+		chs    []core.Chapter
+		deltas []uint32
+		mdhd   uint32
+		tkhd   uint32
+		elst   []uint32
+	}{
+		{"late first chapter, open last", []core.Chapter{{Start: 2 * time.Second}, {Start: 5 * time.Second}},
+			[]uint32{sec(3), sec(6)}, sec(9), 9000, []uint32{2000, 7000}},
+		{"late first chapter, last ends early", []core.Chapter{{Start: 2 * time.Second}, {Start: 5 * time.Second, End: 8 * time.Second}},
+			[]uint32{sec(3), sec(5)}, sec(8), 8000, []uint32{2000, 6000}},
+		{"a lone late chapter", []core.Chapter{{Start: 4 * time.Second}},
+			[]uint32{sec(9)}, sec(9), 9000, []uint32{4000, 5000}},
+		{"first chapter at zero", []core.Chapter{{Start: 0}, {Start: 5 * time.Second}},
+			[]uint32{sec(5), sec(4)}, sec(9), 9000, []uint32{9000}},
+		// The edit that plays the media is never written with no length.
+		{"a late chapter shorter than a movie unit", []core.Chapter{{Start: 4 * time.Second, End: 4*time.Second + 100*time.Microsecond}},
+			[]uint32{sec(4) + 9}, sec(4) + 9, 4001, []uint32{4000, 1}},
+		// A first start that rounds to one movie unit, beside a span the same rounding shortens,
+		// would read back as media ending with its edit: the media stays as long as the chapters.
+		{"a first start the rounding hides", []core.Chapter{{Start: time.Millisecond}, {Start: 5 * time.Second, End: 8*time.Second + 500*time.Microsecond}},
+			[]uint32{sec(5) - 90, sec(3) + 45}, sec(8) - 45, 8001, []uint32{1, 8000}},
+		// Past the movie's end a span of one second reads as an open chapter's, so an end that
+		// the first start would stretch to exactly that stays where it is.
+		{"an end the longer media would lose", []core.Chapter{{Start: 250 * time.Millisecond}, {Start: 9 * time.Second, End: 9*time.Second + 750*time.Millisecond}},
+			[]uint32{sec(9) - 22500, 67500}, sec(9) + 45000, 9750, []uint32{250, 9500}},
+		// A last chapter at the movie's end has no span to extend: its one-unit tail stays, so
+		// a read still takes it for open.
+		{"last chapter at the movie end", []core.Chapter{{Start: 4 * time.Second}, {Start: 9 * time.Second}},
+			[]uint32{sec(5), 1}, sec(5) + 1, 9000, []uint32{4000, 5000}},
+	} {
+		trak, _, saturated := buildChapterTrak(2, mts, movieTS, movieDur, c.chs, false)
+		deltas, mdhd, tkhd, elst := trakTimes(t, trak)
+		if saturated || !slices.Equal(deltas, c.deltas) || mdhd != c.mdhd || tkhd != c.tkhd || !slices.Equal(elst, c.elst) {
+			t.Errorf("%s: stts %v, mdhd %d, tkhd %d, elst %v (saturated %v); want %v, %d, %d, %v",
+				c.name, deltas, mdhd, tkhd, elst, saturated, c.deltas, c.mdhd, c.tkhd, c.elst)
+		}
+	}
+}
+
+// The media runs on only where every field holds it: past the 32-bit media duration, or beside an
+// edit segment that clamps, it stays as long as the chapters and nothing new saturates.
+func TestBuildChapterTrakMediaStaysWhereAFieldWouldClamp(t *testing.T) {
+	const mts = 90000
+	hours := func(h float64) time.Duration { return time.Duration(h * float64(time.Hour)) }
+	for _, c := range []struct {
+		name      string
+		movieTS   uint32
+		movieDur  time.Duration
+		chs       []core.Chapter
+		mdhd      time.Duration // the media duration written
+		saturated bool
+	}{
+		{"media duration past 32 bits", 1000, hours(13) + 20*time.Minute, []core.Chapter{{Start: 10 * time.Minute}, {Start: hours(6)}},
+			hours(13) + 10*time.Minute, false},
+		{"an edit segment that clamps", 1_000_000, hours(2), []core.Chapter{{Start: time.Minute}, {Start: hours(1.5)}},
+			hours(2) - time.Minute, true},
+		{"a book that fits", 1000, hours(13), []core.Chapter{{Start: 10 * time.Minute}, {Start: hours(6)}}, hours(13), false},
+	} {
+		movieDur := uint64(c.movieDur.Seconds() * float64(c.movieTS))
+		trak, _, saturated := buildChapterTrak(2, mts, c.movieTS, movieDur, c.chs, false)
+		if _, mdhd, _, _ := trakTimes(t, trak); saturated != c.saturated || uint64(mdhd) != durationToUnits(c.mdhd, mts) {
+			t.Errorf("%s: media %d units, saturated %v; want %d, %v", c.name, mdhd, saturated, durationToUnits(c.mdhd, mts), c.saturated)
+		}
+	}
+}
+
 // TestBuildChapterTrakEditGating checks the empty edit is written only when the movie
 // timescale is known.
 func TestBuildChapterTrakEditGating(t *testing.T) {
@@ -308,15 +406,16 @@ func TestAddClampSaturates(t *testing.T) {
 	}
 }
 
-// TestEmptyEditOffset is the read side of that contract: an elst whose first entry is
-// an empty edit (media_time -1) yields its segment_duration as a Duration scaled by the
-// movie timescale.
-func TestEmptyEditOffset(t *testing.T) {
+// TestEditListSpans is the read side of that contract: an elst whose first entry is an empty
+// edit (media_time -1) yields its segment_duration as the lead, and the edits that play media
+// sum to the span played, both in movie units.
+func TestEditListSpans(t *testing.T) {
 	be := binary.BigEndian
-	elst := func(count uint32, entries ...byte) []byte {
+	elst := func(version byte, count uint32, entries ...[]byte) []byte {
 		p := make([]byte, 8) // version/flags + entry_count
+		p[0] = version
 		be.PutUint32(p[4:8], count)
-		return append(p, entries...)
+		return append(p, slices.Concat(entries...)...)
 	}
 	entry := func(segDur uint32, mediaTime int32) []byte {
 		e := make([]byte, 12)
@@ -325,24 +424,80 @@ func TestEmptyEditOffset(t *testing.T) {
 		be.PutUint32(e[8:12], 0x00010000)
 		return e
 	}
-	// An empty edit of 4000 units at timescale 1000 -> 4s, not saturated.
-	p := elst(2, append(entry(4000, -1), entry(9000, 0)...)...)
-	if got, sat := emptyEditOffset(p, 1000); got != 4*time.Second || sat {
-		t.Errorf("empty-edit offset = %v/sat=%v, want 4s/false", got, sat)
+	entry64 := func(segDur uint64, mediaTime int64) []byte {
+		e := make([]byte, 20)
+		be.PutUint64(e[0:8], segDur)
+		be.PutUint64(e[8:16], uint64(mediaTime))
+		be.PutUint32(e[16:20], 0x00010000)
+		return e
 	}
-	// A normal first entry -> no offset (a foreign track without an empty edit).
-	if got, sat := emptyEditOffset(elst(1, entry(9000, 0)...), 1000); got != 0 || sat {
-		t.Errorf("normal-edit offset = %v/sat=%v, want 0/false", got, sat)
+	for _, c := range []struct {
+		name         string
+		p            []byte
+		lead, played uint64
+		clamped      bool
+	}{
+		{"an empty edit, then the media", elst(0, 2, entry(4000, -1), entry(9000, 0)), 4000, 9000, false},
+		{"the media alone", elst(0, 1, entry(9000, 0)), 0, 9000, false},
+		{"two edits that play", elst(0, 3, entry(4000, -1), entry(3000, 0), entry(2000, 5000)), 4000, 5000, false},
+		{"a later empty edit is no lead", elst(0, 2, entry(3000, 0), entry(4000, -1)), 0, 3000, false},
+		{"no entries", elst(0, 0), 0, 0, false},
+		// A segment_duration read back as exactly MaxUint32 is a clamped lead: a first chapter past
+		// the 32-bit ceiling, which the merge then takes from the chpl.
+		{"a clamped lead", elst(0, 1, entry(math.MaxUint32, -1)), math.MaxUint32, 0, true},
+		{"64-bit entries", elst(1, 2, entry64(1<<33, -1), entry64(9000, 0)), 1 << 33, 9000, false},
+		{"a count past the entries", elst(0, 9, entry(4000, -1), entry(9000, 0)), 4000, 9000, false},
+		{"a cut-off entry", elst(0, 2, entry(4000, -1), entry(9000, 0)[:7]), 4000, 0, false},
+		{"an unknown version", elst(2, 1, entry(9000, 0)), 0, 0, false},
+		{"spans that overflow", elst(1, 2, entry64(math.MaxUint64, 0), entry64(5, 0)), 0, math.MaxUint64, false},
+		// A 32-bit span of exactly MaxUint32 was clamped when written, so how long it plays is unknown.
+		{"a clamped span", elst(0, 2, entry(4000, -1), entry(math.MaxUint32, 0)), 4000, 0, false},
+		{"a clamped span among others", elst(0, 2, entry(math.MaxUint32, 0), entry(9000, 0)), 0, 0, false},
+		{"64-bit fields hold that value whole", elst(1, 2, entry64(math.MaxUint32, -1), entry64(math.MaxUint32, 0)), math.MaxUint32, math.MaxUint32, false},
+	} {
+		if lead, played, clamped := editListSpans(c.p); lead != c.lead || played != c.played || clamped != c.clamped {
+			t.Errorf("%s: lead %d, played %d, clamped %v; want %d, %d, %v", c.name, lead, played, clamped, c.lead, c.played, c.clamped)
+		}
 	}
-	// Zero entries -> no offset.
-	if got, sat := emptyEditOffset(elst(0), 1000); got != 0 || sat {
-		t.Errorf("empty-elst offset = %v/sat=%v, want 0/false", got, sat)
+}
+
+// The last chapter ends where the track's media does on the movie timeline: with the edits when
+// the media runs past them, at the media's own duration, the finer of the two, when that reaches
+// the track's end, and never at or before the chapter's own start.
+func TestTrackEnd(t *testing.T) {
+	const s, ms, us = time.Second, time.Millisecond, time.Microsecond
+	slack := gridSlack(1000, 90000)
+	if want := ms + 11111*time.Nanosecond; slack != want {
+		t.Fatalf("slack %v, want one unit of each timescale, %v", slack, want)
 	}
-	// A segment_duration read back as exactly MaxUint32 is a clamped leading offset (a
-	// first chapter past the u32 movie-timescale ceiling), so saturated must be set; that is
-	// how mergeChapters learns to take the exact chpl start over the clamped QuickTime one.
-	if got, sat := emptyEditOffset(elst(1, entry(math.MaxUint32, -1)...), 1000); !sat {
-		t.Errorf("MaxUint32 segment_duration offset = %v/sat=%v, want saturated=true", got, sat)
+	for _, c := range []struct {
+		name      string
+		mediaEnd  time.Duration
+		lastStart time.Duration
+		ed        trackEdits
+		want      time.Duration
+	}{
+		{"no edit list", 9 * s, 5 * s, trackEdits{}, 9 * s},
+		{"media the edit plays whole", 7 * s, 5 * s, trackEdits{offset: 2 * s, played: 7 * s}, 9 * s},
+		{"an edit rounded short of the media", 7*s + 400*us, 5 * s, trackEdits{offset: 2 * s, played: 7 * s}, 9*s + 400*us},
+		{"media that reaches the track's end", 9 * s, 5 * s, trackEdits{offset: 2 * s, played: 7 * s}, 9 * s},
+		{"the track's end on the finer grid", 8*s + 400*us, 5 * s, trackEdits{offset: 2 * s, played: 6 * s}, 8*s + 400*us},
+		{"media an edit cuts short", 20 * s, 5 * s, trackEdits{offset: 2 * s, played: 7 * s}, 9 * s},
+		{"media an edit cuts short, no lead", 20 * s, 5 * s, trackEdits{played: 7 * s}, 7 * s},
+		{"media short of the edit", 4 * s, 3 * s, trackEdits{offset: 2 * s, played: 7 * s}, 6 * s},
+		{"media short of the edit, no lead", 4 * s, 3 * s, trackEdits{played: 7 * s}, 4 * s},
+		// A lead no longer than the rounding: the media ends nearer the track's end or the edit's.
+		{"a lead of one unit, media to the track's end", 8 * s, 5 * s, trackEdits{offset: ms, played: 7999 * ms}, 8 * s},
+		{"a lead of one unit, media the edit plays whole", 7999 * ms, 5 * s, trackEdits{offset: ms, played: 7999 * ms}, 8 * s},
+		// Edits that end before the last chapter starts place no end for it: the media's own stands.
+		{"edits that end before the last start", 10 * s, 8 * s, trackEdits{played: 5 * s}, 10 * s},
+		{"edits that end at the last start", 10 * s, 7 * s, trackEdits{offset: 2 * s, played: 5 * s}, 12 * s},
+		{"media duration at the last start", 4*s + ms, 4*s + ms, trackEdits{offset: 4*s + ms, played: ms}, 8*s + 2*ms},
+		{"a sum past the clamp", math.MaxInt64, 5 * s, trackEdits{offset: s}, math.MaxInt64},
+	} {
+		if got := trackEnd(c.mediaEnd, c.lastStart, c.ed, slack); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 
@@ -423,18 +578,111 @@ func TestReadTextSampleReadsTitleAlone(t *testing.T) {
 	}
 }
 
-// The ids read from a tref's "chap" entries are bounded, however many it declares.
-func TestChapterTrackIDsBounded(t *testing.T) {
-	chap := func(ids int) []byte { return renderAtom(atomName("chap"), make([]byte, 4*ids)) }
-	trak := renderAtom(atomName("trak"), renderAtom(atomName("tref"), slices.Concat(chap(700), chap(0), chap(700))))
-	src := core.BytesSource(trak)
-	nodes, err := walkAtoms(src, 0, int64(len(trak)), bits.NewDepth(bits.DefaultLimits.MaxDepth), 1<<20, true)
+// shortAt serves every read but one that starts at off, which comes back short.
+type shortAt struct {
+	core.ReaderAtSized
+	off int64
+}
+
+func (r shortAt) ReadAt(p []byte, off int64) (int, error) {
+	if off == r.off {
+		return 0, io.ErrUnexpectedEOF
+	}
+	return r.ReaderAtSized.ReadAt(p, off)
+}
+
+// A trak whose tref cannot be read is left out of the references: a rewrite from no payload
+// would drop what else the tref holds.
+func TestFindChapterTrackSkipsATrefItCannotRead(t *testing.T) {
+	hdlr := func(kind string) []byte {
+		return renderAtom(atomName("hdlr"), slices.Concat(make([]byte, 8), []byte(kind), make([]byte, 12)))
+	}
+	tkhd := func(id uint32) []byte {
+		return renderAtom(atomName("tkhd"), slices.Concat(make([]byte, 12), be32u(id), make([]byte, 4)))
+	}
+	tref := renderAtom(atomName("tref"), slices.Concat(renderAtom(atomName("hint"), be32(7)), renderAtom(atomName("chap"), be32(2))))
+	moov := renderAtom(atomName("moov"), slices.Concat(
+		renderAtom(atomName("trak"), slices.Concat(tkhd(1), tref, renderAtom(atomName("mdia"), hdlr("soun")))),
+		renderAtom(atomName("trak"), slices.Concat(tkhd(2), renderAtom(atomName("mdia"), hdlr("text"))))))
+	whole := core.BytesSource(moov)
+	nodes, err := walkAtoms(whole, 0, int64(len(moov)), bits.NewDepth(bits.DefaultLimits.MaxDepth), 1<<20, true)
 	if err != nil || len(nodes) != 1 {
 		t.Fatalf("walk: %d nodes, %v", len(nodes), err)
 	}
-	groups, err := chapterTrackIDs(src, nodes[0], 1<<20)
-	if err != nil || len(groups) != 2 || len(groups[0]) != 700 || len(groups[1]) != maxChapRefs-700 {
-		t.Fatalf("groups %d (err %v), want 700 ids and then the %d left under the bound", len(groups), err, maxChapRefs-700)
+	if tr, err := readTracks(whole, nodes[0], 1<<20); err != nil || tr.text != 1 || len(tr.refs) != 1 {
+		t.Fatalf("read whole: chapter track %d, %d refs, %v; want track 1 and the sound trak's ref", tr.text, len(tr.refs), err)
+	}
+	payload := int64(bytes.Index(moov, []byte("tref")) + 4)
+	if tr, err := readTracks(shortAt{whole, payload}, nodes[0], 1<<20); err != nil || tr.text != -1 || len(tr.refs) != 0 {
+		t.Errorf("tref unread: chapter track %d, %d refs, %v; want none of either", tr.text, len(tr.refs), err)
+	}
+}
+
+// A sample's UTF-16 title is decoded, and the encoding atom after it is no part of it.
+func TestReadTextSampleUTF16(t *testing.T) {
+	for name, title := range map[string][]byte{
+		"big-endian":    {0xFE, 0xFF, 0, 'H', 0, 'i'},
+		"little-endian": {0xFF, 0xFE, 'H', 0, 'i', 0},
+	} {
+		sample := slices.Concat([]byte{0, byte(len(title))}, title, encdBox)
+		got, err := readTextSample(core.BytesSource(sample), 0, int64(len(sample)), &titleReader{page: &macRoman}, 1<<20)
+		if err != nil || got != "Hi" {
+			t.Errorf("%s: readTextSample = %q, %v, want Hi", name, got, err)
+		}
+	}
+}
+
+// Every id of every "chap" entry is read, and an entry that names none still counts as one.
+func TestChapIDs(t *testing.T) {
+	chap := func(ids ...uint32) []byte {
+		var list []byte
+		for _, id := range ids {
+			list = append(list, be32u(id)...)
+		}
+		return renderAtom(atomName("chap"), list)
+	}
+	hint := renderAtom(atomName("hint"), be32(7))
+	if ids, found := chapIDs(slices.Concat(chap(2, 3), hint, chap(), chap(5), []byte{0, 0})); !found || !slices.Equal(ids, []uint32{2, 3, 5}) {
+		t.Errorf("ids %v (found %v), want 2, 3 and 5", ids, found)
+	}
+	if ids, found := chapIDs(slices.Concat(hint, chap())); !found || len(ids) != 0 {
+		t.Errorf("an empty entry: %d ids, found %v; want none, found", len(ids), found)
+	}
+	if ids, found := chapIDs(hint); found || len(ids) != 0 {
+		t.Errorf("no entry: %d ids, found %v", len(ids), found)
+	}
+}
+
+// A rewritten tref keeps its other references where they stood, puts the one "chap" entry where
+// the first was or else behind the last whole reference, and keeps bytes that form no reference.
+func TestTrefWithChap(t *testing.T) {
+	chap := func(ids ...uint32) []byte {
+		var list []byte
+		for _, id := range ids {
+			list = append(list, be32u(id)...)
+		}
+		return renderAtom(atomName("chap"), list)
+	}
+	hint, sync, tail := renderAtom(atomName("hint"), be32(7)), renderAtom(atomName("sync"), be32(8)), []byte{0, 0, 0, 0}
+	for _, c := range []struct {
+		name    string
+		payload []byte
+		ids     []uint32
+		want    []byte
+	}{
+		{"unchanged", slices.Concat(hint, chap(2, 3), sync), []uint32{2, 3}, slices.Concat(hint, chap(2, 3), sync)},
+		{"list shortened in place", slices.Concat(hint, chap(2, 3), sync), []uint32{3}, slices.Concat(hint, chap(3), sync)},
+		{"entries merged into the first", slices.Concat(chap(99), hint, chap(2)), []uint32{2}, slices.Concat(chap(2), hint)},
+		{"entry removed", slices.Concat(hint, chap(2)), nil, hint},
+		{"only entry removed", chap(2), nil, nil},
+		{"entry added", hint, []uint32{4}, slices.Concat(hint, chap(4))},
+		{"entry added to none", nil, []uint32{4}, chap(4)},
+		{"entry added ahead of stray bytes", slices.Concat(hint, tail), []uint32{4}, slices.Concat(hint, chap(4), tail)},
+		{"stray bytes kept", slices.Concat(chap(2), tail), nil, tail},
+	} {
+		if got := trefWithChap(c.payload, c.ids); !bytes.Equal(got, c.want) {
+			t.Errorf("%s: % x, want % x", c.name, got, c.want)
+		}
 	}
 }
 

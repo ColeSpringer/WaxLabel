@@ -20,14 +20,13 @@ func planChapters(d *doc, base, edited *core.Media, needIlst, picturesChanged bo
 		return nil, fmt.Errorf("%w: MP4 udta bytes were not captured for a chapter rewrite", waxerr.ErrInvalidData)
 	}
 
-	// When the file has an audio track to anchor a chapter text track to, rebuild the
-	// QuickTime chapter track alongside the chpl so iTunes and Apple Books see edits too.
-	// audioMdiaOff (the tref insertion point) is always set for a resolved audio track.
-	if d.audioTrak != nil && d.audioMdiaOff > 0 {
-		writing := len(edited.Chapters) > 0
-		if d.chapTrak != nil || (writing && d.nextTrackID > 0) || (!writing && d.audioHasChap) {
-			return planChaptersQT(d, base, edited, needIlst, picturesChanged, opts, report)
-		}
+	// The QuickTime chapter track is rebuilt alongside the chpl, so iTunes and Apple Books see
+	// the edit too. A new one needs a free track id and a track to name it; a clear with no
+	// track to remove still takes what is no video track out of the "chap" lists.
+	writing := len(edited.Chapters) > 0
+	creatable := d.nextTrackID > 0 && slices.ContainsFunc(d.chapRefs, func(r trefChap) bool { return r.names })
+	if d.chapTrak != nil || writing && creatable || !writing && len(chapTrefEdits(d, 0)) > 0 {
+		return planChaptersQT(d, base, edited, needIlst, picturesChanged, opts, report)
 	}
 
 	newItems, reg, textDups, err := buildChapterUdta(d, edited, needIlst, picturesChanged, opts)
@@ -68,9 +67,8 @@ func planChapters(d *doc, base, edited *core.Media, needIlst, picturesChanged bo
 		report.Warnings = core.Warn(report.Warnings, core.WarnChapterTitleTruncated,
 			fmt.Sprintf("%d chapter title(s) trimmed to %d bytes (the Nero chpl length prefix is one byte)", n, titleByteMax))
 	}
-	// No WarnChaptersStale here: this fallback runs only when there is no audio track to
-	// anchor a QuickTime chapter track to, so there is no such track to leave stale
-	// (decoding one requires an audio track).
+	// No WarnChaptersStale here: this fallback runs only when the file has no QuickTime
+	// chapter track, so there is none to leave stale.
 
 	resultItems := d.items // ilst unchanged: keep the parsed items verbatim
 	if needIlst {
@@ -401,9 +399,8 @@ func buildChapterResult(edited *core.Media, base *doc, items []item, reg udtaReg
 		Properties: edited.Properties.Clone(),
 		Tags:       tags,
 		Pictures:   pics,
-		// The written chpl round-trips through its 100 ns / 255-byte encoding, and a preserved
-		// QuickTime track still wins the projection (shadowing the edit).
-		Chapters: chapterResultView(base, edited.Chapters),
+		// The written chpl round-trips through its 100 ns / 255-byte encoding.
+		Chapters: chplRoundTrip(edited.Chapters),
 	}
 	setEssence(nd, out)
 	core.SyncTextItems(out)
@@ -443,14 +440,6 @@ func chplRoundTrip(chapters []core.Chapter) []core.Chapter {
 	}
 	core.FillInteriorEnds(out)
 	return out
-}
-
-// chapterResultView returns the chapters a fresh parse of a chpl-only chapter write yields.
-func chapterResultView(base *doc, written []core.Chapter) []core.Chapter {
-	if base.hasQTChapters {
-		return core.CloneChapters(base.chapters) // the preserved QuickTime track
-	}
-	return chplRoundTrip(written)
 }
 
 // walkUdta parses the rendered udta payload (a small in-memory buffer) into its

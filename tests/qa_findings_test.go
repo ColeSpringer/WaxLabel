@@ -235,7 +235,7 @@ func TestMP4ChapterReapplyMultiNoOpChpl(t *testing.T) {
 	build := func(stcoOff uint32) []byte {
 		// -1 encodes the max track id 0xFFFFFFFF through BE32's uint32 conversion on every int width;
 		// int(uint32(0xFFFFFFFF)) overflows a 32-bit int at compile time.
-		moov := testfile.MP4Atom("moov", mp4AudioTrakTkhd(-1, stcoOff))
+		moov := testfile.MP4Atom("moov", testfile.MP4SoundTrak(-1, stcoOff))
 		return slices.Concat(testfile.MP4Ftyp(), moov, testfile.MP4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
 	}
 	tmp := build(0)

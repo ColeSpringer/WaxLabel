@@ -7,7 +7,8 @@
 // verbatim.
 //
 // Chapters: Nero chpl and QuickTime text track, projected together; an edit rewrites
-// both (chpl plus a new text track via tref "chap", samples in an mdat behind the last atom).
+// both (chpl plus the text track a tref "chap" entry names, samples in an mdat behind the
+// last atom). A video track named there holds thumbnails and stays.
 //
 // Fragmented MP4 (top-level moof) is readable but ReadOnly; rewrite refused with
 // waxerr.ErrFragmented. mvex without fragments is progressive and writable. Segments
@@ -115,6 +116,8 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 			"at most 255 chapters (8-bit chpl count)",
 			"chapter titles are truncated to 255 bytes (8-bit chpl length prefix)",
 			"both the chpl and the QuickTime chapter text track are written",
+			"the chapter track is the text or subtitle track a tref chap entry names; a video track named there holds thumbnails and is kept",
+			"a new chapter track is referenced from every sound track and every video track that holds no thumbnails",
 			"chapter start resolution is the movie timescale (typically 1 ms)",
 		},
 	}

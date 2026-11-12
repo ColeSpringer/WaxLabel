@@ -86,3 +86,23 @@ func segmentsEqual(a, b []bits.Segment) bool {
 	}
 	return true
 }
+
+// A source offset moves by the summed length change of every edit that begins before it, edits
+// that share its own offset left out.
+func TestShiftsSumTheEditsBeforeAnOffset(t *testing.T) {
+	edits := []edit{
+		{off: 40, oldLen: 4, lit: make([]byte, 4)}, // a same-length patch
+		{off: 10, oldLen: 0, lit: make([]byte, 7)}, // an insert
+		{off: 10, oldLen: 6},                       // and a delete at the same offset
+		{off: 25, oldLen: 2, lit: make([]byte, 9)}, // a grow
+	}
+	sh := newShifts(edits)
+	for pos, want := range map[int64]int64{0: 0, 10: 0, 11: 1, 25: 1, 26: 8, 40: 8, 41: 8, 1 << 40: 8} {
+		if got := sh.at(pos); got != want {
+			t.Errorf("offset %d moves by %d, want %d", pos, got, want)
+		}
+	}
+	if got := newShifts(nil).at(5); got != 0 {
+		t.Errorf("no edits move offset 5 by %d", got)
+	}
+}

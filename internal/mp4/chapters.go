@@ -13,7 +13,7 @@ import (
 )
 
 // Two chapter representations live in an MP4: a Nero "chpl" list under moov.udta, and a
-// QuickTime chapter "text" track referenced from the audio track via a tref "chap".
+// QuickTime chapter text track that other tracks name in a tref "chap" entry.
 
 // chplStartUnit is the chpl start-time resolution: 1/10,000,000 second (100 ns),
 // per the Nero convention ffmpeg's mov_read_chpl follows.
@@ -52,7 +52,7 @@ func resolveChapters(src core.ReaderAtSized, moov node, chpls []node, tr movieTr
 		return false, err
 	}
 	d.hasQTChapters = haveQT
-	if qt.textMedia {
+	if haveQT {
 		d.chapMdats = chapterOnlyMdats(qt.samples, d.mdats)
 	}
 	// A chpl with no readable chapters counts as none, so it cannot conflict with a real
@@ -174,22 +174,32 @@ func renderChpl(version uint8, chapters []core.Chapter) []byte {
 
 // movieTracks is what the chapter read needs of the movie's tracks, read once.
 type movieTracks struct {
-	traks []node
-	ids   []uint32 // each trak's track id, where known says its tkhd gave one
-	known []bool
-	audio int // the first sound trak, -1 when there is none
-	// text is the chapter track the audio trak's tref "chap" names, -1 when it names none that
-	// exists; referenced reports a reference to any id.
-	text       int
-	referenced bool
+	traks    []node
+	ids      []uint32 // each trak's track id, where known says its tkhd gave one
+	known    []bool
+	handlers []string // each trak's media handler type, "" when it has none
+	audio    int      // the first sound trak, -1 when there is none
+	// text is the chapter track, -1 when there is none, and refs the traks a chapter write may
+	// rewrite the references of.
+	text int
+	refs []trefChap
 }
 
-// readTracks reads the track ids and resolves the audio track's "chap" references: the first
-// entry naming a track decides, and within it the first such trak in the file. The audio track
-// itself is no chapter track, whatever names it.
+// trefChap is a trak whose tref holds a "chap" entry, or one a new chapter track is named from.
+type trefChap struct {
+	trak    atomRef
+	mdiaOff int64    // where a tref goes in a trak that has none
+	tref    *atomRef // the trak's tref, if any, and its payload
+	raw     []byte
+	video   []uint32 // the video tracks its "chap" entries name, in order: chapter thumbnails
+	names   bool     // a sound trak, or a video trak that holds no thumbnails
+}
+
+// readTracks reads each trak's id and handler and settles the chapter track.
 func readTracks(src core.ReaderAtSized, moov node, limit int64) (movieTracks, error) {
 	tr := movieTracks{traks: moov.findAll("trak", nil), audio: -1, text: -1}
-	tr.ids, tr.known = make([]uint32, len(tr.traks)), make([]bool, len(tr.traks))
+	n := len(tr.traks)
+	tr.ids, tr.known, tr.handlers = make([]uint32, n), make([]bool, n), make([]string, n)
 	for i, t := range tr.traks {
 		var err error
 		if tkhd, ok := t.find("tkhd"); ok {
@@ -197,40 +207,87 @@ func readTracks(src core.ReaderAtSized, moov node, limit int64) (movieTracks, er
 				return tr, err
 			}
 		}
-		if tr.audio < 0 {
-			h, err := trakHandler(src, t, limit)
+		if tr.handlers[i], err = trakHandler(src, t, limit); err != nil {
+			return tr, err
+		}
+		if tr.audio < 0 && tr.handlers[i] == "soun" {
+			tr.audio = i
+		}
+	}
+	return tr, findChapterTrack(src, moov, &tr, limit)
+}
+
+// ownTrak reports whether t is a child of moov. A trak nested deeper is left alone: a write sizes
+// no atom between moov and it.
+func ownTrak(moov, t node) bool {
+	_, ok := slices.BinarySearchFunc(moov.children, t.offset, func(c node, off int64) int { return cmp.Compare(c.offset, off) })
+	return ok
+}
+
+// findChapterTrack reads the "chap" lists of moov's own traks into tr.refs and settles the
+// chapter track: the first text or subtitle trak another trak names. A video trak named there
+// holds thumbnails. A trak only its own list names is none: a rewrite would replace it, list and
+// all.
+func findChapterTrack(src core.ReaderAtSized, moov node, tr *movieTracks, limit int64) error {
+	textOf, video := map[uint32]int{}, map[uint32]bool{}
+	for i, t := range tr.traks {
+		if !tr.known[i] || !ownTrak(moov, t) {
+			continue
+		}
+		switch tr.handlers[i] {
+		case "text", "sbtl":
+			if _, dup := textOf[tr.ids[i]]; !dup {
+				textOf[tr.ids[i]] = i
+			}
+		case "vide":
+			video[tr.ids[i]] = true
+		}
+	}
+	thumbs := map[uint32]bool{}
+	var owners []int // the trak each ref is
+	for i, t := range tr.traks {
+		if !ownTrak(moov, t) {
+			continue
+		}
+		ref := trefChap{trak: refOf(t)}
+		if mdia, ok := t.find("mdia"); ok {
+			ref.mdiaOff = mdia.offset
+		}
+		named := false
+		if tref, ok := t.find("tref"); ok {
+			raw, err := readPayloadWhole(src, tref, maxMetaChunk, limit)
 			if err != nil {
-				return tr, err
+				if bits.Fatal(err) != nil {
+					return err
+				}
+				continue // a tref that cannot be read cannot be rewritten
 			}
-			if h == "soun" {
-				tr.audio = i
-			}
-		}
-	}
-	if tr.audio < 0 {
-		return tr, nil
-	}
-	groups, err := chapterTrackIDs(src, tr.traks[tr.audio], limit)
-	if err != nil {
-		return tr, err
-	}
-	tr.referenced = len(groups) > 0
-	for _, g := range groups {
-		for i := range tr.traks {
-			if i != tr.audio && tr.known[i] && slices.Contains(g, tr.ids[i]) {
-				tr.text = i
-				return tr, nil
+			ref.tref, ref.raw = refPtr(tref), raw
+			var ids []uint32
+			ids, named = chapIDs(raw)
+			for _, id := range ids {
+				if text, ok := textOf[id]; ok && text != i && tr.text < 0 {
+					tr.text = text
+				}
+				if video[id] {
+					ref.video, thumbs[id] = append(ref.video, id), true
+				}
 			}
 		}
+		if h := tr.handlers[i]; named || h == "soun" || h == "vide" {
+			tr.refs, owners = append(tr.refs, ref), append(owners, i)
+		}
 	}
-	return tr, nil
+	for r, i := range owners {
+		tr.refs[r].names = tr.handlers[i] == "soun" || tr.handlers[i] == "vide" && !(tr.known[i] && thumbs[tr.ids[i]])
+	}
+	return nil
 }
 
 // collectChapterRefs captures the structural references a QuickTime chapter write needs
-// to rebuild that track without re-reading the source: the audio track to hang a tref
-// on, where its mdia begins (the tref insertion point), any existing tref, the existing
-// chapter text track to replace, and the movie header fields (timescale/duration and a
-// free track id) a new track is built from.
+// to rebuild that track without re-reading the source: the traks whose "chap" lists it
+// rewrites, the existing chapter text track to replace, and the movie header fields
+// (timescale/duration and a free track id) a new track is built from.
 func collectChapterRefs(src core.ReaderAtSized, moov node, tr movieTracks, d *doc, limit int64) error {
 	if mvhd, ok := moov.find("mvhd"); ok {
 		d.mvhd = refPtr(mvhd)
@@ -255,23 +312,7 @@ func collectChapterRefs(src core.ReaderAtSized, moov node, tr movieTracks, d *do
 		d.nextTrackID = maxID + 1
 	}
 
-	if tr.audio < 0 {
-		return nil
-	}
-	audio := tr.traks[tr.audio]
-	d.audioTrak = refPtr(audio)
-	if mdia, ok := audio.find("mdia"); ok {
-		d.audioMdiaOff = mdia.offset
-	}
-	if tref, ok := audio.find("tref"); ok {
-		d.audioTref = refPtr(tref)
-		raw, err := readPayloadWhole(src, tref, maxMetaChunk, limit)
-		if bits.Fatal(err) != nil {
-			return err
-		}
-		d.audioTrefRaw = raw
-	}
-	d.audioHasChap = tr.referenced // a "chap" reference exists, even if it does not resolve
+	d.chapRefs = tr.refs
 	if tr.text >= 0 {
 		d.chapTrak = refPtr(tr.traks[tr.text])
 		d.chapTrackID = tr.ids[tr.text] // reused when the track is rebuilt in place
@@ -311,8 +352,8 @@ func chapterOnlyMdats(samples []sampleOffset, mdats [][2]int64) []int64 {
 }
 
 // collectMvhd reads the movie header's timescale, duration, and next_track_ID: a new
-// chapter track shares the movie timescale, ends its last chapter at the movie
-// duration, and takes next_track_ID as its track id.
+// chapter track places itself on the movie timescale, ends an open last chapter at the
+// movie duration, and takes next_track_ID as its track id.
 func collectMvhd(src core.ReaderAtSized, mvhd node, d *doc, limit int64) error {
 	b, err := readPayloadPrefix(src, mvhd, 120, limit)
 	if err != nil || len(b) < 1 {
@@ -349,17 +390,15 @@ func sentinelToZero64(v, sentinel uint64) uint64 {
 }
 
 // trackChapters is a chapter text track as read: saturated marks a clamped stts delta or leading
-// edit, samples where each title sits, and textMedia a text or subtitle handler.
+// edit, and samples where each title sits.
 type trackChapters struct {
 	chapters  []core.Chapter
 	saturated bool
 	samples   []sampleOffset
-	textMedia bool
 }
 
-// decodeQTChapters reads the QuickTime chapter text track the audio track's tref "chap" names:
-// it walks that track's sample tables and decodes each text sample (a 16-bit length prefix plus
-// the title) into a chapter.
+// decodeQTChapters reads the QuickTime chapter text track: it walks that track's sample tables
+// and decodes each text sample (a 16-bit length prefix plus the title) into a chapter.
 func decodeQTChapters(src core.ReaderAtSized, moov node, tr movieTracks, titles *titleReader, limit int64) (trackChapters, bool, error) {
 	if tr.text < 0 {
 		return trackChapters{}, false, nil
@@ -372,23 +411,18 @@ func decodeQTChapters(src core.ReaderAtSized, moov node, tr movieTracks, titles 
 	if err != nil {
 		return trackChapters{}, false, err
 	}
-	offset, offsetSaturated, err := chapterEditOffset(src, text, movieTimescale, limit)
+	ed, err := chapterEdits(src, text, movieTimescale, limit)
 	if err != nil {
 		return trackChapters{}, false, err
 	}
-	tc, ok, err := decodeTextTrack(src, text, offset, movieTimescale, movieDuration, titles, limit)
+	tc, ok, err := decodeTextTrack(src, text, ed, movieTimescale, movieDuration, titles, limit)
 	if err != nil || !ok {
 		return trackChapters{}, false, err
 	}
 	// A clamped leading empty edit (a first chapter past the u32 movie-timescale ceiling)
 	// is a saturation the stts-delta scan cannot see, since the over-range start lives in
 	// the edit list, so fold it in here too.
-	tc.saturated = tc.saturated || offsetSaturated
-	handler, err := trakHandler(src, text, limit)
-	if err != nil {
-		return trackChapters{}, false, err
-	}
-	tc.textMedia = handler == "text" || handler == "sbtl"
+	tc.saturated = tc.saturated || ed.saturated
 	return tc, true, nil
 }
 
@@ -433,64 +467,134 @@ func readMvhdTiming(b []byte) (timescale uint32, duration uint64) {
 	return timescale, duration
 }
 
-// chapterEditOffset returns the presentation delay a leading empty edit in trak's elst
-// imposes: the standard MP4 way to position a chapter track whose first chapter starts
-// after t=0, since its stts decode times run from zero.
-func chapterEditOffset(src core.ReaderAtSized, trak node, movieTimescale uint32, limit int64) (offset time.Duration, saturated bool, err error) {
+// trackEdits is where a chapter track's edit list puts its media on the movie timeline: offset is
+// the delay of a leading empty edit, which places a first chapter that starts after t=0, played
+// the span of the edits that play media, 0 when unknown, and saturated an offset clamped when
+// written.
+type trackEdits struct {
+	offset, played time.Duration
+	saturated      bool
+}
+
+// chapterEdits reads trak's edit list, which says nothing where the movie timescale is unknown.
+func chapterEdits(src core.ReaderAtSized, trak node, movieTimescale uint32, limit int64) (trackEdits, error) {
 	if movieTimescale == 0 {
-		return 0, false, nil
+		return trackEdits{}, nil
 	}
+	p, err := elstPayload(src, trak, limit)
+	if err != nil || p == nil {
+		return trackEdits{}, err
+	}
+	return readEdits(p, movieTimescale), nil
+}
+
+// readEdits is an elst payload as trackEdits.
+func readEdits(p []byte, movieTimescale uint32) trackEdits {
+	lead, played, clamped := editListSpans(p)
+	return trackEdits{
+		offset: scaleToDuration(lead, movieTimescale), played: scaleToDuration(played, movieTimescale), saturated: clamped,
+	}
+}
+
+// elstPayload returns the payload of the edit list in trak's edts, nil when it has none. A real
+// elst is a few 12- or 20-byte entries, so the 64-bit and to-end-of-box size forms cutAtom stops
+// at do not occur.
+func elstPayload(src core.ReaderAtSized, trak node, limit int64) ([]byte, error) {
 	edts, ok := trak.find("edts")
 	if !ok {
-		return 0, false, nil
+		return nil, nil
 	}
 	b, err := readPayloadWhole(src, edts, maxMetaChunk, limit)
 	if err != nil {
-		return 0, false, bits.Fatal(err)
+		return nil, bits.Fatal(err)
 	}
-	n := int64(len(b))
-	for pos := int64(0); pos+8 <= n; {
-		size := int64(binary.BigEndian.Uint32(b[pos : pos+4]))
-		// size < 8 is the 64-bit-size form (the 32-bit field reads 1, the real size
-		// following the type) or the size-0 "to end of box" form. A real elst is a few
-		// 12/20-byte entries and uses neither, so stop and report no offset.
-		if size < 8 || pos+size > n {
-			break
+	for a, rest, ok := cutAtom(b); ok; a, rest, ok = cutAtom(rest) {
+		if string(a[4:8]) == "elst" {
+			return a[8:], nil
 		}
-		if string(b[pos+4:pos+8]) == "elst" {
-			offset, saturated = emptyEditOffset(b[pos+8:pos+size], movieTimescale)
-			return offset, saturated, nil
-		}
-		pos += size
 	}
-	return 0, false, nil
+	return nil, nil
 }
 
-// emptyEditOffset reads an elst box payload (version/flags, entry_count, then the
-// entries) and, when the first entry is an empty edit (media_time == -1), returns its
-// segment_duration scaled by the movie timescale.
-func emptyEditOffset(p []byte, movieTimescale uint32) (offset time.Duration, saturated bool) {
-	if len(p) < 8 || binary.BigEndian.Uint32(p[4:8]) == 0 { // version/flags + entry_count
-		return 0, false
+// editListSpans reads an elst payload, in movie units: lead is the segment of a first entry that
+// is an empty edit (media_time -1), played the summed segments that play media. A 32-bit segment
+// of exactly MaxUint32 was clamped when written: clamped reports such a lead, and such a span
+// leaves played unknown, as 0.
+func editListSpans(p []byte) (lead, played uint64, clamped bool) {
+	if len(p) < 8 {
+		return 0, 0, false
 	}
+	var width int
 	switch p[0] {
 	case 0:
-		if len(p) < 8+12 || int32(binary.BigEndian.Uint32(p[12:16])) != -1 { // media_time
-			return 0, false
-		}
-		// A version-0 segment_duration read back as exactly MaxUint32 is a clamped leading
-		// offset: the first chapter starts past the u32 movie-timescale ceiling, so its
-		// QuickTime start is lossy. WaxLabel writes version-0 empty edits (chapterEdts), so
-		// this is the case that can clamp.
-		seg := binary.BigEndian.Uint32(p[8:12])
-		return scaleToDuration(uint64(seg), movieTimescale), seg == math.MaxUint32
+		width = 12
 	case 1:
-		if len(p) < 8+20 || int64(binary.BigEndian.Uint64(p[16:24])) != -1 { // media_time
-			return 0, false
-		}
-		return scaleToDuration(binary.BigEndian.Uint64(p[8:16]), movieTimescale), false
+		width = 20
+	default:
+		return 0, 0, false
 	}
-	return 0, false
+	count := binary.BigEndian.Uint32(p[4:8])
+	unknown := false
+	for i, e := uint32(0), p[8:]; i < count && len(e) >= width; i, e = i+1, e[width:] {
+		seg, empty := uint64(binary.BigEndian.Uint32(e)), int32(binary.BigEndian.Uint32(e[4:])) == -1
+		if width == 20 {
+			seg, empty = binary.BigEndian.Uint64(e), int64(binary.BigEndian.Uint64(e[8:])) == -1
+		}
+		atCeiling := width == 12 && seg == math.MaxUint32
+		switch {
+		case !empty:
+			unknown = unknown || atCeiling
+			if played += seg; played < seg {
+				played = math.MaxUint64
+			}
+		case i == 0:
+			// The first chapter starts past the u32 movie-timescale ceiling, so its QuickTime
+			// start is lossy.
+			lead, clamped = seg, atCeiling
+		}
+	}
+	if unknown {
+		played = 0
+	}
+	return lead, played, clamped
+}
+
+// gridSlack is how far apart the rounding of the movie and the media timescale can put two
+// instants that are one.
+func gridSlack(movieTimescale, mediaTimescale uint32) time.Duration {
+	return scaleToDuration(1, movieTimescale) + scaleToDuration(1, mediaTimescale)
+}
+
+// lastChapterEnd is the last chapter's end as a read places it, 0 for an open one. lastDelta is
+// its stts span and endUnits where that ends, in media units.
+func lastChapterEnd(lastStart time.Duration, endUnits, lastDelta uint64, ed trackEdits, mts, movieTimescale uint32, movieDuration uint64) time.Duration {
+	// The span is compared in media units: scaleToDuration rounds, so a Duration test for the
+	// placeholder would fire on some timescales and not others.
+	if isPlaceholderTail(lastStart, lastDelta, mts, movieTimescale, movieDuration) {
+		return 0
+	}
+	return trackEnd(scaleToDuration(endUnits, mts), lastStart, ed, gridSlack(movieTimescale, mts))
+}
+
+// trackEnd places the end of a chapter track's media, where its last chapter ends, on the movie
+// timeline. Media that ends inside its edits ends the track, and media that runs past them ends
+// with them, unless it reaches the track's end (a track written to span the movie): its own
+// duration is then that instant on the finer grid. Within the slack the nearer end decides. An
+// end at or before lastStart is none, and the media's own stands.
+func trackEnd(mediaEnd, lastStart time.Duration, ed trackEdits, slack time.Duration) time.Duration {
+	own, end := addClamp(mediaEnd, ed.offset), addClamp(ed.played, ed.offset)
+	over, past := mediaEnd-ed.played, mediaEnd-end // how far the media runs past the edits, and the track
+	placed := end
+	switch {
+	case ed.played == 0, over <= slack && over.Abs() <= past.Abs():
+		return own
+	case past.Abs() <= slack:
+		placed = mediaEnd
+	}
+	if placed <= lastStart {
+		return own
+	}
+	return placed
 }
 
 // trackEditedDuration returns trak's total edit-list playable duration, or 0 when the
@@ -500,26 +604,11 @@ func trackEditedDuration(src core.ReaderAtSized, trak node, movieTimescale uint3
 	if movieTimescale == 0 {
 		return 0, nil
 	}
-	edts, ok := trak.find("edts")
-	if !ok {
-		return 0, nil
+	p, err := elstPayload(src, trak, limit)
+	if err != nil || p == nil {
+		return 0, err
 	}
-	b, err := readPayloadWhole(src, edts, maxMetaChunk, limit)
-	if err != nil {
-		return 0, bits.Fatal(err)
-	}
-	n := int64(len(b))
-	for pos := int64(0); pos+8 <= n; {
-		size := int64(binary.BigEndian.Uint32(b[pos : pos+4]))
-		if size < 8 || pos+size > n { // 64-bit/size-0 forms do not occur on a real elst
-			break
-		}
-		if string(b[pos+4:pos+8]) == "elst" {
-			return scaleToDuration(elstSegmentDurationSum(b[pos+8:pos+size]), movieTimescale), nil
-		}
-		pos += size
-	}
-	return 0, nil
+	return scaleToDuration(elstSegmentDurationSum(p), movieTimescale), nil
 }
 
 // elstSegmentDurationSum sums the segment_duration field of every edit-list entry (in
@@ -564,42 +653,32 @@ func trakHandler(src core.ReaderAtSized, trak node, limit int64) (string, error)
 	return handlerType(src, hdlr, limit)
 }
 
-// maxChapRefs bounds the track ids read from a tref's "chap" entries. A real file names one or two.
-const maxChapRefs = 1024
+// cutAtom splits the payload of an atom the walker treats as a leaf, a tref or an edts, into its
+// first child atom and what follows it. ok is false where no whole atom with a 32-bit size starts.
+func cutAtom(p []byte) (atom, rest []byte, ok bool) {
+	if len(p) < 8 {
+		return nil, p, false
+	}
+	size := int64(binary.BigEndian.Uint32(p))
+	if size < 8 || size > int64(len(p)) {
+		return nil, p, false
+	}
+	return p[:size], p[size:], true
+}
 
-// chapterTrackIDs returns the track ids each "chap" entry of the trak's tref names (the QuickTime
-// way an audio track points at its chapter track), one list per entry that names any. tref is a
-// leaf to the atom walker, so its sub-atoms are parsed here by hand.
-func chapterTrackIDs(src core.ReaderAtSized, trak node, limit int64) ([][]uint32, error) {
-	tref, ok := trak.find("tref")
-	if !ok {
-		return nil, nil
-	}
-	body, err := readPayloadWhole(src, tref, maxMetaChunk, limit)
-	if err != nil {
-		return nil, bits.Fatal(err)
-	}
-	var groups [][]uint32
-	total := 0
-	n := int64(len(body))
-	for pos := int64(0); pos+8 <= n; {
-		size := int64(binary.BigEndian.Uint32(body[pos : pos+4]))
-		if size < 8 || pos+size > n {
-			break
+// chapIDs returns the track ids the "chap" entries of a tref payload name, in order, and whether
+// it holds such an entry at all.
+func chapIDs(payload []byte) (ids []uint32, found bool) {
+	for ref, rest, ok := cutAtom(payload); ok; ref, rest, ok = cutAtom(rest) {
+		if string(ref[4:8]) != "chap" {
+			continue
 		}
-		if string(body[pos+4:pos+8]) == "chap" {
-			var ids []uint32
-			for off := pos + 8; off+4 <= pos+size && total < maxChapRefs; off += 4 {
-				ids = append(ids, binary.BigEndian.Uint32(body[off:off+4]))
-				total++
-			}
-			if len(ids) > 0 {
-				groups = append(groups, ids)
-			}
+		found = true
+		for list := ref[8:]; len(list) >= 4; list = list[4:] {
+			ids = append(ids, binary.BigEndian.Uint32(list))
 		}
-		pos += size
 	}
-	return groups, nil
+	return ids, found
 }
 
 // trackID reads the track_id from a tkhd atom (version 0 places it at byte 12;
@@ -622,7 +701,7 @@ func trackID(src core.ReaderAtSized, tkhd node, limit int64) (uint32, bool, erro
 // decodeTextTrack reconstructs chapters from a text track's sample tables: the
 // per-sample decode time (stts) gives each chapter's start, and the sample's bytes in
 // mdat (located via stsc/stsz/stco|co64) carry its title.
-func decodeTextTrack(src core.ReaderAtSized, trak node, offset time.Duration, movieTimescale uint32, movieDuration uint64, titles *titleReader, limit int64) (tc trackChapters, ok bool, err error) {
+func decodeTextTrack(src core.ReaderAtSized, trak node, ed trackEdits, movieTimescale uint32, movieDuration uint64, titles *titleReader, limit int64) (tc trackChapters, ok bool, err error) {
 	mdia, ok := trak.find("mdia")
 	if !ok {
 		return trackChapters{}, false, nil
@@ -666,9 +745,9 @@ func decodeTextTrack(src core.ReaderAtSized, trak node, offset time.Duration, mo
 		if err != nil {
 			return trackChapters{}, false, err
 		}
-		ch := core.Chapter{Start: addClamp(scaleToDuration(times[i], timescale), offset), Title: title}
+		ch := core.Chapter{Start: addClamp(scaleToDuration(times[i], timescale), ed.offset), Title: title}
 		if i+1 < len(times) {
-			ch.End = addClamp(scaleToDuration(times[i+1], timescale), offset)
+			ch.End = addClamp(scaleToDuration(times[i+1], timescale), ed.offset)
 		}
 		chapters = append(chapters, ch)
 	}
@@ -676,13 +755,7 @@ func decodeTextTrack(src core.ReaderAtSized, trak node, offset time.Duration, mo
 	// past the final sample); the per-sample loop above has no next start to fill it from.
 	if completed && len(chapters) == len(times) {
 		last := len(chapters) - 1
-		// Compare on the media-unit grid, not the Duration grid: scaleToDuration rounds, so
-		// at a fine timescale a Duration-level test for the placeholder would fire on some
-		// timescales and not others, breaking the read/predictor mirror.
-		lastEnd := addClamp(scaleToDuration(endTime, timescale), offset)
-		if !isPlaceholderTail(chapters[last].Start, endTime-times[last], timescale, movieTimescale, movieDuration) {
-			chapters[last].End = lastEnd
-		}
+		chapters[last].End = lastChapterEnd(chapters[last].Start, endTime, endTime-times[last], ed, timescale, movieTimescale, movieDuration)
 	}
 	tc.chapters, tc.samples = chapters, offsets
 	return tc, true, nil
@@ -905,21 +978,25 @@ func mergeChapters(chpl []core.Chapter, haveChpl bool, qt []core.Chapter, haveQT
 	}
 }
 
-// sameCountAndTitles reports whether two chapter lists have equal length and matching
-// titles, ignoring starts.
-func sameCountAndTitles(a, b []core.Chapter) bool {
-	if len(a) != len(b) {
+// sameCountAndTitles reports whether the chpl and the chapter track have equal length and
+// matching titles, ignoring starts.
+func sameCountAndTitles(chpl, qt []core.Chapter) bool {
+	if len(chpl) != len(qt) {
 		return false
 	}
-	for i := range a {
-		if a[i].Title != b[i].Title {
+	for i := range chpl {
+		if !titlesMatch(chpl[i].Title, qt[i].Title) {
 			return false
 		}
 	}
 	return true
 }
 
-// mergeChplStartsQTEnd combines two agreeing chapter sources: chpl's exact uint64
+// titlesMatch reports whether a chpl title and the chapter track's are one title: a track title
+// that reads empty takes the chpl's.
+func titlesMatch(chpl, qt string) bool { return qt == "" || chpl == qt }
+
+// mergeChplStartsQTEnd combines two agreeing chapter sources: chpl's titles, exact uint64
 // starts and interior ends (filled from its next starts, free of the QuickTime stts
 // drift), plus the last chapter's end from the QuickTime track, the only source that
 // has it.
@@ -931,19 +1008,19 @@ func mergeChplStartsQTEnd(chpl, qt []core.Chapter) []core.Chapter {
 	return out
 }
 
-// chaptersAgree reports whether two chapter lists describe the same chapters:
-// equal count, equal titles, and starts within a small tolerance (the two
+// chaptersAgree reports whether the chpl and the chapter track describe the same chapters:
+// equal count, matching titles, and starts within a small tolerance (the two
 // representations use different time bases, so exact equality is too strict).
-func chaptersAgree(a, b []core.Chapter) bool {
-	if len(a) != len(b) {
+func chaptersAgree(chpl, qt []core.Chapter) bool {
+	if len(chpl) != len(qt) {
 		return false
 	}
 	const tol = 500 * time.Millisecond
-	for i := range a {
-		if a[i].Title != b[i].Title {
+	for i := range chpl {
+		if !titlesMatch(chpl[i].Title, qt[i].Title) {
 			return false
 		}
-		d := a[i].Start - b[i].Start
+		d := chpl[i].Start - qt[i].Start
 		if d < -tol || d > tol {
 			return false
 		}

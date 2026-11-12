@@ -168,7 +168,7 @@ func TestMP4ChapterTitleNotUTF8(t *testing.T) {
 }
 
 // A chapter title ends at its first NUL, so one a writer terminated reads clean and an edit that
-// carries it over is accepted. UTF-16 behind a byte-order mark is no 8-bit text and reads empty.
+// carries it over is accepted.
 func TestMP4ChapterTitleEndsAtNUL(t *testing.T) {
 	starts := []time.Duration{0, 3 * time.Second}
 	tagged := testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "T")))
@@ -179,7 +179,6 @@ func TestMP4ChapterTitleEndsAtNUL(t *testing.T) {
 		"terminated": {"Intro\x00", "Intro", false},
 		"padded":     {"Intro\x00\x00\x00", "Intro", false},
 		"legacy":     {"Na\xefve\x00", "Na\u00efve", true},
-		"UTF-16":     {"\xfe\xff\x00I\x00n", "", false},
 	} {
 		titles := []string{c.raw, "Plain"}
 		for store, data := range map[string][]byte{

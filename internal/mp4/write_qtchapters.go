@@ -1,6 +1,8 @@
 package mp4
 
 import (
+	"bytes"
+	"cmp"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -11,11 +13,11 @@ import (
 )
 
 // QuickTime chapter write. The text track is built fresh (qtchapters.go), its samples
-// go in an mdat behind the file's last whole atom (so audio never moves), and the audio
-// track gains a tref "chap" pointing at it.
+// go in an mdat behind the file's last whole atom (so audio never moves), and the sound
+// and video tracks gain a tref "chap" pointing at it.
 
-// planChaptersQT computes the rewrite when chapters change and the file has an
-// audio track to anchor a chapter text track to. It writes the chpl and rebuilds
+// planChaptersQT computes the rewrite when chapters change and the file has a chapter
+// text track or a track to reference a new one from. It writes the chpl and rebuilds
 // the QuickTime chapter track (or removes both when chapters are cleared).
 func planChaptersQT(d *doc, base, edited *core.Media, needIlst, picturesChanged bool, opts core.WriteOptions, report core.WriteReport) (*core.WritePlan, error) {
 	if d.udta != nil && d.udtaRaw == nil {
@@ -129,20 +131,20 @@ func assembleQT(d *doc, edited *core.Media, reg udtaRegion, clearing bool, mts u
 		if d.chapTrak != nil {
 			edits = append(edits, edit{off: d.chapTrak.offset, oldLen: d.chapTrak.size}) // delete
 		}
-		edits = append(edits, audioTrefEdits(d, 0)...)
+		edits = append(edits, chapTrefEdits(d, 0)...)
 		edits = append(edits, udtaEdit)
 	} else {
 		newTrackID := d.nextTrackID
 		if d.chapTrak != nil {
-			newTrackID = d.chapTrackID // reuse the id the audio tref already points at
+			newTrackID = d.chapTrackID // reuse the id the "chap" lists already name
 		}
 		chapTrak, off, saturated := buildChapterTrak(newTrackID, mts, d.movieTimescale, d.movieDuration, edited.Chapters, co64)
 		stcoOffInTrak = off
 		p.sttsSaturated = saturated
 
 		if d.chapTrak != nil {
-			// Replace the existing chapter track in place; the audio tref already
-			// references its id, so no tref or mvhd change is needed.
+			// Replace the existing chapter track in place. It keeps its id, so the "chap" lists
+			// and the mvhd stay as they are.
 			edits = append(edits, edit{off: d.chapTrak.offset, oldLen: d.chapTrak.size, lit: chapTrak})
 			chapEditIdx = len(edits) - 1
 			edits = append(edits, udtaEdit)
@@ -154,7 +156,7 @@ func assembleQT(d *doc, edited *core.Media, reg udtaRegion, clearing bool, mts u
 			edits = append(edits, edit{off: reg.regionStart, oldLen: reg.regionEnd - reg.regionStart, lit: combined})
 			chapEditIdx = len(edits) - 1
 
-			edits = append(edits, audioTrefEdits(d, newTrackID)...)
+			edits = append(edits, chapTrefEdits(d, newTrackID)...)
 			if d.nextTrackIDOff != 0 {
 				edits = append(edits, edit{off: d.nextTrackIDOff, oldLen: 4, lit: be32u(newTrackID + 1)})
 			}
@@ -236,7 +238,8 @@ func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan, reg udtaRegi
 	nd := &doc{items: p.resultItems, udtaTexts: udtaTextsIn(reg)}
 	// The replaced chapter track's table is gone from the output and the new track's table
 	// points at chapter samples only, so the relocated tables are the ones that place essence.
-	nd.offTables = relocateTables(base.offTables, p.edits, func(t offsetTable) bool { return withinChapTrak(base, t) })
+	moved := newShifts(p.edits)
+	nd.offTables = relocateTables(base.offTables, moved, func(t offsetTable) bool { return withinChapTrak(base, t) })
 	for _, m := range base.mdats {
 		if p.reclaimed != nil && m[0] == p.reclaimed.payloadOff() {
 			continue // the reclaimed trailing chapter mdat is deleted from the output
@@ -244,7 +247,7 @@ func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan, reg udtaRegi
 		if _, freed := slices.BinarySearch(p.freed, m[0]); freed {
 			continue
 		}
-		nd.mdats = append(nd.mdats, [2]int64{m[0] + netShift(p.edits, m[0]), m[1]})
+		nd.mdats = append(nd.mdats, [2]int64{m[0] + moved.at(m[0]), m[1]})
 	}
 	// The replaced track's samples fill no mdat any more; the new track's fill the appended one.
 	if p.newMdat != nil {
@@ -274,56 +277,76 @@ func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan, reg udtaRegi
 	return out
 }
 
-// audioTrefForChapter returns the audio track's tref atom after a chapter write: for id
-// != 0 a "chap" reference to id plus any non-"chap" references the existing tref held;
-// for id 0 only those kept references, or nil when there are none.
-func audioTrefForChapter(existing []byte, id uint32) []byte {
-	kept := trefChapless(existing)
-	if id == 0 {
-		if len(kept) == 0 {
-			return nil
+// chapTrefEdits rewrites the "chap" lists for a write that creates a chapter track, of id created,
+// or removes it (created 0). A removal leaves each list its video ids. A creation writes one list,
+// the track then every thumbnail track, to each trak that names or keeps a list: ffmpeg takes the
+// last list it reads for the whole movie.
+func chapTrefEdits(d *doc, created uint32) []edit {
+	var list []uint32
+	if created != 0 {
+		list = []uint32{created}
+		seen := map[uint32]bool{}
+		for _, ref := range d.chapRefs {
+			for _, id := range ref.video {
+				if !seen[id] {
+					list, seen[id] = append(list, id), true
+				}
+			}
 		}
-		return renderAtom(atomName("tref"), kept)
 	}
-	body := append(kept, renderAtom(atomName("chap"), be32u(id))...)
-	return renderAtom(atomName("tref"), body)
+	var edits []edit
+	for _, ref := range d.chapRefs {
+		if d.chapTrak != nil && ref.trak.offset >= d.chapTrak.offset && ref.trak.offset < d.chapTrak.end() {
+			continue // the chapter track itself, removed whole
+		}
+		ids := ref.video
+		if created != 0 {
+			ids = nil
+			if ref.names || len(ref.video) > 0 {
+				ids = list
+			}
+		}
+		payload := trefWithChap(ref.raw, ids)
+		if bytes.Equal(payload, ref.raw) {
+			continue
+		}
+		var e edit
+		switch {
+		case ref.tref == nil:
+			e = edit{off: ref.mdiaOff, lit: renderAtom(atomName("tref"), payload)}
+		case len(payload) == 0:
+			e = edit{off: ref.tref.offset, oldLen: ref.tref.size}
+		default:
+			e = edit{off: ref.tref.offset, oldLen: ref.tref.size, lit: renderAtom(atomName("tref"), payload)}
+		}
+		edits = append(edits, e, sizePatch(ref.trak, int64(len(e.lit))-e.oldLen))
+	}
+	return edits
 }
 
-// trefChapless returns a tref payload's sub-atoms other than "chap", verbatim.
-func trefChapless(payload []byte) []byte {
-	var kept []byte
-	n := int64(len(payload))
-	for pos := int64(0); pos+8 <= n; {
-		size := int64(binary.BigEndian.Uint32(payload[pos : pos+4]))
-		if size < 8 || pos+size > n {
-			break
+// trefWithChap returns a tref payload whose "chap" entries are replaced by one naming ids, where
+// the first stood or else behind the last whole reference, and by none when ids is empty. Bytes
+// that form no whole reference stay last.
+func trefWithChap(payload []byte, ids []uint32) []byte {
+	var chap []byte
+	if len(ids) > 0 {
+		list := make([]byte, 0, 4*len(ids))
+		for _, id := range ids {
+			list = binary.BigEndian.AppendUint32(list, id)
 		}
-		if string(payload[pos+4:pos+8]) != "chap" {
-			kept = append(kept, payload[pos:pos+size]...)
+		chap = renderAtom(atomName("chap"), list)
+	}
+	out := make([]byte, 0, len(payload)+len(chap))
+	ref, rest, ok := cutAtom(payload)
+	for ; ok; ref, rest, ok = cutAtom(rest) {
+		if string(ref[4:8]) != "chap" {
+			out = append(out, ref...)
+			continue
 		}
-		pos += size
+		out = append(out, chap...)
+		chap = nil
 	}
-	return kept
-}
-
-// audioTrefEdits makes the audio track reference the chapter track id (or, when id is
-// 0, stop referencing it on a clear), returning the tref edit(s) and the audio trak
-// size-field patch (via sizePatch, which handles a 64-bit header).
-func audioTrefEdits(d *doc, id uint32) []edit {
-	if d.audioTrak == nil {
-		return nil
-	}
-	newTref := audioTrefForChapter(d.audioTrefRaw, id) // d.audioTrefRaw is nil when there is no tref
-	var trefEdit edit
-	switch {
-	case d.audioTref != nil: // replace the existing tref in place
-		trefEdit = edit{off: d.audioTref.offset, oldLen: d.audioTref.size, lit: newTref}
-	case newTref == nil: // clearing a track that had no tref: nothing to do
-		return nil
-	default: // insert a fresh tref before the audio track's mdia
-		trefEdit = edit{off: d.audioMdiaOff, oldLen: 0, lit: newTref}
-	}
-	return []edit{trefEdit, sizePatch(*d.audioTrak, int64(len(trefEdit.lit))-trefEdit.oldLen)}
+	return append(append(out, chap...), rest...)
 }
 
 // backpatchStco writes the resolved chunk offset into a placeholder stco/co64
@@ -338,17 +361,17 @@ func backpatchStco(trak []byte, off int, value int64, co64 bool) {
 
 // relocateTables moves offset tables to where a QuickTime-chapter rewrite's output
 // places them, dropping any the skip predicate rejects.
-func relocateTables(src []offsetTable, edits []edit, skip func(offsetTable) bool) []offsetTable {
+func relocateTables(src []offsetTable, moved shifts, skip func(offsetTable) bool) []offsetTable {
 	out := make([]offsetTable, 0, len(src))
 	for _, t := range src {
 		if skip != nil && skip(t) {
 			continue
 		}
 		nt := t
-		nt.offset = t.offset + netShift(edits, t.offset)
+		nt.offset = t.offset + moved.at(t.offset)
 		nt.entries = slices.Clone(t.entries)
 		for i, e := range nt.entries {
-			nt.entries[i] = uint64(int64(e) + netShift(edits, int64(e)))
+			nt.entries[i] = uint64(int64(e) + moved.at(int64(e)))
 		}
 		out = append(out, nt)
 	}
@@ -396,22 +419,39 @@ func sumDelta(edits []edit) int64 {
 	return d
 }
 
-// netShift returns how far a source offset moves in the output: the summed length
-// change of every edit that begins strictly before it.
-func netShift(edits []edit, pos int64) int64 {
-	var d int64
-	for _, e := range edits {
-		if e.off < pos {
-			d += int64(len(e.lit)) - e.oldLen
-		}
+// shifts tells how far a source offset moves in the output of an edit list, without a pass over
+// the edits for each offset asked: a file can hold a great many of both.
+type shifts struct {
+	offs []int64 // the edits' offsets, ascending
+	sums []int64 // the summed length change of the edits up to and including each
+}
+
+func newShifts(edits []edit) shifts {
+	sorted := slices.Clone(edits)
+	slices.SortFunc(sorted, func(a, b edit) int { return cmp.Compare(a.off, b.off) })
+	s := shifts{offs: make([]int64, len(sorted)), sums: make([]int64, len(sorted))}
+	var sum int64
+	for i, e := range sorted {
+		sum += int64(len(e.lit)) - e.oldLen
+		s.offs[i], s.sums[i] = e.off, sum
 	}
-	return d
+	return s
+}
+
+// at returns the summed length change of every edit that begins strictly before pos.
+func (s shifts) at(pos int64) int64 {
+	if i, _ := slices.BinarySearch(s.offs, pos); i > 0 {
+		return s.sums[i-1]
+	}
+	return 0
 }
 
 // qtChapterOps describes the QuickTime-chapter rewrite for the report.
 func qtChapterOps(d *doc, edited *core.Media, needIlst, clearing bool, delta int64) []string {
 	var ops []string
 	switch {
+	case clearing && d.chapTrak == nil:
+		ops = append(ops, "chapter removal (chpl + track references)")
 	case clearing:
 		ops = append(ops, "chapter removal (chpl + QuickTime track)")
 	case d.chapTrak != nil:

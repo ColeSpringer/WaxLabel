@@ -64,7 +64,7 @@ func mp4QTFileForeignTrackMdat(startsMS []int, titles []string) []byte {
 	build := func(audio1Stco, foreignStco, textStco uint32) []byte {
 		kids := slices.Concat(
 			testfile.MP4AudioTrakChap(3, audio1Stco),                  // track 1: audio, tref chap -> track 3
-			mp4AudioTrakTkhd(2, foreignStco),                          // track 2: a second, independent audio track
+			testfile.MP4SoundTrak(2, foreignStco),                     // track 2: a second, independent audio track
 			testfile.MP4TextTrak(3, 1000, startsMS, titles, textStco), // track 3: the chapter text track
 		)
 		moov := testfile.MP4Atom("moov", kids)
