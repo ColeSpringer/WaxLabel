@@ -1,8 +1,11 @@
 package matroska
 
 import (
+	"bytes"
 	"testing"
 	"time"
+
+	"github.com/colespringer/waxlabel/internal/core"
 )
 
 // TestChapterUIDQueue covers the start-to-UID matching helpers. Zero slots stay in that
@@ -51,4 +54,22 @@ func chapAtom(uid, startNs uint64) []byte {
 	body := uintElement(idChapterUID, uid)
 	body = append(body, uintElement(idChapTimeStart, startNs)...)
 	return encElement(idChapterAtom, body)
+}
+
+// A chapter that keeps its UID is written with it in as few bytes as it takes, like the rest of
+// the atom; one that is new gets eight bytes, so the size of the rendered edition does not turn
+// on the UID drawn.
+func TestRenderedChapterUIDWidth(t *testing.T) {
+	ed := chapterEdition{startUIDs: []chapterStartUID{{0, 5}}}
+	chs := []core.Chapter{{Start: 0}, {Start: time.Second}, {Start: 2 * time.Second}}
+	first := renderDefaultEdition(ed, chs)
+	for range 2000 {
+		if b := renderDefaultEdition(ed, chs); len(b) != len(first) {
+			t.Fatalf("an edition of %d bytes, then one of %d", len(first), len(b))
+		}
+	}
+	kept, minted := uintElement(idChapterUID, 5), append(idBytes(idChapterUID), 0x88)
+	if !bytes.Contains(first, kept) || bytes.Count(first, minted) != 2 {
+		t.Errorf("edition % x: want UID 5 in one byte and two new UIDs in eight", first)
+	}
 }

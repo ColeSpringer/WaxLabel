@@ -510,6 +510,9 @@ func FuzzMatroskaParse(f *testing.F) {
 			f.Add(b)
 		}
 	}
+	for _, damaged := range damagedMatroska() {
+		f.Add(damaged)
+	}
 	f.Add([]byte(magic))
 	f.Add([]byte(magic + "\x80\x18\x53\x80\x67\xff")) // header + unknown-size Segment
 	f.Add([]byte(magic + "\xff"))                     // unknown-size header

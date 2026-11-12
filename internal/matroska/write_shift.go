@@ -101,7 +101,10 @@ func buildShiftIndexes(wb *writeBase, seekIdx, cuesIdx int) []*shiftIndex {
 	seek := &shiftIndex{itemIdx: seekIdx}
 	if seekIdx >= 0 {
 		sh := wb.seek
-		seek.raw, seek.crc, seek.entries = sh.raw, sh.crc, sh.entries
+		seek.raw, seek.entries = sh.raw, sh.entries
+		if !sh.cut {
+			seek.crc = sh.crc
+		}
 		seek.rebuild = func(om offsetMap, inSeg, outSeg int64) ([]byte, int64, bool) {
 			return rebuildSeekHead(sh, om, inSeg, outSeg)
 		}
@@ -113,7 +116,10 @@ func buildShiftIndexes(wb *writeBase, seekIdx, cuesIdx int) []*shiftIndex {
 	cues := &shiftIndex{itemIdx: cuesIdx}
 	if cuesIdx >= 0 {
 		ci := wb.cues
-		cues.raw, cues.crc, cues.entries = ci.raw, ci.crc, ci.clusters
+		cues.raw, cues.entries = ci.raw, ci.clusters
+		if !ci.cut {
+			cues.crc = ci.crc
+		}
 		var (
 			points   []cuePoint
 			pointsOK bool
@@ -153,6 +159,13 @@ func resolveShiftLayout(wb *writeBase, items []outItem, seekIdx, cuesIdx int) (l
 			ix.force = ix.force || rebuilt
 			if installIndex(items, ix.itemIdx, b, n) {
 				resized = true
+			}
+			// A Segment that declares bytes it lacks is sized by whether its last child was
+			// rendered anew, so such a rebuild lays out again.
+			if ix.itemIdx >= 0 && items[ix.itemIdx].whole != rebuilt {
+				before := segShort(wb, items)
+				items[ix.itemIdx].whole = rebuilt
+				resized = resized || segShort(wb, items) != before
 			}
 		}
 		if resized {
@@ -253,7 +266,7 @@ func computeShiftLayout(wb *writeBase, items []outItem) (segLead []bits.Segment,
 	for _, it := range items {
 		bodyLen += it.n
 	}
-	segLead, outSegStart = segmentLead(wb, bodyLen)
+	segLead, outSegStart = segmentLead(wb, bodyLen+segShort(wb, items))
 	om = offsetMap{direct: make(map[int64]int64, len(items))}
 	off := outSegStart
 	for i := range items {
@@ -351,16 +364,32 @@ func insertItems(items []outItem, at int, extra []outItem) []outItem {
 	return out
 }
 
+// segShort is how many bytes the output Segment declares past the ones it holds: those the
+// source's declares past the file, so that a last child the end of the file cuts still ends
+// inside it, less that child's share when the output does not end with its bytes as they were.
+func segShort(wb *writeBase, items []outItem) int64 {
+	short := wb.segDataStart + int64(wb.segDeclared) - wb.segDataEnd
+	if n := len(items); n == 0 || items[n-1].whole || items[n-1].origStart != wb.children[len(wb.children)-1].start {
+		short -= wb.lastShort
+	}
+	return short
+}
+
+// maxVINTSize is the largest size a VINT states; the value above it means unknown.
+const maxVINTSize = 1<<56 - 2
+
 // segmentLead returns the bytes preceding the Segment data in the output (the
 // EBML header, Segment ID, and the recomputed size VINT) and the resulting data
-// start. An unknown-size Segment keeps its form, so its size is never rewritten.
-func segmentLead(wb *writeBase, bodyLen int64) ([]bits.Segment, int64) {
+// start. An unknown-size Segment keeps its form, so its size is never rewritten. A size no
+// VINT states, which a source that declares nearly the largest can grow to, is the largest.
+func segmentLead(wb *writeBase, declared int64) ([]bits.Segment, int64) {
 	if wb.segUnknown {
 		return []bits.Segment{bits.Copy(0, wb.segDataStart)}, wb.segDataStart
 	}
-	sz, ok := sizeVINTWidthOK(uint64(bodyLen), int(wb.segSizeLen))
+	declared = min(declared, maxVINTSize)
+	sz, ok := sizeVINTWidthOK(uint64(declared), int(wb.segSizeLen))
 	if !ok {
-		sz = sizeVINT(uint64(bodyLen))
+		sz = sizeVINT(uint64(declared))
 	}
 	lead := []bits.Segment{bits.Copy(0, wb.segSizeOff), bits.Lit(sz)}
 	return lead, wb.segSizeOff + int64(len(sz))

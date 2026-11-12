@@ -1,10 +1,10 @@
 package matroska
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
-	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
@@ -93,6 +93,9 @@ var level1IDs = map[uint64]bool{
 	idAttachments: true, idCluster: true, idCues: true, idChapters: true,
 }
 
+// maxIDLen is the longest element ID, in bytes (EBMLMaxIDLength).
+const maxIDLen = 4
+
 // trackTypeAudio is the TrackType value for an audio stream.
 const trackTypeAudio = 2
 
@@ -112,7 +115,9 @@ func vintLen(first byte) int {
 }
 
 // readVINT reads a variable-length integer in [off, end). ok is false for one that is not there or
-// does not decode; a read that fails fatally ([bits.Fatal]) is the error.
+// does not decode, an element ID (keepMarker) of more than four bytes among them: Matroska has
+// none, and no other reader takes such bytes for an element. A read that fails fatally
+// ([bits.Fatal]) is the error.
 func readVINT(src core.ReaderAtSized, off, end, limit int64, keepMarker bool) (val uint64, n int64, unknown, ok bool, err error) {
 	if off < 0 || off >= end {
 		return 0, 0, false, false, nil
@@ -125,7 +130,7 @@ func readVINT(src core.ReaderAtSized, off, end, limit int64, keepMarker bool) (v
 		return 0, 0, false, false, bits.Fatal(err)
 	}
 	length := vintLen(buf[0])
-	if length == 0 || int64(length) > want {
+	if length == 0 || int64(length) > want || keepMarker && length > maxIDLen {
 		return 0, 0, false, false, nil
 	}
 	buf = buf[:length]
@@ -151,10 +156,18 @@ type element struct {
 	dataStart int64
 	dataEnd   int64
 	unknown   bool
-	next      int64
+	// clamped: the declared size runs past the region the element was read in, and dataEnd is
+	// that region's end.
+	clamped  bool
+	declared uint64 // the declared data size
+	next     int64
 }
 
 func (e element) dataLen() int64 { return e.dataEnd - e.dataStart }
+
+// overruns reports whether the element does not end inside the region it was read in: its size
+// runs past it or is unknown. Its data is then whatever follows, not a value.
+func (e element) overruns() bool { return e.clamped || e.unknown }
 
 // readElement parses the element header at off within [off, end). ok is false for a header that is
 // not there or does not decode; a read that fails fatally ([bits.Fatal]) is the error.
@@ -171,16 +184,16 @@ func readElement(src core.ReaderAtSized, off, end, limit int64) (element, bool, 
 	if dataStart > end {
 		return element{}, false, nil
 	}
-	dataEnd := end
+	dataEnd, clamped := end, false
 	if !unknown {
 		dataEnd = dataStart + int64(size)
 		// Clamp a declared size that overruns the region (truncated/corrupt input)
 		// so the range stays valid and this becomes the last element.
 		if dataEnd > end || dataEnd < dataStart {
-			dataEnd = end
+			dataEnd, clamped = end, true
 		}
 	}
-	return element{id: id, start: off, dataStart: dataStart, dataEnd: dataEnd, unknown: unknown, next: dataEnd}, true, nil
+	return element{id: id, start: off, dataStart: dataStart, dataEnd: dataEnd, unknown: unknown, clamped: clamped, declared: size, next: dataEnd}, true, nil
 }
 
 // resolveUnknownEnd returns the end of an unknown-size element whose data begins at
@@ -207,6 +220,34 @@ func resolveUnknownEnd(src core.ReaderAtSized, from, end int64, limit int64) (in
 	return end, nil
 }
 
+// resync returns where the element that follows the bytes at off, which head none, starts: at
+// the first level-1 ID past off, within [core.ResyncWindow] of it, that an element header
+// follows. It is end where no such ID stands ahead of end, and -1 where the window ends first.
+// In a Segment whose end is its own (not open: neither cut short nor of unknown size) an element
+// that would run past it is no candidate.
+func resync(src core.ReaderAtSized, off, end, limit int64, open bool) (int64, error) {
+	window, err := bits.ReadSlice(src, off, min(end-off, core.ResyncWindow+maxIDLen), limit)
+	if err != nil {
+		return -1, bits.Fatal(err)
+	}
+	for i := 1; i+maxIDLen <= len(window); i++ {
+		if !level1IDs[uint64(binary.BigEndian.Uint32(window[i:]))] {
+			continue
+		}
+		el, ok, err := readElement(src, off+int64(i), end, limit)
+		if err != nil {
+			return -1, err
+		}
+		if ok && (open || !el.clamped) {
+			return off + int64(i), nil
+		}
+	}
+	if int64(len(window)) < end-off {
+		return -1, nil
+	}
+	return end, nil
+}
+
 // intVal converts an EBML unsigned integer to an int, returning 0 for a value too large
 // to be a sane count or geometry.
 func intVal(v uint64) int {
@@ -217,75 +258,81 @@ func intVal(v uint64) int {
 }
 
 // eachChild calls fn for each element in [start, end). It stops without error on a
-// header it cannot parse or an element that makes no forward progress; a header read that
-// fails fatally ([bits.Fatal]) is the error. depth bounds nesting.
+// header it cannot parse; a header read that fails fatally ([bits.Fatal]) is the error. depth
+// bounds nesting.
 func eachChild(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limit int64, fn func(element) error) error {
+	_, err := eachChildReport(src, start, end, depth, limit, fn)
+	return err
+}
+
+// eachChildReport is eachChild for a master a rewrite renders again from its children, which
+// must know of bytes the walk left unread: it returns where the elements handed to fn end, end
+// unless a header there does not parse. The last of them may overrun the master ([element.overruns]).
+func eachChildReport(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limit int64, fn func(element) error) (stoppedAt int64, err error) {
 	if err := depth.Enter(); err != nil {
-		return err
+		return start, err
 	}
 	defer depth.Leave()
 	off := start
 	for off < end {
 		el, ok, err := readElement(src, off, end, limit)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return nil
+		if err != nil || !ok {
+			return off, err
 		}
 		// Count every metadata element walked against the per-parse breadth budget.
 		if err := depth.Count(); err != nil {
-			return err
+			return off, err
 		}
 		if err := fn(el); err != nil {
-			return err
-		}
-		if el.next <= off {
-			return nil
+			return off, err
 		}
 		off = el.next
 	}
-	return nil
+	return end, nil
 }
 
-// walkSegment iterates the Segment's direct children like eachChild, but resolves an
+// walkSegment iterates the Segment's direct children like eachChildReport, but resolves an
 // unknown-size element (a streamed Cluster) to its true end via resolveUnknownEnd, so
-// later siblings are still visited and the element's extent is not overstated.
-func walkSegment(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limit int64, fn func(element) error) error {
+// later siblings are still visited and the element's extent is not overstated. Bytes that head
+// no element are stepped over, as ffmpeg does: they are handed to fn as an element of id 0 that
+// ends at the next level-1 element ([resync]) or, with none, at end. Where more than
+// [core.ResyncWindow] of them stand ahead of anything, the walk stops there.
+func walkSegment(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limit int64, open bool, fn func(element) error) (stoppedAt int64, err error) {
 	if err := depth.Enter(); err != nil {
-		return err
+		return start, err
 	}
 	defer depth.Leave()
 	off := start
 	for off < end {
 		el, ok, err := readElement(src, off, end, limit)
 		if err != nil {
-			return err
+			return off, err
 		}
 		if !ok {
-			return nil
+			next, err := resync(src, off, end, limit, open)
+			if err != nil || next < 0 {
+				return off, err
+			}
+			el = element{start: off, dataStart: off, dataEnd: next}
 		}
 		if el.unknown {
 			if el.dataEnd, err = resolveUnknownEnd(src, el.dataStart, end, limit); err != nil {
-				return err
+				return off, err
 			}
 		}
 		if err := fn(el); err != nil {
-			return err
-		}
-		if el.dataEnd <= off {
-			return nil
+			return off, err
 		}
 		off = el.dataEnd
 	}
-	return nil
+	return end, nil
 }
 
 // readUint reads an EBML unsigned integer (big-endian, 1-8 bytes), 0 for one of another width or
-// one cut short; a read that fails fatally ([bits.Fatal]) is the error.
+// one that overruns its parent; a read that fails fatally ([bits.Fatal]) is the error.
 func readUint(src core.ReaderAtSized, el element, limit int64) (uint64, error) {
 	n := el.dataLen()
-	if n <= 0 || n > 8 {
+	if el.overruns() || n <= 0 || n > 8 {
 		return 0, nil
 	}
 	b, err := bits.ReadSlice(src, el.dataStart, n, limit)
@@ -300,9 +347,13 @@ func readUint(src core.ReaderAtSized, el element, limit int64) (uint64, error) {
 }
 
 // readFloat reads an EBML float (4 or 8 bytes). A 0-byte float is 0.0 per spec. ok is false for
-// another width or one cut short; a read that fails fatally ([bits.Fatal]) is the error.
+// another width or one that overruns its parent; a read that fails fatally ([bits.Fatal]) is the
+// error.
 func readFloat(src core.ReaderAtSized, el element, limit int64) (float64, bool, error) {
 	n := el.dataLen()
+	if el.overruns() {
+		return 0, false, nil
+	}
 	switch n {
 	case 0:
 		return 0, true, nil
@@ -323,21 +374,22 @@ func readFloat(src core.ReaderAtSized, el element, limit int64) (float64, bool, 
 	}
 }
 
-// readString reads a UTF-8 string element, capped at maxElement, with trailing NUL
-// padding (which some muxers add) trimmed.
-func readString(src core.ReaderAtSized, el element, limit int64) (string, error) {
+// readString reads a UTF-8 string element, capped at maxElement, up to its first NUL. cut
+// reports bytes behind that NUL other than the NUL padding some muxers add.
+func readString(src core.ReaderAtSized, el element, limit int64) (s string, cut bool, err error) {
 	b, err := readBytes(src, el, limit)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return strings.TrimRight(string(b), "\x00"), nil
+	text, behind, _ := bytes.Cut(b, []byte{0})
+	return string(text), len(bytes.TrimRight(behind, "\x00")) > 0, nil
 }
 
 // readLabel reads an informational string element (a DocType, CodecID, scope keyword or
 // language): a read that fails fatally ([bits.Fatal]) is the error, and any other failure reads
 // as "".
 func readLabel(src core.ReaderAtSized, el element, limit int64) (string, error) {
-	s, err := readString(src, el, limit)
+	s, _, err := readString(src, el, limit)
 	return s, bits.Fatal(err)
 }
 
@@ -346,20 +398,21 @@ func readLabel(src core.ReaderAtSized, el element, limit int64) (string, error) 
 // can consume.
 const maxAudioSpecificConfig = 32
 
-// readBytesPrefix reads at most max bytes of a leaf element's data. Unlike [readBytes],
-// a longer element is not an error, so a hostile length costs only a bounded read.
+// readBytesPrefix reads at most max bytes of a leaf element's data, none of one that overruns its
+// parent. Unlike [readBytes], a longer element is not an error, so a hostile length costs only a
+// bounded read.
 func readBytesPrefix(src core.ReaderAtSized, el element, max, limit int64) ([]byte, error) {
 	n := min(el.dataLen(), max)
-	if n <= 0 {
+	if el.overruns() || n <= 0 {
 		return nil, nil
 	}
 	return bits.ReadSlice(src, el.dataStart, n, limit)
 }
 
-// readBytes reads a leaf element's data.
+// readBytes reads a leaf element's data, none of one that overruns its parent.
 func readBytes(src core.ReaderAtSized, el element, limit int64) ([]byte, error) {
 	n := el.dataLen()
-	if n <= 0 {
+	if el.overruns() || n <= 0 {
 		return nil, nil
 	}
 	if n > maxElement {

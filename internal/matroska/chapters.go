@@ -25,6 +25,9 @@ type chapterDoc struct {
 
 // chapterEdition is one parsed EditionEntry.
 type chapterEdition struct {
+	// raw is the EditionEntry as a rewrite copies it: its bytes, or for one that overruns the
+	// Chapters element or holds bytes that are no whole element, an EditionEntry of its whole
+	// children, empty when there are none.
 	raw       []byte
 	prefix    []byte
 	hasCRC    bool
@@ -49,29 +52,34 @@ func parseChapters(src core.ReaderAtSized, chapters element, depth *bits.Depth, 
 	}
 	cd := &chapterDoc{defIdx: -1, hasCRC: hasCRC}
 	var defChapters []core.Chapter
-	err = eachChild(src, chapters.dataStart, chapters.dataEnd, depth, limit, func(el element) error {
+	stop, err := eachChildReport(src, chapters.dataStart, chapters.dataEnd, depth, limit, func(el element) error {
 		if el.id != idEditionEntry {
+			if el.overruns() {
+				d.chapDamage.unread += el.dataEnd - el.start
+			}
 			return nil
 		}
-		ed, isDefault, chs, lossy, err := parseEdition(src, el, depth, limit)
+		r, err := parseEdition(src, el, depth, limit)
 		if err != nil {
 			return err
 		}
+		d.chapDamage.add(r.unread, el)
 		idx := len(cd.editions)
-		cd.editions = append(cd.editions, ed)
+		cd.editions = append(cd.editions, r.ed)
 		// The default edition (the first flagged one, else the first) supplies the
 		// projection; idx == 0 is the tentative fallback until a flag appears.
-		if (isDefault && cd.defIdx < 0) || (cd.defIdx < 0 && idx == 0) {
-			if isDefault {
+		if (r.isDefault && cd.defIdx < 0) || (cd.defIdx < 0 && idx == 0) {
+			if r.isDefault {
 				cd.defIdx = idx
 			}
-			defChapters, cd.defLossy = chs, lossy
+			defChapters, cd.defLossy, d.cuts.chapters = r.chapters, r.lossy, r.cuts
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+	d.chapDamage.unread += chapters.dataEnd - stop
 	d.chapters = cd
 	if len(cd.editions) == 0 {
 		return nil, nil
@@ -89,60 +97,127 @@ func parseChapters(src core.ReaderAtSized, chapters element, depth *bits.Depth, 
 	return defChapters, nil
 }
 
+// editionRead is what parseEdition makes of one EditionEntry.
+type editionRead struct {
+	ed        chapterEdition
+	isDefault bool
+	chapters  []core.Chapter // its ChapterAtoms that are whole
+	lossy     bool           // they hold what a flat re-render drops
+	unread    int64          // bytes of it that are no whole element, such a ChapterAtom among them
+	cuts      int            // titles of chapters read up to a NUL that other bytes follow
+}
+
 // parseEdition reads one EditionEntry: whether it is the default edition, the non-atom
 // children kept verbatim in prefix (EditionUID and the edition flags), the ordered
 // ChapterAtom UIDs, and the atoms projected as chapters.
-func parseEdition(src core.ReaderAtSized, ed element, depth *bits.Depth, limit int64) (out chapterEdition, isDefault bool, chs []core.Chapter, lossy bool, err error) {
-	if out.raw, err = captureRaw(src, ed, limit); err != nil {
-		return out, false, nil, false, err
+func parseEdition(src core.ReaderAtSized, ed element, depth *bits.Depth, limit int64) (r editionRead, err error) {
+	held, err := captureHeld(src, ed, limit)
+	if err != nil {
+		return r, err
 	}
-	if out.hasCRC, err = firstChildIsCRC(src, ed, limit); err != nil {
-		return out, false, nil, false, err
+	if r.ed.hasCRC, err = firstChildIsCRC(src, ed, limit); err != nil {
+		return r, err
 	}
-	err = eachChild(src, ed.dataStart, ed.dataEnd, depth, limit, func(el element) error {
-		var raw []byte
-		var err error
+	bytesOf := func(el element) []byte {
+		if held == nil {
+			return nil
+		}
+		return held[el.start-ed.start : el.dataEnd-ed.start]
+	}
+	var whole []element // its whole children, less a CRC-32
+	stop, err := eachChildReport(src, ed.dataStart, ed.dataEnd, depth, limit, func(el element) error {
+		if el.overruns() {
+			r.unread += el.dataEnd - el.start
+			return nil
+		}
 		switch el.id {
 		case idCRC32:
-			// Stripped from the prefix; a re-render recomputes its own CRC.
+			return nil // stripped from the prefix; a re-render recomputes its own CRC
 		case idChapterAtom:
-			ch, uid, atomLossy, err := parseChapterAtom(src, el, depth, limit)
+			a, err := parseChapterAtom(src, el, depth, limit)
 			if err != nil {
 				return err
+			}
+			if !a.whole {
+				r.unread += el.dataEnd - el.start
+				return nil
 			}
 			// Keep one entry per atom in file order, including a UID of 0. A popped zero
 			// means "mint fresh"; for same-start atoms it also keeps later real UIDs from
 			// sliding onto earlier UID-less chapters.
-			out.startUIDs = append(out.startUIDs, chapterStartUID{ch.Start, uid})
-			chs = append(chs, ch)
-			lossy = lossy || atomLossy
+			r.ed.startUIDs = append(r.ed.startUIDs, chapterStartUID{a.ch.Start, a.uid})
+			r.chapters = append(r.chapters, a.ch)
+			r.lossy = r.lossy || a.lossy
+			r.cuts += btoi(a.cut)
 		case idEditionFlagDf:
-			var v uint64
-			if v, err = readUint(src, el, limit); err != nil {
+			v, err := readUint(src, el, limit)
+			if err != nil {
 				return err
 			}
-			if v != 0 {
-				isDefault = true
-			}
-			raw, err = captureRaw(src, el, limit)
-			out.prefix = append(out.prefix, raw...)
+			r.isDefault = r.isDefault || v != 0
+			r.ed.prefix = append(r.ed.prefix, bytesOf(el)...)
 		default:
 			// EditionUID and any other non-atom child: kept verbatim in the prefix so
 			// edition-scoped tags and unmodeled fields survive a chapter edit.
-			raw, err = captureRaw(src, el, limit)
-			out.prefix = append(out.prefix, raw...)
+			r.ed.prefix = append(r.ed.prefix, bytesOf(el)...)
 		}
-		return err
+		whole = append(whole, el)
+		return nil
 	})
-	return out, isDefault, chs, lossy, err
+	if err != nil {
+		return r, err
+	}
+	r.unread += ed.dataEnd - stop
+	switch {
+	case held == nil:
+		// A read that came up short: with no raw the writer refuses to copy the edition.
+	case !ed.overruns() && r.unread == 0:
+		r.ed.raw = held
+	default:
+		r.ed.raw = []byte{}
+		var content []byte
+		for _, el := range whole {
+			content = append(content, bytesOf(el)...)
+		}
+		if len(content) > 0 {
+			r.ed.raw = masterElement(idEditionEntry, content, r.ed.hasCRC)
+		}
+	}
+	return r, nil
+}
+
+// wholeChildren reports whether el holds nothing but whole elements, one level down.
+func wholeChildren(src core.ReaderAtSized, el element, depth *bits.Depth, limit int64) (bool, error) {
+	whole := true
+	stop, err := eachChildReport(src, el.dataStart, el.dataEnd, depth, limit, func(c element) error {
+		whole = whole && !c.overruns()
+		return nil
+	})
+	return whole && stop == el.dataEnd, err
+}
+
+// chapterAtom is what parseChapterAtom reads of one ChapterAtom.
+type chapterAtom struct {
+	ch    core.Chapter
+	uid   uint64
+	lossy bool // holds what the flat model does not carry
+	whole bool // its children, and those of its displays, are whole elements
+	cut   bool // the title was read up to a NUL that other bytes follow
 }
 
 // parseChapterAtom reads one ChapterAtom's UID, start/end (absolute nanoseconds), the
-// hidden/enabled flags, and the first ChapterDisplay (title + language).
-func parseChapterAtom(src core.ReaderAtSized, atom element, depth *bits.Depth, limit int64) (ch core.Chapter, uid uint64, lossy bool, err error) {
+// hidden/enabled flags, and the first ChapterDisplay (title + language). A nested atom, like any
+// child the flat model does not carry, is not looked into: it is an element, kept or dropped
+// as one.
+func parseChapterAtom(src core.ReaderAtSized, atom element, depth *bits.Depth, limit int64) (a chapterAtom, err error) {
 	var startNs, endNs int64
 	displays := 0
-	err = eachChild(src, atom.dataStart, atom.dataEnd, depth, limit, func(el element) error {
+	a.whole = true
+	stop, err := eachChildReport(src, atom.dataStart, atom.dataEnd, depth, limit, func(el element) error {
+		if el.overruns() {
+			a.whole = false
+			return nil
+		}
 		switch el.id {
 		case idChapterUID, idChapTimeStart, idChapTimeEnd, idChapFlagHidden, idChapFlagEnabled:
 			v, err := readUint(src, el, limit)
@@ -151,86 +226,105 @@ func parseChapterAtom(src core.ReaderAtSized, atom element, depth *bits.Depth, l
 			}
 			switch el.id {
 			case idChapterUID:
-				uid = v
+				a.uid = v
 			case idChapTimeStart:
 				startNs = clampNs(v)
 			case idChapTimeEnd:
 				endNs = clampNs(v)
 			case idChapFlagHidden:
-				ch.Hidden = v != 0 // EBML default 0; 1 = hidden
+				a.ch.Hidden = v != 0 // EBML default 0; 1 = hidden
 			default:
-				ch.Disabled = v == 0 // EBML default 1; 0 = disabled
+				a.ch.Disabled = v == 0 // EBML default 1; 0 = disabled
 			}
 		case idChapDisplay:
 			displays++
 			if displays > 1 {
-				return nil // a second display is an other-language title the flat model cannot carry
+				// A second display is an other-language title the flat model cannot carry.
+				whole, err := wholeChildren(src, el, depth, limit)
+				a.whole = a.whole && whole
+				return err
 			}
-			title, lang, langIETF, dispLossy, err := readChapterDisplay(src, el, depth, limit)
+			disp, err := readChapterDisplay(src, el, depth, limit)
 			if err != nil {
 				return err
 			}
-			ch.Title, ch.Language, ch.LanguageIETF = title, lang, langIETF
-			lossy = lossy || dispLossy
+			a.ch.Title, a.ch.Language, a.ch.LanguageIETF = disp.title, disp.lang, disp.langIETF
+			a.lossy = a.lossy || disp.lossy
+			a.whole = a.whole && disp.whole
+			a.cut = disp.cut
 		case idChapterAtom:
-			lossy = true // a nested sub-chapter
+			a.lossy = true // a nested sub-chapter
 		case idCRC32, idVoid:
 			// Structural framing, not chapter data: a re-render recomputes its own CRC and
 			// drops padding, so neither is a content loss.
 		default:
 			// Any other ChapterAtom child (ChapterSegmentUID, ChapProcess, ChapterTrack, ...)
 			// is unmodeled, so the flatten warning covers it too.
-			lossy = true
+			a.lossy = true
 		}
 		return nil
 	})
-	lossy = lossy || displays > 1
-	ch.Start = time.Duration(startNs)
+	a.lossy = a.lossy || displays > 1
+	a.ch.Start = time.Duration(startNs)
 	if endNs > startNs {
-		ch.End = time.Duration(endNs) // an end <= start (or absent) means "open"
+		a.ch.End = time.Duration(endNs) // an end <= start (or absent) means "open"
 	}
-	return ch, uid, lossy, err
+	a.whole = a.whole && stop == atom.dataEnd
+	return a, err
+}
+
+// chapterDisplay is what readChapterDisplay reads of one ChapterDisplay.
+type chapterDisplay struct {
+	title, lang, langIETF string
+	lossy                 bool // holds a child the flat model drops
+	whole                 bool // its children are whole elements
+	cut                   bool // the title was read up to a NUL that other bytes follow
 }
 
 // readChapterDisplay reads one ChapterDisplay: the first ChapString title, the
 // ChapLanguage (ISO-639-2), and the ChapLanguageIETF (BCP-47). Any other child
 // (ChapCountry, ...) is unmodeled and flagged lossy.
-func readChapterDisplay(src core.ReaderAtSized, disp element, depth *bits.Depth, limit int64) (title, lang, langIETF string, lossy bool, err error) {
+func readChapterDisplay(src core.ReaderAtSized, disp element, depth *bits.Depth, limit int64) (d chapterDisplay, err error) {
 	got := false
-	err = eachChild(src, disp.dataStart, disp.dataEnd, depth, limit, func(el element) error {
+	d.whole = true
+	stop, err := eachChildReport(src, disp.dataStart, disp.dataEnd, depth, limit, func(el element) error {
+		if el.overruns() {
+			d.whole = false
+			return nil
+		}
 		var err error
 		switch el.id {
 		case idChapString:
 			if got {
-				lossy = true // a second ChapString in one display: the flat model keeps only the first
+				d.lossy = true // a second ChapString in one display: the flat model keeps only the first
 				return nil
 			}
-			s, err := readString(src, el, limit)
-			if err != nil {
+			if d.title, d.cut, err = readString(src, el, limit); err != nil {
 				return err
 			}
 			// An invalid-UTF-8 title reads as "", matching MP4's chpl and the QuickTime chapter
 			// track, so --json never emits raw invalid bytes.
-			if !utf8.ValidString(s) {
-				s = ""
+			if !utf8.ValidString(d.title) {
+				d.title = ""
 			}
-			title, got = s, true
+			got = true
 		case idChapLang:
-			lang, err = readLabel(src, el, limit) // informational
+			d.lang, err = readLabel(src, el, limit) // informational
 		case idChapLangIETF:
-			langIETF, err = readLabel(src, el, limit)
+			d.langIETF, err = readLabel(src, el, limit)
 		case idCRC32, idVoid:
 			// Structural framing, not display content; never a loss.
 		default:
-			lossy = true // an unmodeled ChapDisplay child (ChapCountry, ...) the flat model drops
+			d.lossy = true // an unmodeled ChapDisplay child (ChapCountry, ...) the flat model drops
 		}
 		return err
 	})
 	// Drop a language not worth surfacing or re-emitting: invalid UTF-8, or the "und"
 	// default, which would print a spurious "[lang: und]".
-	lang = normalizeChapLang(lang)
-	langIETF = normalizeChapLang(langIETF)
-	return title, lang, langIETF, lossy, err
+	d.lang = normalizeChapLang(d.lang)
+	d.langIETF = normalizeChapLang(d.langIETF)
+	d.whole = d.whole && stop == disp.dataEnd
+	return d, err
 }
 
 // normalizeChapLang returns "" for a chapter language that carries no information: invalid
@@ -325,9 +419,11 @@ func renderDefaultEdition(ed chapterEdition, chs []core.Chapter) []byte {
 	}
 	queue := chapterUIDQueue(ed.startUIDs)
 	for _, ch := range chs {
-		uid := popChapterUID(queue, ch.Start)
-		if uid == 0 {
-			uid = randomUID()
+		var uid []byte
+		if kept := popChapterUID(queue, ch.Start); kept != 0 {
+			uid = uintData(kept) // in as few bytes as it takes, like every integer of the atom
+		} else {
+			uid = mintUID()
 		}
 		content = append(content, renderChapterAtom(uid, ch)...)
 	}
@@ -355,12 +451,12 @@ func popChapterUID(q map[time.Duration][]uint64, start time.Duration) uint64 {
 	return ids[0]
 }
 
-// renderChapterAtom encodes one ChapterAtom: its UID, the absolute-nanosecond
-// start (and end when the chapter is closed), the non-default ChapterFlagHidden/
-// ChapterFlagEnabled flags, and a ChapterDisplay (title + language) when titled.
-func renderChapterAtom(uid uint64, ch core.Chapter) []byte {
+// renderChapterAtom encodes one ChapterAtom: its UID (the value's bytes), the
+// absolute-nanosecond start (and end when the chapter is closed), the non-default
+// ChapterFlagHidden/ChapterFlagEnabled flags, and a ChapterDisplay (title + language) when titled.
+func renderChapterAtom(uid []byte, ch core.Chapter) []byte {
 	content := make([]byte, 0, 48+len(ch.Title))
-	content = append(content, uintElement(idChapterUID, uid)...)
+	content = append(content, encElement(idChapterUID, uid)...)
 	content = append(content, uintElement(idChapTimeStart, uint64(chapNanos(ch.Start)))...)
 	// Only a closed chapter writes ChapterTimeEnd.
 	if ch.End > ch.Start {

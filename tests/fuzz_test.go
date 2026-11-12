@@ -190,6 +190,9 @@ func FuzzParse(f *testing.F) {
 	if b, err := os.ReadFile(notagsMP3); err == nil {
 		f.Add(append(testfile.ID3v2(3, testfile.TextFrame(3, "MVIN", "ab/cd/12")), b...)) // garbage MVIN pair: projects verbatim, round-trips, no panic
 	}
+	for _, damaged := range damagedMatroska() {
+		f.Add(damaged)
+	}
 	f.Add([]byte("\x1a\x45\xdf\xa3\x84\x42\x82\x81m"))                                                                                    // EBML magic + truncated DocType
 	f.Add([]byte("\x1a\x45\xdf\xa3\xff"))                                                                                                 // EBML magic, unknown-size header
 	f.Add([]byte("\x1a\x45\xdf\xa3\x80\x18\x53\x80\x67\xff"))                                                                             // empty EBML header + unknown-size Segment

@@ -180,7 +180,7 @@ func (e *Editor) dropPictures() {
 	e.pictures, e.addedMask, e.picsTouched = nil, nil, true
 }
 
-// SetChapters replaces chapters (sorted by start). Cap checked at Prepare.
+// SetChapters replaces chapters (sorted by start). The cap and the times are checked at Prepare.
 func (e *Editor) SetChapters(chs ...Chapter) *Editor {
 	e.chapters = normalizeChapters(chs)
 	e.chaptersTouched = true
@@ -469,6 +469,12 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	if !chaptersDropped && e.chaptersTouched && caps.Chapters.MaxItems > 0 && len(e.chapters) > caps.Chapters.MaxItems {
 		return nil, fmt.Errorf("%w: %d chapters exceeds the %d %s can store",
 			waxerr.ErrUnsupportedTag, len(e.chapters), caps.Chapters.MaxItems, e.base.Format)
+	}
+	// A list that is written has times a writer can store; a carried one is its source's.
+	if !chaptersDropped && !e.carried {
+		if err := checkChapterTimes(e.chapters, e.base.Chapters); err != nil {
+			return nil, err
+		}
 	}
 	// Synced lyrics: refuse or drop an authored set on a format with no store. MP4
 	// and Matroska timed lyric tracks are outside this model. A clear is a no-op.
@@ -999,6 +1005,26 @@ func hasKeyedWarning(ws []core.Warning, code core.WarningCode, k tag.Key) bool {
 		}
 	}
 	return false
+}
+
+// checkChapterTimes refuses a chapter a caller authors, one not among base (the chapters of the
+// file it edits, or of the source it carries), that starts before zero or ends before it
+// starts: a writer would have to change it. An end at the start is the open end.
+func checkChapterTimes(chapters, base []core.Chapter) error {
+	held := make(map[core.Chapter]bool, len(base))
+	for _, c := range base {
+		held[c] = true
+	}
+	for _, c := range chapters {
+		switch {
+		case held[c]:
+		case c.Start < 0:
+			return fmt.Errorf("%w: a chapter starts at %s, before the start of the file", waxerr.ErrInvalidData, c.Start)
+		case c.End != 0 && c.End < c.Start:
+			return fmt.Errorf("%w: the chapter at %s ends at %s, before it starts", waxerr.ErrInvalidData, c.Start, c.End)
+		}
+	}
+	return nil
 }
 
 // appendChapterWarnings adds chapter sanity warnings for the chapters in chapters

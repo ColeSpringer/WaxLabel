@@ -12,6 +12,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
 	"github.com/colespringer/waxlabel/internal/mpeg4audio"
+	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -57,6 +58,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 				wb.segUnknown = el.unknown
 				wb.segDataStart = el.dataStart
 				wb.segDataEnd = el.dataEnd
+				wb.segClamped, wb.segDeclared = el.clamped, el.declared
 			}
 		}
 		return err
@@ -72,7 +74,18 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	var audioEnd, durationNs int64
 	var chapters []core.Chapter
 	var tagsSeen bool // capture the Tags CRC framing from the first master only (later masters merge)
-	err = walkSegment(src, segStart, segEnd, depth, limit, func(el element) error {
+	var last element
+	var junk, tailJunk int64 // bytes that are no element; those of them that end the Segment
+	stop, err := walkSegment(src, segStart, segEnd, depth, limit, wb.segClamped || wb.segUnknown, func(el element) error {
+		if el.id == 0 {
+			wb.children = append(wb.children, l1elem{start: el.start, dataStart: el.start, dataEnd: el.dataEnd})
+			junk += el.dataLen()
+			if el.dataEnd == segEnd {
+				tailJunk = el.dataLen()
+			}
+			return depth.Count()
+		}
+		last = el
 		if el.id == idCluster {
 			// Coalesce a contiguous run of Clusters into one descriptor.
 			if n := len(wb.children); n > 0 && wb.children[n-1].id == idCluster {
@@ -140,7 +153,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			pics = append(pics, ps...)
 		case idChapters:
 			if d.chapters != nil {
-				return nil // at most one Chapters element is valid; ignore a malformed duplicate
+				d.dupChapters++ // at most one Chapters element is valid: the first is the one read
+				return nil
 			}
 			chs, err := parseChapters(src, el, depth, limit, d)
 			if err != nil {
@@ -152,6 +166,12 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	})
 	if err != nil {
 		return nil, err
+	}
+	if stop < segEnd {
+		wb.unreadFrom = stop
+	}
+	if declaredEnd := segStart + int64(wb.segDeclared); wb.segClamped && last.clamped {
+		wb.lastShort = min(last.dataStart+int64(last.declared), declaredEnd) - segEnd
 	}
 	wb.clusterStart = audioStart
 	if wb.clusterStart < 0 {
@@ -182,6 +202,26 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	media.Families = families
 	media.Warnings = mediaWarnings(tags, families)
 	media.Warnings = append(media.Warnings, invalidKeyWarnings(d)...)
+	media.Warnings = d.tagsDamage.warn(media.Warnings, "Tags")
+	media.Warnings = d.chapDamage.warn(media.Warnings, "Chapters")
+	media.Warnings = d.attachDamage.warn(media.Warnings, "Attachments")
+	media.Warnings = d.infoDamage.warn(media.Warnings, "Info")
+	media.Warnings = append(media.Warnings, cutWarnings(d)...)
+	if d.dupChapters > 0 {
+		media.Warnings = core.Warn(media.Warnings, core.WarnDuplicateTagBlock,
+			"more than one Chapters element; the first is read and a chapter edit drops the rest")
+	}
+	if wb.segClamped {
+		media.Warnings = core.Warn(media.Warnings, core.WarnTruncatedAudio, fmt.Sprintf(
+			"the Segment declares %d more byte(s) than the file holds; file may be truncated", segStart+int64(wb.segDeclared)-segEnd))
+		junk -= tailJunk // the head of an element the file ends in
+	}
+	media.Warnings = core.WarnTrailing(media.Warnings, junk, "inside the Segment", "are no element")
+	if wb.unreadFrom > 0 {
+		media.Warnings = core.Warn(media.Warnings, core.WarnTrailingBytes, fmt.Sprintf(
+			"more than %d bytes inside the Segment are no element: the read stops at offset %d, what follows is not read, and writing is refused",
+			core.ResyncWindow, wb.unreadFrom))
+	}
 	media.Properties = core.Properties{Container: containerName(d.docType), Tracks: d.tracks}
 	if audioStart >= 0 && audioEnd > audioStart {
 		media.AudioStart = audioStart
@@ -215,11 +255,16 @@ func readDocType(src core.ReaderAtSized, ebml element, depth *bits.Depth, limit 
 }
 
 // parseInfo reads the timestamp scale, duration, and segment title. It returns
-// the duration in nanoseconds (Duration is in TimestampScale units).
+// the duration in nanoseconds (Duration is in TimestampScale units). What of the Info is no
+// whole element counts toward its damage: a title edit renders it again.
 func parseInfo(src core.ReaderAtSized, info element, depth *bits.Depth, limit int64, d *doc) (int64, error) {
 	var scale uint64 = 1000000 // spec default: 1 ms
 	var duration float64
-	err := eachChild(src, info.dataStart, info.dataEnd, depth, limit, func(el element) error {
+	stop, err := eachChildReport(src, info.dataStart, info.dataEnd, depth, limit, func(el element) error {
+		if el.overruns() {
+			d.infoDamage.unread += el.dataEnd - el.start
+			return nil
+		}
 		switch el.id {
 		case idTimestampScl:
 			v, err := readUint(src, el, limit)
@@ -238,11 +283,11 @@ func parseInfo(src core.ReaderAtSized, info element, depth *bits.Depth, limit in
 				duration = f
 			}
 		case idSegTitle:
-			title, err := readString(src, el, limit)
+			title, cut, err := readString(src, el, limit)
 			if err != nil {
 				return err
 			}
-			d.segTitle = title
+			d.segTitle, d.cuts.title = title, cut
 			d.hasSegTitle = true // record presence so a "" title round-trips distinct from none
 		}
 		return nil
@@ -250,6 +295,7 @@ func parseInfo(src core.ReaderAtSized, info element, depth *bits.Depth, limit in
 	if err != nil {
 		return 0, err
 	}
+	d.infoDamage.unread += info.dataEnd - stop
 	// Check NaN explicitly: comparisons against NaN are all false, and converting an
 	// out-of-range or NaN float to int64 is implementation-defined in Go.
 	ns := duration * float64(scale)
@@ -280,6 +326,7 @@ func parseTrackEntry(src core.ReaderAtSized, entry element, depth *bits.Depth, l
 	var outputRate int
 	var private element
 	var t core.AudioTrack
+	var stated audioFields
 	err := eachChild(src, entry.dataStart, entry.dataEnd, depth, limit, func(el element) error {
 		var err error
 		switch el.id {
@@ -295,7 +342,7 @@ func parseTrackEntry(src core.ReaderAtSized, entry element, depth *bits.Depth, l
 			// Only overwrite when this Audio child declared one, so a malformed second,
 			// empty Audio child does not erase the first.
 			var r int
-			if r, err = parseAudio(src, el, depth, limit, &t); r > 0 {
+			if r, err = parseAudio(src, el, depth, limit, &t, &stated); r > 0 {
 				outputRate = r
 			}
 		case idCodecPrivate:
@@ -323,6 +370,20 @@ func parseTrackEntry(src core.ReaderAtSized, entry element, depth *bits.Depth, l
 	if outputRate > 0 {
 		t.SampleRate = outputRate
 	}
+	if codecID == "A_FLAC" && (t.SampleRate == 0 || t.Channels == 0 || t.BitsPerSample == 0) {
+		b, err := readBytesPrefix(src, private, flacPrivateLen, limit)
+		if err := bits.Fatal(err); err != nil {
+			return err
+		}
+		applyFLACCodecPrivate(&t, b)
+	}
+	// An element a muxer leaves out holds the format's default.
+	if !stated.rate && t.SampleRate == 0 {
+		t.SampleRate = 8000
+	}
+	if !stated.channels && t.Channels == 0 {
+		t.Channels = 1
+	}
 	if strings.HasPrefix(codecID, "A_AAC") {
 		// Read CodecPrivate only for AAC and only the prefix the decoder consumes: Vorbis
 		// and FLAC private data hold whole setup headers, and an AAC one that declares
@@ -335,6 +396,31 @@ func parseTrackEntry(src core.ReaderAtSized, entry element, depth *bits.Depth, l
 	}
 	d.tracks = append(d.tracks, t)
 	return nil
+}
+
+// flacPrivateLen is the head of a FLAC CodecPrivate: the "fLaC" marker, a metadata block header
+// and the STREAMINFO block that comes first.
+const flacPrivateLen = 4 + 4 + vorbis.StreamInfoLen
+
+// applyFLACCodecPrivate fills what the Audio element left out of a FLAC track's geometry from the
+// STREAMINFO its CodecPrivate starts with.
+func applyFLACCodecPrivate(t *core.AudioTrack, private []byte) {
+	if len(private) < flacPrivateLen || string(private[:4]) != "fLaC" || private[4]&0x7F != vorbis.BlockStreamInfo {
+		return
+	}
+	si, err := vorbis.ParseStreamInfo(private[8:flacPrivateLen])
+	if err != nil {
+		return
+	}
+	if t.SampleRate == 0 {
+		t.SampleRate = si.SampleRate
+	}
+	if t.Channels == 0 {
+		t.Channels = si.Channels
+	}
+	if t.BitsPerSample == 0 {
+		t.BitsPerSample = si.BitsPerSample
+	}
 }
 
 // applyAACCodecPrivate names an AAC track's profile and, when the container did not
@@ -392,10 +478,14 @@ func aacCodecIDProfile(codecID string) string {
 	return "AAC"
 }
 
+// audioFields notes which of a track's sampling frequency and channel count an Audio element
+// states, usable or not.
+type audioFields struct{ rate, channels bool }
+
 // parseAudio reads the Audio sub-element's sampling frequency, channel count, and bit
 // depth onto t, returning OutputSamplingFrequency separately (0 when absent or
 // unusable). Only a fatal error ([bits.Fatal]) fails the parse.
-func parseAudio(src core.ReaderAtSized, audio element, depth *bits.Depth, limit int64, t *core.AudioTrack) (int, error) {
+func parseAudio(src core.ReaderAtSized, audio element, depth *bits.Depth, limit int64, t *core.AudioTrack, stated *audioFields) (int, error) {
 	// Guard NaN/Inf and absurd magnitudes: int(NaN)/int(+Inf) is implementation-defined,
 	// and a wild rate poisons the essence config.
 	rate := func(el element) (int, bool, error) {
@@ -409,6 +499,7 @@ func parseAudio(src core.ReaderAtSized, audio element, depth *bits.Depth, limit 
 	err := eachChild(src, audio.dataStart, audio.dataEnd, depth, limit, func(el element) error {
 		switch el.id {
 		case idSampFreq:
+			stated.rate = true
 			r, ok, err := rate(el)
 			if err != nil {
 				return err
@@ -425,6 +516,7 @@ func parseAudio(src core.ReaderAtSized, audio element, depth *bits.Depth, limit 
 				outputRate = r
 			}
 		case idChannels:
+			stated.channels = true
 			v, err := readUint(src, el, limit)
 			t.Channels = intVal(v)
 			return err
@@ -441,41 +533,99 @@ func parseAudio(src core.ReaderAtSized, audio element, depth *bits.Depth, limit 
 	return outputRate, nil
 }
 
+// damage is what of a Tags, Chapters or Attachments element could not be read as elements. An
+// element that overruns its parent, or holds bytes no header parses from, is not one a rewrite
+// can place ahead of anything: a reader takes what follows for its own, or stops at it.
+type damage struct {
+	unread  int64 // bytes no element accounts for; a rewrite of the element drops them
+	resized bool  // a child read to the end of its parent, short of the size it declares
+}
+
+// add counts a child's unread bytes and whether it was read short of its size.
+func (dm *damage) add(unread int64, child element) {
+	dm.unread += unread
+	dm.resized = dm.resized || child.overruns()
+}
+
+// warn appends the read warning for the damage in the element called name.
+func (dm damage) warn(ws []core.Warning, name string) []core.Warning {
+	switch {
+	case dm.unread > 0:
+		return core.Warn(ws, core.WarnMalformedTagEntry, fmt.Sprintf(
+			"%d byte(s) of the %s element could not be read as elements; a rewrite of the element drops them", dm.unread, name))
+	case dm.resized:
+		return core.Warn(ws, core.WarnMalformedTagEntry,
+			"an element of the "+name+" element runs past its parent; a rewrite of the element gives it its size")
+	}
+	return ws
+}
+
+// warnDropped appends the write warning for a rewrite of the element called name.
+func (dm damage) warnDropped(ws []core.Warning, name string) []core.Warning {
+	if dm.unread == 0 {
+		return ws
+	}
+	return core.Warn(ws, core.WarnMalformedTagEntryDropped, fmt.Sprintf(
+		"the %d byte(s) of the %s element that could not be read are not carried into the rewritten element", dm.unread, name))
+}
+
 // parseTags reads every Tag (target group) into the native doc.
 func parseTags(src core.ReaderAtSized, tags element, depth *bits.Depth, limit int64, d *doc) error {
-	return eachChild(src, tags.dataStart, tags.dataEnd, depth, limit, func(el element) error {
+	stop, err := eachChildReport(src, tags.dataStart, tags.dataEnd, depth, limit, func(el element) error {
 		if el.id != idTag {
+			if el.overruns() {
+				d.tagsDamage.unread += el.dataEnd - el.start
+			}
 			return nil
 		}
-		g, err := parseTag(src, el, depth, limit)
+		g, unread, ok, err := parseTag(src, el, depth, limit)
 		if err != nil {
 			return err
 		}
-		d.groups = append(d.groups, g)
+		d.tagsDamage.add(unread, el)
+		if ok {
+			d.groups = append(d.groups, g)
+		}
 		return nil
 	})
+	d.tagsDamage.unread += tags.dataEnd - stop
+	return err
 }
 
-// parseTag reads one Tag: its Targets scope and its SimpleTags.
-func parseTag(src core.ReaderAtSized, tagEl element, depth *bits.Depth, limit int64) (tagGroup, error) {
-	var g tagGroup
-	var err error
+// parseTag reads one Tag: its Targets scope and its SimpleTags. unread counts the bytes of it
+// that are no whole element, a SimpleTag holding such bytes among them. ok is false for a Tag
+// whose Targets is one of them, or may be among them for none was seen, which leaves its scope
+// unknown: nothing of it is read.
+func parseTag(src core.ReaderAtSized, tagEl element, depth *bits.Depth, limit int64) (g tagGroup, unread int64, ok bool, err error) {
 	if g.raw, err = captureRaw(src, tagEl, limit); err != nil {
-		return g, err
+		return g, 0, false, err
 	}
-	err = eachChild(src, tagEl.dataStart, tagEl.dataEnd, depth, limit, func(el element) error {
+	scoped, targeted := true, false
+	stop, err := eachChildReport(src, tagEl.dataStart, tagEl.dataEnd, depth, limit, func(el element) error {
+		if el.overruns() {
+			scoped = scoped && el.id != idTargets
+			unread += el.dataEnd - el.start
+			return nil
+		}
 		var err error
 		switch el.id {
 		case idCRC32:
 			g.hasCRC = true
 		case idTargets:
+			targeted = true
 			if g.targetsRaw, err = captureRaw(src, el, limit); err == nil {
-				err = parseTargets(src, el, depth, limit, &g)
+				var whole bool
+				whole, err = parseTargets(src, el, depth, limit, &g)
+				scoped = scoped && whole
 			}
 		case idSimpleTag:
-			var st simpleTag
-			if st, err = parseSimpleTag(src, el, depth, limit); err != nil {
+			st, whole, err := parseSimpleTag(src, el, depth, limit)
+			if err != nil {
 				return err
+			}
+			if !whole {
+				unread += el.dataEnd - el.start
+				return nil
 			}
 			// Capture raw only for the top-level SimpleTag: its bytes span the whole nested
 			// subtree, and the write path reads no nested tag's raw.
@@ -486,15 +636,31 @@ func parseTag(src core.ReaderAtSized, tagEl element, depth *bits.Depth, limit in
 		}
 		return err
 	})
+	if err != nil {
+		return g, 0, false, err
+	}
+	unread += tagEl.dataEnd - stop
+	if !scoped || unread > 0 && !targeted {
+		return tagGroup{}, tagEl.dataEnd - tagEl.start, false, nil
+	}
+	if g.malformed = tagEl.overruns() || unread > 0; g.malformed {
+		g.raw = nil
+	}
 	g.scope = resolveScope(g)
-	return g, err
+	return g, unread, true, nil
 }
 
 // parseTargets reads a Targets element: the logical level (TargetTypeValue /
-// TargetType) and whether the tag is narrowed to a track, edition, or chapter. Only a
-// fatal error ([bits.Fatal]) fails the parse.
-func parseTargets(src core.ReaderAtSized, targets element, depth *bits.Depth, limit int64, g *tagGroup) error {
-	err := eachChild(src, targets.dataStart, targets.dataEnd, depth, limit, func(el element) error {
+// TargetType) and whether the tag is narrowed to a track, edition, or chapter. whole is false
+// when part of it is no element or was not reached. Only a fatal error ([bits.Fatal]) fails the
+// parse.
+func parseTargets(src core.ReaderAtSized, targets element, depth *bits.Depth, limit int64, g *tagGroup) (whole bool, err error) {
+	whole = true
+	stop, err := eachChildReport(src, targets.dataStart, targets.dataEnd, depth, limit, func(el element) error {
+		if el.overruns() {
+			whole = false
+			return nil
+		}
 		var err error
 		switch el.id {
 		case idTgtTypeVal:
@@ -510,28 +676,38 @@ func parseTargets(src core.ReaderAtSized, targets element, depth *bits.Depth, li
 		}
 		return err
 	})
-	return bits.Fatal(err)
+	if err != nil {
+		return false, bits.Fatal(err)
+	}
+	return whole && stop == targets.dataEnd, nil
 }
 
 // parseSimpleTag reads a SimpleTag (name/value/language) and recurses into any
-// nested sub-tags. eachChild's depth guard bounds the recursion.
-func parseSimpleTag(src core.ReaderAtSized, st element, depth *bits.Depth, limit int64) (simpleTag, error) {
+// nested sub-tags. The walk's depth guard bounds the recursion. whole is false when part of it,
+// at any depth, is no element.
+func parseSimpleTag(src core.ReaderAtSized, st element, depth *bits.Depth, limit int64) (s simpleTag, whole bool, err error) {
 	// raw stays nil here; parseTag sets it on the top-level tag only.
-	s := simpleTag{}
-	err := eachChild(src, st.dataStart, st.dataEnd, depth, limit, func(el element) error {
+	whole = true
+	stop, err := eachChildReport(src, st.dataStart, st.dataEnd, depth, limit, func(el element) error {
+		if el.overruns() {
+			whole = false
+			return nil
+		}
 		switch el.id {
 		case idTagName:
-			name, err := readString(src, el, limit)
+			name, cut, err := readString(src, el, limit)
 			if err != nil {
 				return err
 			}
 			s.name = name
+			s.cut += btoi(cut)
 		case idTagString:
-			value, err := readString(src, el, limit)
+			value, cut, err := readString(src, el, limit)
 			if err != nil {
 				return err
 			}
 			s.value = value
+			s.cut += btoi(cut)
 			s.hasValue = true // an empty TagString is a present empty value, distinct from none
 		case idTagLang:
 			lang, err := readLabel(src, el, limit) // informational
@@ -544,28 +720,38 @@ func parseSimpleTag(src core.ReaderAtSized, st element, depth *bits.Depth, limit
 		case idTagBinary:
 			s.binary = int(min(el.dataLen(), maxElement))
 		case idSimpleTag:
-			sub, err := parseSimpleTag(src, el, depth, limit)
+			sub, subWhole, err := parseSimpleTag(src, el, depth, limit)
 			if err != nil {
 				return err
 			}
+			whole = whole && subWhole
 			s.sub = append(s.sub, sub)
 		}
 		return nil
 	})
-	return s, err
+	return s, whole && stop == st.dataEnd, err
 }
 
 // parseAttachments reads each AttachedFile into the native doc and returns the
-// pictures decoded from image attachments (cover art).
+// pictures decoded from image attachments (cover art). An AttachedFile that overruns the element
+// or holds bytes that are no element is not read.
 func parseAttachments(src core.ReaderAtSized, att element, depth *bits.Depth, limit int64, d *doc) ([]core.Picture, error) {
 	var pics []core.Picture
-	err := eachChild(src, att.dataStart, att.dataEnd, depth, limit, func(el element) error {
+	stop, err := eachChildReport(src, att.dataStart, att.dataEnd, depth, limit, func(el element) error {
+		if el.overruns() {
+			d.attachDamage.unread += el.dataEnd - el.start
+			return nil
+		}
 		if el.id != idAttached {
 			return nil
 		}
-		a, pic, err := parseAttached(src, el, depth, limit)
+		a, pic, whole, err := parseAttached(src, el, depth, limit)
 		if err != nil {
 			return err
+		}
+		if !whole {
+			d.attachDamage.unread += el.dataEnd - el.start
+			return nil
 		}
 		d.attachments = append(d.attachments, a)
 		if pic != nil {
@@ -573,49 +759,58 @@ func parseAttachments(src core.ReaderAtSized, att element, depth *bits.Depth, li
 		}
 		return nil
 	})
+	d.attachDamage.unread += att.dataEnd - stop
 	return pics, err
 }
 
 // parseAttached reads one AttachedFile, returning its summary and, when it is an image,
-// a decoded Picture.
-func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit int64) (attachment, *core.Picture, error) {
-	raw, err := captureRaw(src, af, limit)
-	if err != nil {
-		return attachment{}, nil, err
-	}
-	a := attachment{raw: raw}
+// a decoded Picture. whole is false, and nothing is returned, when part of it is no element.
+func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit int64) (a attachment, pic *core.Picture, whole bool, err error) {
 	var dataEl element
 	var haveData bool
-	err = eachChild(src, af.dataStart, af.dataEnd, depth, limit, func(el element) error {
+	whole = true
+	stop, err := eachChildReport(src, af.dataStart, af.dataEnd, depth, limit, func(el element) error {
+		if el.overruns() {
+			whole = false
+			return nil
+		}
 		var err error
+		var cut bool
 		switch el.id {
 		case idFileName:
-			a.name, err = readString(src, el, limit)
+			a.name, cut, err = readString(src, el, limit)
 		case idFileMime:
-			a.mime, err = readString(src, el, limit)
+			a.mime, cut, err = readString(src, el, limit)
 		case idFileDesc:
-			a.description, err = readString(src, el, limit)
+			a.description, cut, err = readString(src, el, limit)
 		case idFileData:
 			dataEl, haveData = el, true
 			a.size = int(min(el.dataLen(), maxElement))
 		}
+		a.cut += btoi(cut)
 		return err
 	})
 	if err != nil {
-		return a, nil, err
+		return attachment{}, nil, false, err
+	}
+	if !whole || stop != af.dataEnd {
+		return attachment{}, nil, false, nil
+	}
+	if a.raw, err = captureRaw(src, af, limit); err != nil {
+		return attachment{}, nil, false, err
 	}
 	// A cover is an image MIME, or a --force octet-stream stored under the cover-art
 	// file name. The latter reprojects as an Unrecognized() picture (removable, rebuilt
 	// on write) rather than accumulating a new cover_<n> attachment on every re-add.
 	a.image = isCoverAttachment(a.mime, a.name)
 	if !a.image || !haveData {
-		return a, nil, nil
+		return a, nil, true, nil
 	}
 	data, err := readBytes(src, dataEl, limit)
 	if err != nil {
-		return a, nil, err
+		return attachment{}, nil, false, err
 	}
-	pic := core.Picture{
+	p := core.Picture{
 		Type: pictureType(a.name),
 		MIME: a.mime,
 		// Sanitize the description like the tag-value read path, so a transfer that re-adds
@@ -626,8 +821,8 @@ func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit 
 	}
 	// Recognizable bytes win over the declared MIME, as in the ID3/MP4 read paths, so a
 	// mislabeled cover reads as its true type.
-	pic.SniffAuthoritative()
-	return a, &pic, nil
+	p.SniffAuthoritative()
+	return a, &p, true, nil
 }
 
 // resolveScope maps a tag group's targets to a canonical scope.
@@ -823,6 +1018,54 @@ func projectionOrder(key tag.Key, contribs []scopedContribution) []contributionE
 		}
 	}
 	return out
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// cuts counts the texts of a SimpleTag and of those nested in it that were read up to a NUL.
+func (st simpleTag) cuts() int {
+	n := st.cut
+	for _, sub := range st.sub {
+		n += sub.cuts()
+	}
+	return n
+}
+
+// cutWarnings reports the texts read up to a NUL that bytes other than padding follow. A rewrite
+// of such a text writes what was read of it.
+func cutWarnings(d *doc) []core.Warning {
+	var ws []core.Warning
+	if d.cuts.title {
+		ws = core.WarnBehindNUL(ws, "the Info.Title", tag.Title)
+	}
+	var tags, files int
+	var keys []tag.Key
+	for _, g := range d.groups {
+		for _, st := range g.tags {
+			tags += st.cuts()
+			if k, ok := mapping.MatroskaTagKey(st.name); ok && st.cut > 0 && !slices.Contains(keys, k) {
+				keys = append(keys, k)
+			}
+		}
+	}
+	if tags > 0 {
+		ws = core.WarnBehindNUL(ws, fmt.Sprintf("%d SimpleTag name(s) or value(s)", tags), keys...)
+	}
+	if d.cuts.chapters > 0 {
+		ws = core.WarnBehindNUL(ws, fmt.Sprintf("%d chapter title(s)", d.cuts.chapters))
+	}
+	for _, a := range d.attachments {
+		files += a.cut
+	}
+	if files > 0 {
+		ws = core.WarnBehindNUL(ws, fmt.Sprintf("%d attachment name(s), type(s) or description(s)", files))
+	}
+	return ws
 }
 
 // invalidKeyWarnings reports the SimpleTag names the canonical vocabulary cannot

@@ -13,6 +13,7 @@ type simpleTag struct {
 	name     string
 	value    string
 	hasValue bool // a TagString child was present (an empty TagString is distinct from none)
+	cut      int  // how many of name and value were read up to a NUL that other bytes follow
 	lang     string
 	bcp47    bool // a TagLanguageBCP47 child is present; kept in raw, not modeled
 	binary   int  // >0 when the value was a TagBinary of this many bytes (not decoded)
@@ -45,6 +46,9 @@ type tagGroup struct {
 	targetsRaw      []byte
 	raw             []byte // whole Tag element bytes, for verbatim preservation
 	hasCRC          bool
+	// malformed: the Tag overruns the Tags element or holds bytes that are no whole element.
+	// raw is nil, and a rewrite of the Tags renders it again from the SimpleTags that were read.
+	malformed bool
 }
 
 // attachment summarizes one AttachedFile (cover art and any other embedded file).
@@ -56,6 +60,7 @@ type attachment struct {
 	description string
 	size        int
 	image       bool
+	cut         int // how many of its texts were read up to a NUL that other bytes follow
 	raw         []byte
 }
 
@@ -68,6 +73,14 @@ type doc struct {
 	groups      []tagGroup
 	attachments []attachment
 	chapters    *chapterDoc // parsed Chapters tree, nil when the file has none
+	dupChapters int         // Chapters elements behind the first: not read, dropped by a chapter edit
+	// What of each element no parsed structure holds; a rewrite of the element drops it.
+	tagsDamage, chapDamage, attachDamage, infoDamage damage
+	// Texts read up to a NUL that bytes other than padding follow, outside the SimpleTags.
+	cuts struct {
+		title    bool
+		chapters int
+	}
 	tracks      []core.AudioTrack
 	sawNonAudio bool // a video/subtitle/button track was present; gates the audio-only bitrate
 
@@ -94,6 +107,16 @@ type writeBase struct {
 	segUnknown   bool  // the Segment uses the unknown-size form
 	segDataStart int64
 	segDataEnd   int64
+	// segClamped: the Segment declares segDeclared bytes, more than the file holds. lastShort
+	// is how many of the missing ones its last child declares, itself cut by the end of the
+	// file; a rewrite that leaves that child out, or renders it whole, stops declaring them.
+	segClamped  bool
+	segDeclared uint64
+	lastShort   int64
+	// unreadFrom is where the read of the Segment gave up, at more bytes that are no element
+	// than a resync looks through, 0 when it reached the end. What stands behind is unknown,
+	// so the file is not rewritten.
+	unreadFrom int64
 
 	children     []l1elem // top-level Segment children, in file order
 	clusterStart int64    // first Cluster start (header/tail boundary), or segDataEnd
@@ -110,7 +133,8 @@ type writeBase struct {
 
 // l1elem is one top-level Segment child captured for rewriting: its ID and full
 // byte range. The id distinguishes which children are re-rendered (Tags/Info/
-// Attachments/SeekHead/Cues) from those copied verbatim (Tracks, Cluster, Void...).
+// Attachments/SeekHead/Cues) from those copied verbatim (Tracks, Cluster, Void...). An id of 0
+// is bytes between two elements, or behind the last, that head no element, copied as they are.
 type l1elem struct {
 	id        uint64
 	start     int64
@@ -139,6 +163,9 @@ type seekHead struct {
 	// in-place patch only recomputes the SeekHead CRC, so this forces rebuildSeekHead,
 	// which omits per-Seek CRCs on output.
 	hasNestedCRC bool
+	// cut: the end of the file cuts the element. A patch in place leaves its CRC-32, which
+	// covers bytes the file lacks, as it is.
+	cut bool
 }
 
 type seekEntry struct {
@@ -161,6 +188,7 @@ type cuesIndex struct {
 	// CRC-32. patchPositions only recomputes the Cues CRC, so this forces encodeCues,
 	// which recalculates nested CRCs.
 	hasNestedCRC bool
+	cut          bool // as seekHead.cut
 }
 
 // cuePoint is one CuePoint produced by buildCuePoints for a rebuild. It is transient
@@ -181,7 +209,8 @@ type cueTrackPos struct {
 
 // infoBlock is a captured Info element: raw bytes, optional CRC, and the Title
 // child's location within raw (titleOff<0 when absent), plus the offset at which
-// a new Title is spliced (after the CRC, before the other children).
+// a new Title is spliced (after the CRC, before the other children). wholeEnd is where its whole
+// children end in raw: a render stops there, short of anything that is no whole element.
 type infoBlock struct {
 	start, end int64
 	raw        []byte
@@ -189,6 +218,7 @@ type infoBlock struct {
 	titleOff   int
 	titleEnd   int
 	insertOff  int
+	wholeEnd   int
 }
 
 // attachBlock is the captured Attachments element framing (file range and whether

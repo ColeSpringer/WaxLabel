@@ -8,10 +8,19 @@ import (
 // This file captures the byte-level rewrite base at parse time: the raw bytes and
 // in-buffer offsets the write path patches or re-renders.
 
-// captureRaw reads an element's full bytes ([start, dataEnd)). A read that fails fatally
-// ([bits.Fatal]) is the error; another read failure returns nil, and the writer then refuses the
-// edit.
+// captureRaw reads an element's full bytes, nil for one that overruns its parent: placed ahead of
+// anything, such bytes would take it for their own. A read that fails fatally ([bits.Fatal]) is
+// the error; another read failure returns nil, and the writer then refuses the edit.
 func captureRaw(src core.ReaderAtSized, el element, limit int64) ([]byte, error) {
+	if el.overruns() {
+		return nil, nil
+	}
+	return captureHeld(src, el, limit)
+}
+
+// captureHeld reads the bytes the file holds of an element ([start, dataEnd)), which fall short
+// of one that overruns its parent. They are safe only where they stand.
+func captureHeld(src core.ReaderAtSized, el element, limit int64) ([]byte, error) {
 	b, err := bits.ReadSlice(src, el.start, el.dataEnd-el.start, limit)
 	if err != nil {
 		return nil, bits.Fatal(err)
@@ -51,9 +60,10 @@ func rawCRC(raw []byte, contentOff int) *crcSpot {
 }
 
 // captureSeekHead records the SeekHead's SeekPosition slots so the writer can
-// shift a moved target in place at its original width.
+// shift a moved target in place at its original width. An index or Info the end of the file cuts
+// is captured as far as it goes: it is patched where it stands, the last element of the file.
 func captureSeekHead(src core.ReaderAtSized, el element, depth *bits.Depth, limit int64) (*seekHead, error) {
-	raw, err := captureRaw(src, el, limit)
+	raw, err := captureHeld(src, el, limit)
 	if raw == nil {
 		return nil, err
 	}
@@ -68,7 +78,7 @@ func seekFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *s
 	if !ok || err != nil {
 		return nil
 	}
-	sh := &seekHead{start: fileStart, end: fileStart + int64(len(raw)), raw: raw, crc: rawCRC(raw, int(root.dataStart))}
+	sh := &seekHead{start: fileStart, end: fileStart + int64(len(raw)), raw: raw, crc: rawCRC(raw, int(root.dataStart)), cut: root.clamped}
 	_ = eachChild(rs, root.dataStart, root.dataEnd, depth, limit, func(c element) error {
 		if c.id != idSeek {
 			return nil
@@ -87,7 +97,7 @@ func seekFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *s
 					e.idRaw = b
 				}
 			case idSeekPosition:
-				if s.dataLen() > 0 && s.dataLen() <= 8 {
+				if !s.overruns() && s.dataLen() > 0 && s.dataLen() <= 8 {
 					e.valOff, e.valLen = int(s.dataStart), int(s.dataLen())
 					e.target, _ = readUint(rs, s, limit) // in memory: no read fails
 					have = true
@@ -106,7 +116,7 @@ func seekFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *s
 // captureCues records the CueClusterPosition slots (segment-relative cluster
 // offsets) the same way, so a tag edit that shifts the clusters can repoint them.
 func captureCues(src core.ReaderAtSized, el element, depth *bits.Depth, limit int64) (*cuesIndex, error) {
-	raw, err := captureRaw(src, el, limit)
+	raw, err := captureHeld(src, el, limit)
 	if raw == nil {
 		return nil, err
 	}
@@ -121,7 +131,7 @@ func cuesFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *c
 	}
 	ci := &cuesIndex{
 		start: fileStart, end: fileStart + int64(len(raw)), raw: raw,
-		crc: rawCRC(raw, int(root.dataStart)), maxDepth: depth.Max(), limit: limit,
+		crc: rawCRC(raw, int(root.dataStart)), maxDepth: depth.Max(), limit: limit, cut: root.clamped,
 	}
 	// Record only the flat position list used by patchPositions.
 	var walk func(start, end int64)
@@ -136,7 +146,7 @@ func cuesFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *c
 				}
 				walk(c.dataStart, c.dataEnd) // descend to the CueClusterPosition leaves
 			case idCueClusterPos:
-				if c.dataLen() > 0 && c.dataLen() <= 8 {
+				if !c.overruns() && c.dataLen() > 0 && c.dataLen() <= 8 {
 					target, _ := readUint(rs, c, limit) // in memory: no read fails
 					ci.clusters = append(ci.clusters, seekEntry{
 						valOff: int(c.dataStart), valLen: int(c.dataLen()), target: target,
@@ -173,14 +183,16 @@ func capturePoints(rs core.ReaderAtSized, raw []byte, root element, depth *bits.
 	ok := true
 	idx := 0
 	err := eachChild(rs, root.dataStart, root.dataEnd, depth, limit, func(c element) error {
-		switch c.id {
-		case idCRC32:
+		switch {
+		case c.overruns():
+			ok = false // cut short: not a child a rebuild can render again
+		case c.id == idCRC32:
 			if idx > 0 {
 				ok = false // a non-leading CRC ci.crc does not reproduce
 			}
-		case idVoid:
+		case c.id == idVoid:
 			// padding: dropped on rebuild (the flat clusters walk ignores it too)
-		case idCuePoint:
+		case c.id == idCuePoint:
 			pt, pok := capturePoint(rs, raw, c, depth, limit)
 			points = append(points, pt)
 			ok = ok && pok
@@ -204,6 +216,8 @@ func capturePoint(rs core.ReaderAtSized, raw []byte, cp element, depth *bits.Dep
 	idx := 0
 	err := eachChild(rs, cp.dataStart, cp.dataEnd, depth, limit, func(c element) error {
 		switch {
+		case c.overruns():
+			ok = false
 		case c.id == idCRC32:
 			if idx > 0 {
 				ok = false // a non-leading CRC hasCRC does not reproduce
@@ -237,6 +251,8 @@ func captureTrackPos(rs core.ReaderAtSized, raw []byte, ctp element, depth *bits
 	idx := 0
 	err := eachChild(rs, ctp.dataStart, ctp.dataEnd, depth, limit, func(c element) error {
 		switch {
+		case c.overruns():
+			bad = true
 		case c.id == idCRC32:
 			if idx > 0 {
 				bad = true // a non-leading CRC hasCRC does not reproduce
@@ -280,7 +296,7 @@ func countTrackPos(points []cuePoint) int {
 // Title edit can splice, insert, or remove the Title and recompute the CRC while the
 // other children (Duration, SegmentUID, ...) stay verbatim.
 func captureInfo(src core.ReaderAtSized, el element, depth *bits.Depth, limit int64) (*infoBlock, error) {
-	raw, err := captureRaw(src, el, limit)
+	raw, err := captureHeld(src, el, limit)
 	if raw == nil {
 		return nil, err
 	}
@@ -293,16 +309,20 @@ func infoFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *i
 	if !ok || err != nil {
 		return nil
 	}
-	ib := &infoBlock{start: fileStart, end: fileStart + int64(len(raw)), raw: raw, crc: rawCRC(raw, int(root.dataStart)), titleOff: -1, titleEnd: -1}
+	ib := &infoBlock{start: fileStart, end: fileStart + int64(len(raw)), raw: raw, crc: rawCRC(raw, int(root.dataStart)), titleOff: -1, titleEnd: -1, wholeEnd: len(raw)}
 	ib.insertOff = int(root.dataStart)
 	if ib.crc != nil {
 		ib.insertOff = ib.crc.contentStart // keep the CRC first
 	}
-	_ = eachChild(rs, root.dataStart, root.dataEnd, depth, limit, func(c element) error {
-		if c.id == idSegTitle {
+	stop, _ := eachChildReport(rs, root.dataStart, root.dataEnd, depth, limit, func(c element) error {
+		switch {
+		case c.overruns():
+			ib.wholeEnd = int(c.start)
+		case c.id == idSegTitle:
 			ib.titleOff, ib.titleEnd = int(c.start), int(c.dataEnd)
 		}
 		return nil
 	})
+	ib.wholeEnd = min(ib.wholeEnd, int(stop))
 	return ib
 }

@@ -22,11 +22,22 @@ type Transfer struct {
 func (d *Document) Transfer() *Transfer { return &Transfer{doc: d} }
 
 // SetChapters replaces chapters carried (sorted by start). Empty list clears dest
-// chapters; a source with none leaves dest alone.
+// chapters; a source with none leaves dest alone. Their times are checked at Plan and Prepare.
 func (t *Transfer) SetChapters(chs ...Chapter) *Transfer {
 	t.chapters = normalizeChapters(chs)
 	t.chaptersSet = true
 	return t
+}
+
+// checkChapters refuses chapters set on the transfer that the source does not hold and no
+// writer could store as given ([checkChapterTimes]), where items carries the list.
+func (t *Transfer) checkChapters(items []TransferItem) error {
+	for _, it := range items {
+		if it.Kind == core.TransferChapter && it.Disposition != Dropped {
+			return checkChapterTimes(t.chapters, t.doc.media.Chapters)
+		}
+	}
+	return nil
 }
 
 // SetSyncedLyrics replaces synced lyrics carried. Empty clears dest; source with none leaves dest alone.
@@ -72,11 +83,11 @@ func (t *Transfer) Plan(dst Format, opts ...WriteOption) (TransferReport, error)
 	}
 	caps := codec.Capabilities(nil, resolveWriteOptions(opts))
 	m := t.source(caps)
-	return TransferReport{
-		Source: m.Format,
-		Dest:   dst,
-		Items:  core.ProjectTransfer(m, caps),
-	}, nil
+	items := core.ProjectTransfer(m, caps)
+	if err := t.checkChapters(items); err != nil {
+		return TransferReport{}, err
+	}
+	return TransferReport{Source: m.Format, Dest: dst, Items: items}, nil
 }
 
 // Prepare projects transfer metadata onto dst and returns a [Plan] plus [TransferReport].
@@ -94,6 +105,9 @@ func (t *Transfer) Prepare(dst *Document, opts ...WriteOption) (*Plan, TransferR
 	// Read-only with drops: refuse (else NoOpPlan exits 0). Empty transfer may succeed.
 	if caps.ReadOnly && report.HasDropped() {
 		return nil, report, readOnlyRefusal(caps)
+	}
+	if err := t.checkChapters(items); err != nil {
+		return nil, report, err
 	}
 
 	ed := dst.Edit()

@@ -19,6 +19,7 @@ type outItem struct {
 	n         int64  // byte length (len(lit) when literal)
 	origStart int64
 	outOff    int64
+	whole     bool // rendered anew, not the source's bytes copied or patched where they stand
 }
 
 // layout is the resolved output shape both write strategies produce: the segment list
@@ -161,16 +162,22 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ed *editDecisions,
 		return nil, errFallback
 	}
 
-	// Patch the SeekHead positions of the header elements that moved.
-	if seekIdx >= 0 {
+	// Patch the SeekHead positions of the header elements that moved: in its item, or where it
+	// stands behind the Clusters.
+	var tailSeek []byte
+	if wb.seek != nil {
 		patched, ok := patchSeekAbsorb(wb.seek, wb.segDataStart, oldToNew, absorbed)
 		if !ok {
 			return nil, errFallback
 		}
-		items[seekIdx].lit, items[seekIdx].srcOff = patched, 0
+		if seekIdx >= 0 {
+			items[seekIdx].lit, items[seekIdx].srcOff = patched, 0
+		} else {
+			tailSeek = patched
+		}
 	}
 
-	lay := assembleItems(wb, items, 0)
+	lay := assembleItems(wb, items, tailSeek)
 	report.BytesAfter = wb.size
 	report.Operations = absorbOps(ch, len(edited.Pictures))
 	result := buildResult(d, edited, r, ch, lay)
@@ -213,15 +220,17 @@ func renderChanged(d *doc, base, edited *core.Media, ch changes, ed *editDecisio
 	return r, nil
 }
 
+// litItem is an element rendered anew.
 func litItem(id uint64, b []byte, origStart int64) outItem {
-	return outItem{id: id, lit: b, n: int64(len(b)), origStart: origStart}
+	return outItem{id: id, lit: b, n: int64(len(b)), origStart: origStart, whole: true}
 }
 
 // assembleItems turns the header items into a segment list (EBML+Segment header
 // verbatim, each header item literal-or-copy, then the cluster tail verbatim) and
-// records the top-level children's new positions for buildResult.
-func assembleItems(wb *writeBase, items []outItem, delta int64) layout {
-	lay := layout{size: wb.size + delta, clusterStart: wb.clusterStart, delta: delta}
+// records the top-level children's new positions for buildResult. tailSeek, when set, takes the
+// place of a SeekHead that stands in the tail.
+func assembleItems(wb *writeBase, items []outItem, tailSeek []byte) layout {
+	lay := layout{size: wb.size, clusterStart: wb.clusterStart}
 	lay.segs = []bits.Segment{bits.Copy(0, wb.segDataStart)}
 	lay.children = make([]l1elem, 0, len(items)+4)
 	for _, it := range items {
@@ -232,18 +241,18 @@ func assembleItems(wb *writeBase, items []outItem, delta int64) layout {
 		}
 		lay.children = append(lay.children, l1elem{id: it.id, start: it.outOff, dataEnd: it.outOff + it.n})
 	}
-	if wb.size > wb.clusterStart {
-		lay.segs = append(lay.segs, bits.Copy(wb.clusterStart, wb.size-wb.clusterStart))
+	tail := wb.clusterStart
+	if tailSeek != nil {
+		lay.segs = append(lay.segs, bits.Copy(tail, wb.seek.start-tail), bits.Lit(tailSeek))
+		tail = wb.seek.end
+	}
+	if wb.size > tail {
+		lay.segs = append(lay.segs, bits.Copy(tail, wb.size-tail))
 	}
 	for _, c := range wb.children {
-		if c.start < wb.clusterStart {
-			continue
+		if c.start >= wb.clusterStart {
+			lay.children = append(lay.children, c)
 		}
-		nc := c
-		nc.start += delta
-		nc.dataStart += delta
-		nc.dataEnd += delta
-		lay.children = append(lay.children, nc)
 	}
 	return lay
 }
@@ -298,7 +307,9 @@ func patchSeekAbsorb(sh *seekHead, segDataStart int64, oldToNew map[int64]int64,
 		}
 		copy(raw[e.valOff:e.valOff+e.valLen], val)
 	}
-	recomputeCRC(raw, sh.crc)
+	if !sh.cut {
+		recomputeCRC(raw, sh.crc)
+	}
 	return raw, true
 }
 

@@ -71,6 +71,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if !ch.any() {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
+	if d.wb.unreadFrom > 0 {
+		return nil, fmt.Errorf("%w: the read of the Segment stops at offset %d, at bytes that are no element, so the file cannot be rewritten safely",
+			waxerr.ErrInvalidData, d.wb.unreadFrom)
+	}
 
 	// Per-tag outcomes for preservation, covered-set, and group render (cross-scope).
 	ed := computeEditDecisions(d.groups, albumGroupIndex(d.groups), base, edited)
@@ -111,6 +115,24 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 	if err := checkPreservable(d, ch, ed); err != nil {
 		return nil, err
+	}
+
+	// A rewritten element is rendered from what was read of it.
+	if ch.simple {
+		report.Warnings = d.tagsDamage.warnDropped(report.Warnings, "Tags")
+	}
+	if ch.title {
+		report.Warnings = d.infoDamage.warnDropped(report.Warnings, "Info")
+	}
+	if ch.pictures {
+		report.Warnings = d.attachDamage.warnDropped(report.Warnings, "Attachments")
+	}
+	if ch.chapters {
+		report.Warnings = d.chapDamage.warnDropped(report.Warnings, "Chapters")
+		if d.dupChapters > 0 {
+			report.Warnings = core.Warn(report.Warnings, core.WarnDuplicateTagBlockDropped, fmt.Sprintf(
+				"%d Chapters element(s) behind the first, which were not read, are not carried into the rewritten file", d.dupChapters))
+		}
 	}
 
 	// Edited album SimpleTag with uncapturable structure: WarnTagStructureDropped
@@ -280,7 +302,7 @@ func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 				if g.raw != nil {
 					continue // preserved verbatim from the whole Tag element's bytes
 				}
-				if len(g.tags) == 0 {
+				if len(g.tags) == 0 && !g.malformed {
 					// No whole-element bytes and no SimpleTags to rebuild from.
 					return uncaptured("tag group")
 				}
@@ -435,7 +457,8 @@ func renderNonAlbumGroup(g tagGroup, gi int, ed *editDecisions) (out tagGroup, r
 	if !groupTouchedBy(len(g.tags), gi, ed) && g.raw != nil {
 		return g, g.raw, true // preserve verbatim
 	}
-	// An untouched group without whole-element bytes is rebuilt from its captured parts.
+	// An untouched group without whole-element bytes, a malformed one among them, is rebuilt
+	// from its captured parts.
 	out = g
 	out.tags = nil
 	var simple []byte
@@ -1035,10 +1058,10 @@ func albumGroupIndex(groups []tagGroup) int {
 	return -1
 }
 
-// renderInfo splices the edited Title into the captured Info bytes (replacing,
+// renderInfo splices the edited Title into the captured Info's whole children (replacing,
 // inserting, or removing the Title child) and recomputes the CRC-32.
 func renderInfo(ib *infoBlock, title string, present bool) (raw []byte, newTitle string) {
-	r := ib.raw
+	r := ib.raw[:ib.wholeEnd]
 	root, ok, err := readElement(core.BytesSource(r), 0, int64(len(r)), int64(len(r)))
 	if !ok || err != nil {
 		return nil, ""
@@ -1107,20 +1130,20 @@ func attachedFileBytes(p core.Picture, name string) []byte {
 		payload = append(payload, stringElement(idFileDesc, p.Description)...)
 	}
 	payload = append(payload, encElement(idFileData, p.Data)...)
-	payload = append(payload, uintElement(idFileUID, fileUID())...)
+	payload = append(payload, encElement(idFileUID, mintUID())...)
 	return encElement(idAttached, payload)
 }
 
-// fileUID returns a random non-zero AttachedFile UID (per the spec's "as random
-// as possible"), making a collision with another attachment's UID negligible.
-func fileUID() uint64 { return randomUID() }
+// mintUID is the value of a new UID element: a random UID in eight bytes whatever its
+// magnitude, so the size a plan reports does not turn on the UID drawn.
+func mintUID() []byte { return uintDataWidth(randomUID(), 8) }
 
 // uidFallback makes randomUID's non-crypto path still yield distinct values, so a
 // batch of created chapters or attachments cannot collide on one constant UID.
 var uidFallback atomic.Uint64
 
-// randomUID returns a random non-zero 64-bit UID, used for a created AttachedFile's
-// FileUID and a created ChapterAtom's ChapterUID.
+// randomUID returns a random non-zero 64-bit UID (per the spec's "as random as possible"), used
+// for a created AttachedFile's FileUID and a created ChapterAtom's ChapterUID.
 func randomUID() uint64 {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err == nil {

@@ -28,9 +28,9 @@ func TestManagedTagWithoutTagStringStaysNative(t *testing.T) {
 			if !ok {
 				t.Fatal("readElement failed")
 			}
-			st, err := parseSimpleTag(src, root, bits.NewDepth(8), limit)
-			if err != nil {
-				t.Fatalf("parseSimpleTag: %v", err)
+			st, whole, err := parseSimpleTag(src, root, bits.NewDepth(8), limit)
+			if err != nil || !whole {
+				t.Fatalf("parseSimpleTag: whole=%v err=%v", whole, err)
 			}
 			if st.hasValue {
 				t.Errorf("hasValue = true, want false (the SimpleTag has no TagString of its own)")
@@ -56,9 +56,9 @@ func TestEmptySimpleTagRoundTrip(t *testing.T) {
 	if !ok || root.id != idSimpleTag {
 		t.Fatalf("readElement: ok=%v id=%#x, want a SimpleTag", ok, root.id)
 	}
-	st, err := parseSimpleTag(src, root, bits.NewDepth(8), limit)
-	if err != nil {
-		t.Fatalf("parseSimpleTag: %v", err)
+	st, whole, err := parseSimpleTag(src, root, bits.NewDepth(8), limit)
+	if err != nil || !whole {
+		t.Fatalf("parseSimpleTag: whole=%v err=%v", whole, err)
 	}
 	if st.name != "ARTIST" || st.value != "" {
 		t.Fatalf("round-trip = name %q value %q, want ARTIST/empty", st.name, st.value)
@@ -86,9 +86,9 @@ func TestBuildAlbumGroupKeepsEmptyValue(t *testing.T) {
 	if !ok || root.id != idTag {
 		t.Fatalf("not a Tag element: ok=%v id=%#x", ok, root.id)
 	}
-	g, err := parseTag(src, root, bits.NewDepth(8), limit)
-	if err != nil {
-		t.Fatalf("parseTag: %v", err)
+	g, unread, ok, err := parseTag(src, root, bits.NewDepth(8), limit)
+	if err != nil || !ok || unread != 0 || g.malformed {
+		t.Fatalf("parseTag: ok=%v unread=%d malformed=%v err=%v", ok, unread, g.malformed, err)
 	}
 	var got []scopedContribution
 	for _, st := range g.tags {

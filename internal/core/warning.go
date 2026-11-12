@@ -349,6 +349,12 @@ func WarnTruncated(ws []Warning, subject string) []Warning {
 	return Warn(ws, WarnTruncatedAudio, subject+" declares more audio than the file holds; file may be truncated")
 }
 
+// WarnBehindNUL appends WarnMalformedTagEntry for text read up to a NUL that bytes other than
+// padding follow. subject names the text and keys the tags that read it.
+func WarnBehindNUL(ws []Warning, subject string, keys ...tag.Key) []Warning {
+	return WarnKeyed(ws, WarnMalformedTagEntry, subject+": bytes behind a NUL are not read", keys...)
+}
+
 // WarnTrailing appends WarnTrailingBytes. what identifies region (see TrailingID3v1What).
 func WarnTrailing(ws []Warning, n int64, subject, what string) []Warning {
 	if n <= 0 {

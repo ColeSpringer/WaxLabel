@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"hash/crc32"
+	"strings"
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/bits"
@@ -171,7 +172,7 @@ func TestVoidOfTotal(t *testing.T) {
 }
 
 // TestAttachedFileUID confirms a written cover carries the mandatory FileUID, non-zero
-// and distinct across renders.
+// and distinct across renders, at one width whatever the UID drawn.
 func TestAttachedFileUID(t *testing.T) {
 	pic := core.Picture{Type: core.PicFrontCover, MIME: "image/png", Data: []byte("cover-bytes")}
 	b0 := attachedFileBytes(pic, "cover.png")
@@ -183,9 +184,12 @@ func TestAttachedFileUID(t *testing.T) {
 	if uidOf(t, b0) == uidOf(t, b1) {
 		t.Error("FileUID should be random (two renders collided)")
 	}
-	for range 100 {
-		if fileUID() == 0 {
-			t.Fatal("fileUID must never return zero")
+	for range 2000 {
+		if b := attachedFileBytes(pic, "cover.png"); len(b) != len(b0) {
+			t.Fatalf("an AttachedFile of %d bytes, then one of %d: the FileUID has no fixed width", len(b0), len(b))
+		}
+		if id := mintUID(); len(id) != 8 || bytes.Equal(id, make([]byte, 8)) {
+			t.Fatalf("minted UID % x, want eight bytes that are not all zero", id)
 		}
 	}
 }
@@ -241,8 +245,10 @@ func TestCheckPreservable(t *testing.T) {
 		{scope: core.ScopeAlbum, raw: []byte{1}},
 		{scope: core.ScopeTrack, trackUID: true, raw: nil},
 	}}
-	if err := checkPreservable(d, changes{simple: true}, preserveDecisions(d)); err == nil {
-		t.Error("uncaptured tag group should be refused")
+	// Over the allocation limit a capture fails the parse, so the refusal names the read alone.
+	if err := checkPreservable(d, changes{simple: true}, preserveDecisions(d)); err == nil ||
+		!strings.Contains(err.Error(), "tag group could not be read for rewrite") || strings.Contains(err.Error(), "large") {
+		t.Errorf("uncaptured tag group: %v, want a refusal that says it could not be read", err)
 	}
 	// A non-image attachment whose bytes weren't captured.
 	d2 := &doc{attachments: []attachment{{image: false, raw: nil}}}

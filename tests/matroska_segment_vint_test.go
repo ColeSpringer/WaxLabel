@@ -94,6 +94,13 @@ func buildMinSegSeekHeadMKA(t *testing.T, title string) []byte {
 // assertSeekEntriesResolve: each SeekPosition points at a top-level element matching SeekID.
 func assertSeekEntriesResolve(t *testing.T, data []byte) {
 	t.Helper()
+	seekEntriesResolve(t, data, false)
+}
+
+// seekEntriesResolve is assertSeekEntriesResolve; with cut set, a Seek the end of the file cuts
+// is not judged.
+func seekEntriesResolve(t *testing.T, data []byte, cut bool) {
+	t.Helper()
 	_, segData, segEnd, ok := elemRange(data, 0, len(data), testfile.IDSegment, nil)
 	if !ok {
 		t.Fatal("no Segment in output")
@@ -118,7 +125,7 @@ func assertSeekEntriesResolve(t *testing.T, data []byte) {
 		sz, szn, _ := readVint(data, off+idn, false)
 		ds := off + idn + szn
 		de := min(ds+int(sz), shEnd)
-		if id == idSeek {
+		if id == idSeek && (!cut || ds+int(sz) <= len(data)) {
 			var seekID uint64
 			pos := -1
 			for c := ds; c < de; {

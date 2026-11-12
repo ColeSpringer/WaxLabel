@@ -376,6 +376,33 @@ All notable changes to this project are documented here.
   unmentioned.
 - An MP4 keys item whose index lies past the keys table no longer takes the name of a key a
   write appends there.
+- A Matroska element that runs past its parent, or bytes no element header parses from (an ID
+  longer than four bytes among them), in the Info, Tags, Chapters or Attachments is reported
+  (`malformed-tag-entry`) and read as nothing, and a rewrite of that element leaves it out
+  (`malformed-tag-entry-dropped`, refused under `--strict`). A tag was read through it or lost,
+  and an edit wrote its tags and chapters inside the element's reach, where neither WaxLabel
+  nor ffmpeg found them again. The `matroska-clusters-v2` label stays: only a file whose track
+  states its codec or geometry in such an element hashes differently, the value being unread.
+- A Matroska file cut short warns `truncated-audio`, and an edit that moves the audio keeps
+  the Segment declaring the bytes the file lacks. It was resized to the cut file, which left
+  the last Cluster running past it.
+- Bytes between the elements of a Matroska Segment that head no element are stepped over to
+  the next element, as ffmpeg does, kept where they are and reported (`trailing-bytes`). The
+  read ended at them, so tags behind them went unread and an edit that moved the audio dropped
+  them with everything behind. More than 64 KiB of them end the read, and a write is refused.
+- Matroska text ends at its first NUL, with `malformed-tag-entry` when anything but padding
+  follows, so a value read that way copies to a format that refuses a NUL.
+- A Matroska track that states no channel count or sampling frequency reads the format's
+  defaults, one channel and 8000 Hz, which mkvmerge leaves out (a mono file read no channel
+  count), and FLAC takes them and its bit depth from the STREAMINFO in the CodecPrivate.
+- A Matroska SeekHead that stands behind the Clusters follows an edit the padding absorbs,
+  patched where it stands; it kept the old positions.
+- A chapter that starts before zero or ends before it starts is refused at `Prepare`
+  (`invalid-data`), on a `Transfer` too, instead of being written with another time.
+- A new Matroska ChapterUID or FileUID takes eight bytes whatever its value, so a dry run
+  reports the size the write has.
+- A second Matroska `Chapters` element, which is not read, is reported (`duplicate-tag-block`),
+  and the chapter edit that drops it says so (`duplicate-tag-block-dropped`).
 
 ### Changed
 
