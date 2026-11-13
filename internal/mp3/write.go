@@ -43,7 +43,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		srcTag = id3.NewEmpty(version)
 	}
 	// One WriteOpts for both the predicate and the rebuild, so they cannot disagree.
-	wopts := id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre}
+	wopts := id3.WriteOptsOf(opts)
 	// Write-encoding (--numeric-genre) is invisible to tag compare; force a rewrite.
 
 	encodingRewrite := id3.EncodingRewriteNeeded(srcTag, edited.Tags, wopts)

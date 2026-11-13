@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"strings"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
@@ -28,9 +27,10 @@ func newCopyCmd() *cobra.Command {
 		Long: "Read <source>, project its canonical tags, pictures, chapters, and synced\n" +
 			"lyrics onto <dest>, and rewrite <dest> in place. The two files need not share a\n" +
 			"format: each value is carried, downgraded, or dropped according to what\n" +
-			"<dest>'s format can store, and that loss report is printed before the\n" +
+			"<dest> holds once written, and that loss report is printed before the\n" +
 			"write. The copy overlays the source onto the destination - keys present\n" +
-			"only in <dest> are kept. With --dry-run nothing is written.",
+			"only in <dest> are kept, and what <dest> already holds as given is not\n" +
+			"written again. With --dry-run nothing is written.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			srcPath, dstPath := args[0], args[1]
@@ -83,23 +83,28 @@ func newCopyCmd() *cobra.Command {
 			// Labels distinguish WebM from Matroska (same Format).
 			srcLabel := transferFormatLabel(srcDoc.Format(), srcDoc.Properties().Container)
 			dstLabel := transferFormatLabel(dstDoc.Format(), dstDoc.Properties().Container)
+			// fail reports a refusal or a failed save of the destination: the per-file line the
+			// other commands print, or the copy envelope with the report beside the error.
+			fail := func(plan *wl.Plan, err error) error {
+				if !asJSON {
+					perFileError(errOut, dstPath, err)
+				} else if jerr := writeJSON(out, toJSONCopyError(srcPath, dstPath, report, plan, err)); jerr != nil {
+					return jerr
+				}
+				return alreadyRendered(err)
+			}
 			if err != nil {
 				// Show transfer report on both surfaces before return; scripts need detail on refusal.
 				if !asJSON {
 					renderTransfer(out, srcPath, dstPath, report, srcLabel, dstLabel)
-					return err
 				}
-				if jerr := writeJSON(out, toJSONCopyError(srcPath, dstPath, report, err)); jerr != nil {
-					return jerr
-				}
-				return alreadyRendered(err)
+				return fail(nil, err)
 			}
 
 			// Preview before touching the destination.
 			if !asJSON {
 				renderTransfer(out, srcPath, dstPath, report, srcLabel, dstLabel)
-				// nil pictures: transfer report already lists them.
-				renderReport(out, dstPath, plan, nil)
+				renderCopyPlan(out, dstPath, plan, report)
 			}
 			// --strict: fail if projection is lossy/dropped or write would warn.
 			// WarnLegacyStripDropped and codec warnings bypass the carried gate; reuse plan reports.
@@ -115,7 +120,7 @@ func newCopyCmd() *cobra.Command {
 					if !asJSON {
 						return err
 					}
-					if jerr := writeJSON(out, toJSONCopyError(srcPath, dstPath, report, err)); jerr != nil {
+					if jerr := writeJSON(out, toJSONCopyError(srcPath, dstPath, report, nil, err)); jerr != nil {
 						return jerr
 					}
 					return alreadyRendered(err)
@@ -132,13 +137,13 @@ func newCopyCmd() *cobra.Command {
 			_, res, err := plan.Execute(ctx, wl.SaveBack())
 			// Committed decides the outcome, not err (see writeFailed).
 			if writeFailed(res, err) {
-				return err
+				return fail(plan, err)
 			}
 			warnPostCommit(errOut, asJSON, dstPath, err)
 			if asJSON {
 				return writeJSON(out, toJSONCopy(srcPath, dstPath, report, plan, false, res.Committed, err))
 			}
-			renderSaveOutcome(out, dstPath, "", res, plan.IsNoOp(), wl.HasDiscardWarning(plan.Report().Warnings))
+			renderSaveOutcome(out, dstPath, "", res, plan.IsNoOp(), false)
 			return nil
 		},
 	}
@@ -146,7 +151,7 @@ func newCopyCmd() *cobra.Command {
 	cmd.Flags().StringVar(&legacy, "legacy", "", "legacy-tag policy: preserve|strip. strip removes the DESTINATION's ID3v1/Lyrics3/APEv2/stray-ID3 containers unconditionally, warning when one holds the only copy of a value"+legacyIFFHelp)
 	cmd.Flags().StringVar(&id3Multi, "id3-multi", "", id3MultiHelp)
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview the transfer without modifying the destination")
-	cmd.Flags().BoolVar(&strict, "strict", false, "fail (exit 2) instead of writing when the transfer is not lossless or the write would lose metadata")
+	cmd.Flags().BoolVar(&strict, "strict", false, "fail (exit 2) instead of writing when any item is lossy or dropped, or the write would lose metadata the destination holds")
 	return cmd
 }
 
@@ -201,15 +206,23 @@ func renderTransfer(w io.Writer, src, dst string, r wl.TransferReport, srcLabel,
 	}
 }
 
-// transferFormatLabel labels one transfer side. Matroska family shows container (WebM vs MKA).
+// renderCopyPlan prints the plan of a copy. The headline of one that writes nothing comes from
+// the transfer report ([wl.TransferReport.NoChangesLine]): a copy is no edit to discard, so a
+// lossy item the destination already holds its share of (a second TITLE beside a Matroska
+// Info.Title) reads as up to date, with its lossy line above.
+func renderCopyPlan(w io.Writer, dst string, plan *wl.Plan, report wl.TransferReport) {
+	if !plan.IsNoOp() {
+		// nil pictures: transfer report already lists them.
+		renderReport(w, dst, plan, nil)
+		return
+	}
+	renderNoChanges(w, dst, report.NoChangesLine(), plan.Report().Warnings)
+}
+
+// transferFormatLabel labels one transfer side as JSON "subformat" does ([subformatOf]).
 // JSON sourceFormat/destFormat stay bare Format (WebM is container, not format identity).
 func transferFormatLabel(f wl.Format, container string) string {
-	// Show the container when it says what the format name does not (WebM/Matroska, WAV/RF64,
-	// AIFF/AIFC, ASF), not when the format name already opens with it (Ogg Vorbis).
-	if container != "" && !strings.HasPrefix(f.String(), container) {
-		return container
-	}
-	return f.String()
+	return subformatOf(container, f.String())
 }
 
 // jsonCopy: machine-readable copy result. Embeds jsonReport from set so shapes stay aligned. file is dest.
@@ -233,8 +246,9 @@ type jsonTransferItem struct {
 }
 
 // Refusal envelope: transfer array plus error. Bare error would leave scripts with code only.
-func toJSONCopyError(src, dst string, r wl.TransferReport, err error) jsonCopy {
-	jc := toJSONCopy(src, dst, r, nil, false, false, nil)
+// plan is the one whose save failed, nil for a refusal ahead of any plan.
+func toJSONCopyError(src, dst string, r wl.TransferReport, plan *wl.Plan, err error) jsonCopy {
+	jc := toJSONCopy(src, dst, r, plan, false, false, nil)
 	c := classifyError(err)
 	jc.Error = &jsonErrBody{Code: c.code, Message: perFileReason(err), Hint: c.hint}
 	return jc

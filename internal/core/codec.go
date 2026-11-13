@@ -44,11 +44,7 @@ type WriteReport struct {
 func (r WriteReport) String() string {
 	if r.NoOp {
 		// No-op may still carry discard warnings (value-dropped, etc.).
-		lines := []string{NoChangesLine(HasDiscardWarning(r.Warnings))}
-		for _, x := range r.Warnings {
-			lines = append(lines, "  warning: "+x.String())
-		}
-		return strings.Join(lines, "\n")
+		return NoChangesReport(NoChangesLine(HasDiscardWarning(r.Warnings)), r.Warnings)
 	}
 	var lines []string
 	if len(r.Operations) == 0 {
@@ -62,6 +58,15 @@ func (r WriteReport) String() string {
 		lines = append(lines, fmt.Sprintf("  padding: %s", bits.HumanBytes(r.PaddingAfter)))
 	}
 	for _, x := range r.Warnings {
+		lines = append(lines, "  warning: "+x.String())
+	}
+	return strings.Join(lines, "\n")
+}
+
+// NoChangesReport renders the summary of a plan that writes nothing: headline, then its warnings.
+func NoChangesReport(headline string, ws []Warning) string {
+	lines := []string{headline}
+	for _, x := range ws {
 		lines = append(lines, "  warning: "+x.String())
 	}
 	return strings.Join(lines, "\n")

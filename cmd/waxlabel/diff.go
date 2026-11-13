@@ -172,19 +172,15 @@ func computeDiff(a, b *wl.Document) diffResult {
 	}
 }
 
-// numericAwareTagDiff is tag.Diff plus an MP4 canonical-key fold when one side is MP4: leading
-// '+'/zeros on IsMP4CanonicalKey keys (trkn/disk/stik/rtng/©mvi/©mvc/tmpo) are not a change.
-// Matches copy Carried grading. BPM folds an all-zero fraction ("174.0" vs "174"); other fractions
-// still report (tmpo rounding warns). Text-to-text "01" vs "1" still differs. Other numeric keys
-// (play count, etc.) and added/removed keys are unaffected.
+// numericAwareTagDiff is tag.Diff less the changes [core.TransferValuesEqual] calls none: where
+// one side is MP4, leading '+'/zeros on a key MP4 stores as a number (trkn/disk/stik/rtng/©mvi/
+// ©mvc/tmpo) and an all-zero BPM fraction ("174.0" vs "174"). Matches copy's carried grading.
+// Text-to-text "01" vs "1" still differs, as do added and removed keys.
 func numericAwareTagDiff(a, b tag.TagSet, fa, fb wl.Format) []tag.Change {
 	changes := tag.Diff(a, b)
-	if fa != wl.FormatMP4 && fb != wl.FormatMP4 {
-		return changes // no MP4 side; any numeric delta is genuine
-	}
 	out := changes[:0]
 	for _, c := range changes {
-		if c.Kind == tag.ChangeChanged && tag.IsMP4CanonicalKey(c.Key) && tag.NumericValuesEqual(c.Key, c.Old, c.New) {
+		if c.Kind == tag.ChangeChanged && core.TransferValuesEqual(c.Key, c.Old, c.New, fa, fb) {
 			continue
 		}
 		out = append(out, c)

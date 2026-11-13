@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
@@ -298,6 +297,18 @@ var codecForFormat = core.ForFormat
 
 // Prepare resolves mutations into a [Plan]. No I/O; Report matches Execute.
 func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
+	plan, err := e.prepare(opts)
+	// A copy onto a file with no audio (see prepare) is refused for that unless its plan writes
+	// nothing: a copy that finds everything already there has nothing to refuse. No audio is
+	// the first thing to say of such a file, ahead of any other check the copy fails, and it
+	// covers a plan the write options alone make (a padding policy, a legacy strip).
+	if e.carried && e.base != nil && hasNoAudioWarning(e.base) && (err != nil || !plan.plan.NoOp) {
+		return nil, errNoAudioWrite()
+	}
+	return plan, err
+}
+
+func (e *Editor) prepare(opts []WriteOption) (*Plan, error) {
 	wo := resolveWriteOptions(opts)
 	// Carried lets codecs skip author-convenience heuristics on a transfer (e.g. the
 	// ID3 SYLT language fallback). transfer.go sets it for every carry path.
@@ -321,11 +332,11 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 
 	// Refuse to plan a write for a file with no audio (WarnNoAudioFrames): it would
 	// re-render metadata around non-audio bytes. Every editing path (set/plan, lint
-	// --fix, a copy's destination editor) funnels through Prepare, so this one check
-	// covers them all (exit 4). It is a base-document check, not gated on carried. A
-	// no-audio file is still readable, so copying tags out of one is allowed.
-	if hasNoAudioWarning(e.base) {
-		return nil, fmt.Errorf("%w: file has no audio essence; refusing to write metadata to a no-audio file", waxerr.ErrInvalidData)
+	// --fix, a copy's destination editor) funnels through Prepare, so this check and the one
+	// there cover them all (exit 4). A no-audio file is still readable, so copying tags out
+	// of one is allowed. A copy onto one goes on to the plan, which Prepare judges.
+	if hasNoAudioWarning(e.base) && !e.carried {
+		return nil, errNoAudioWrite()
 	}
 
 	// Reject an invalid key (e.g. one containing '=') before it reaches the native
@@ -453,7 +464,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// under AllowUnsupportedDrop is removed with a warning so the storable part still
 	// applies. A dropped item resets edited.X and skips its metadata-loss and sanity
 	// warnings below, so exactly one warning surfaces per drop. The drops run before
-	// the chapter reconcile and codec.Plan. In a transfer, ProjectTransfer marks such
+	// the chapter reconcile and codec.Plan. In a transfer, the projection marks such
 	// an item Dropped before it is set, so the touched flags are false and none of
 	// this fires.
 	var chaptersDropped, syncedLyricsDropped, picturesDropped bool
@@ -623,6 +634,11 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 			edited.Chapters = reconciled
 			chaptersReconciled = true
 		}
+	}
+	// A format with no size fields reads a picture's size from its bytes, so a size they do not
+	// give (one a FLAC file declared for a link) is not in what the plan writes.
+	if e.picsTouched && !caps.Pictures.PictureGeometry {
+		edited.Pictures = core.WithoutDeclaredGeometry(edited.Pictures)
 	}
 	// edited shares the base's Properties, so overlay a clone. Every format that
 	// writes an output gain reports a track; the length check is defensive.
@@ -809,9 +825,14 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	return &Plan{doc: e.doc, plan: wp, opts: wo, commentsAuthored: e.commentsSet, lyricsAuthored: e.lyricsSet}, nil
 }
 
-// rejectInvalidValues refuses NUL or invalid UTF-8 in touched tag values, authored comment and
-// lyrics qualifiers, added picture descriptions, and chapter titles/languages (C-string /
-// round-trip safety).
+func errNoAudioWrite() error {
+	return fmt.Errorf("%w: file has no audio essence; refusing to write metadata to a no-audio file", waxerr.ErrInvalidData)
+}
+
+// rejectInvalidValues refuses NUL or invalid UTF-8 in what the edit authors: touched tag values,
+// comment and lyrics qualifiers, added picture descriptions, and the chapters and synced lyric
+// sets the file does not already hold (C-string / round-trip safety). What the file holds is its
+// own: an edit beside it is not refused for it.
 func (e *Editor) rejectInvalidValues(editedTags tag.TagSet, keys []tag.Key) error {
 	for _, k := range keys {
 		vals, ok := editedTags.Get(k)
@@ -850,7 +871,14 @@ func (e *Editor) rejectInvalidValues(editedTags tag.TagSet, keys []tag.Key) erro
 			}
 		}
 	}
+	heldChapters := make(map[core.Chapter]bool, len(e.base.Chapters))
+	for _, c := range e.base.Chapters {
+		heldChapters[c] = true
+	}
 	for _, c := range e.chapters {
+		if heldChapters[c] {
+			continue
+		}
 		if err := checkWritableText(c.Title, "chapter title"); err != nil {
 			return err
 		}
@@ -865,9 +893,13 @@ func (e *Editor) rejectInvalidValues(editedTags tag.TagSet, keys []tag.Key) erro
 		}
 	}
 	// Synced-lyrics text, descriptor, and language are read back through
-	// sanitization, so they get the same rule. SetSyncedLyrics replaces the whole
-	// list, so the full set is scanned.
+	// sanitization, so they get the same rule.
 	for _, sl := range e.syncedLyrics {
+		if slices.ContainsFunc(e.base.SyncedLyrics, func(held core.SyncedLyrics) bool {
+			return core.EqualSyncedLyrics([]core.SyncedLyrics{held}, []core.SyncedLyrics{sl})
+		}) {
+			continue
+		}
 		if err := checkWritableText(sl.Language, "synced-lyrics language"); err != nil {
 			return err
 		}
@@ -887,15 +919,7 @@ func (e *Editor) rejectInvalidValues(editedTags tag.TagSet, keys []tag.Key) erro
 // else a reason phrase ("contains a NUL byte" / "contains invalid UTF-8").
 // checkWritableText and [ValidWritableText] wrap it in [waxerr.ErrInvalidData];
 // the CLI reads the bare phrase to build its own message.
-func WritableTextReason(s string) string {
-	if strings.IndexByte(s, 0) >= 0 {
-		return "contains a NUL byte"
-	}
-	if !utf8.ValidString(s) {
-		return "contains invalid UTF-8"
-	}
-	return ""
-}
+func WritableTextReason(s string) string { return core.WritableTextReason(s) }
 
 // ValidWritableText returns nil when s can be written to every supported format,
 // else an error wrapping [waxerr.ErrInvalidData]: a NUL byte truncates a C-string

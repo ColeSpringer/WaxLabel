@@ -43,7 +43,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report := core.WriteReport{Format: core.FormatAIFF, BytesBefore: edited.Identity.Size}
 
 	// One WriteOpts for both the predicate and the rebuild, so they cannot disagree.
-	wopts := id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre}
+	wopts := id3.WriteOptsOf(opts)
 	// A requested write encoding (--numeric-genre) changes how a value is stored, not the
 	// value itself, so the tag comparison above cannot see it.
 	encodingRewrite := id3.EncodingRewriteNeeded(d.id3, edited.Tags, wopts)

@@ -4,6 +4,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/id3"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -88,6 +90,36 @@ func TestRebuildTextMatchesChunksToValuesInOrder(t *testing.T) {
 		p := rebuildText(orig, edited, map[tag.Key]bool{tag.Comment: true})
 		if got := chunkStrings(p, orig); !slices.Equal(got, c.want) || p.rewrites() != c.rewrites || p.lostTail(orig) != c.lost {
 			t.Errorf("%s: %v (rewrites %v, lost %d); want %v (%v, %d)", c.name, got, p.rewrites(), p.lostTail(orig), c.want, c.rewrites, c.lost)
+		}
+	}
+}
+
+// The rendering a transfer is graded by places the fields as Plan does: in an ID3 chunk where
+// the copy brings a picture, chapters or synced lyrics, whose comment frame fills in a
+// language, and in text chunks alone where it brings none.
+func TestTransferReadPlacesFieldsAsPlanDoes(t *testing.T) {
+	fields := tag.NewTagSet()
+	fields.Set(tag.Title, "T")
+	fields.Set(tag.Comment, "c")
+	read := transferRead(nil, id3.WriteVersionFor(nil, core.FormatAIFF), core.WriteOptions{})
+	for _, c := range []struct {
+		name     string
+		brings   core.Media
+		language string
+	}{
+		{"fields alone", core.Media{}, ""},
+		{"a picture", core.Media{Pictures: []core.Picture{{Type: core.PicFrontCover}}}, id3.DefaultLanguage},
+		{"chapters", core.Media{Chapters: []core.Chapter{{Title: "one"}}}, id3.DefaultLanguage},
+		{"synced lyrics", core.Media{SyncedLyrics: []core.SyncedLyrics{{Lines: []core.SyncedLine{{Text: "la"}}}}}, id3.DefaultLanguage},
+	} {
+		written := c.brings
+		written.Comments = []core.TextItem{{Text: "c"}}
+		got := read(&written, fields)
+		if len(got.Comments) != 1 || got.Comments[0].Language != c.language {
+			t.Errorf("%s: comments %+v, want one in language %q", c.name, got.Comments, c.language)
+		}
+		if title, _ := got.Tags.Get(tag.Title); len(title) != 1 || title[0] != "T" {
+			t.Errorf("%s: TITLE = %q", c.name, title)
 		}
 	}
 }

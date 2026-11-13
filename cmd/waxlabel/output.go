@@ -24,11 +24,12 @@ import (
 // command JSON shape changes incompatibly.
 const schemaVersion = 1
 
-// subformatOf returns JSON "subformat": exact container subtype when known, else
-// the codec family used as "format". dump and caps share it so plain formats
-// report subformat == format.
+// subformatOf returns JSON "subformat": the container where it says what the format name does
+// not (WebM for Matroska, RF64 for WAV, AIFC for AIFF, ASF for WMA), else the format name,
+// which is never less specific: "Ogg Vorbis" already opens with its container. dump, caps and
+// the copy header share it, so plain formats report subformat == format.
 func subformatOf(container, format string) string {
-	if container != "" {
+	if container != "" && !strings.HasPrefix(format, container) {
 		return container
 	}
 	return format

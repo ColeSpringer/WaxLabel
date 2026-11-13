@@ -484,7 +484,7 @@ func reservedNamespace(name string) string {
 // canonical key (mapping.VorbisName). The two align only while VorbisName(customKey)
 // equals the raw stored name, which a negative transfer test checks. It is a plain
 // [core.FieldClassifier] registered by value, so it captures nothing.
-func TransferClassifier(key tag.Key, _ []string, _ tag.TagSet) (core.Disposition, string, bool) {
+func TransferClassifier(key tag.Key, _ []string, _ *core.Media) (core.Disposition, string, bool) {
 	if ns := reservedNamespace(mapping.VorbisName(key)); ns != "" {
 		return core.Dropped, fmt.Sprintf("the %s namespace is reserved for structured data, so it cannot be written as a Vorbis custom field", ns), true
 	}

@@ -42,7 +42,8 @@ const maxSyltLines = 1 << 16
 // timestamps, and text losslessly, and several SYLT frames may coexist, so there is no
 // item cap and no loss.
 func SyncedLyricsCapability() core.Capability {
-	return core.Capability{
+	// The frame's language is three bytes, read in lowercase, with "xxx" for none.
+	return core.WithStoredLanguage(core.Capability{
 		Read:           core.AccessFull,
 		Write:          core.AccessFull,
 		Representation: "ID3v2 SYLT frame",
@@ -54,7 +55,7 @@ func SyncedLyricsCapability() core.Capability {
 		// A line past the 32-bit ms field is clamped on write (see encodeSYLT); expose the
 		// ceiling so a transfer grades a clamping copy Lossy rather than a clean carry.
 		SyncedLyricsTimeMax: msToDuration(syltTimeMax),
-	}
+	}, func(lang string) string { return frameLanguage(string(frameLangBytes(lang))) })
 }
 
 // ProjectSyncedLyrics decodes a tag's SYLT frames into synced-lyrics sets plus read

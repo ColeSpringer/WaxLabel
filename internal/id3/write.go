@@ -21,6 +21,12 @@ type WriteOpts struct {
 	NumericGenre bool // write TCON as a numeric reference when the genre is standard
 }
 
+// WriteOptsOf is the frame rebuild's share of a write's options: what a codec's Plan rebuilds
+// under, and what its capabilities grade a transfer by.
+func WriteOptsOf(opts core.WriteOptions) WriteOpts {
+	return WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre}
+}
+
 // StructuredEdit carries the non-tag structures a frame rebuild owns. A structure is
 // dropped and re-emitted only when its change flag is set; otherwise its source frames
 // are kept.
@@ -83,6 +89,10 @@ type RebuildInfo struct {
 	// number is written verbatim and the total dropped. An embedded total ("A1/12" alone)
 	// is not a drop. See detectDroppedTotals.
 	DroppedTotals []tag.Key
+	// JoinedValues lists changed keys whose several values the slash policy stored joined as
+	// one, which reads back as a single value; the caller warns value-dropped. See
+	// detectJoinedValues.
+	JoinedValues []tag.Key
 	// DroppedTrailingValues lists changed keys whose trailing empty value a NUL-separated
 	// frame cannot store: the frame emits no trailing terminator and the read path strips a
 	// trailing empty. Populated only for v2.4, or v2.3 under ID3MultiNullSep. See
@@ -388,6 +398,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	info.DroppedTrailingValues = detectDroppedTrailingValues(changed, edited, version, opts.Multi, commentTrailingEmpty)
 	info.DroppedEmptyValues = detectDroppedEmptyValues(changed, edited, produced, version, info)
 	info.DroppedInvolvedEmpties = detectDroppedInvolvedEmpties(changed, edited)
+	info.JoinedValues = detectJoinedValues(changed, edited, out, version, opts.Multi)
 	return out, info
 }
 
@@ -726,19 +737,6 @@ func ownTextFrameKey(key tag.Key) bool {
 	}
 	_, mapped := mapping.ID3FrameKey(id)
 	return !mapped
-}
-
-// CustomFrameIDFate reports how version stores a custom key: in a TXXX frame (viaTXXX) or a
-// frame of its own, and stored, the key a re-read gives it. The keys spelled like frame IDs
-// are the ones it matters for: one this package reads as something else is stored as TXXX
-// described by the ID ([ownTextFrameKey]) and reads back unchanged, except TCMP, which reads
-// back as COMPILATION because TXXX:TCMP is how ffmpeg stores that.
-func CustomFrameIDFate(key tag.Key, version byte) (stored tag.Key, viaTXXX bool) {
-	ids := keyRenderIDs(key, version)
-	if len(ids) != 1 || !strings.HasPrefix(ids[0], "TXXX\x00") {
-		return key, false
-	}
-	return txxxKeyForToken(ids[0][len("TXXX\x00"):]), true
 }
 
 // renderUnit renders the frame(s) for a render token from the edited tag set,
@@ -1202,6 +1200,26 @@ func detectDroppedTrailingValues(changed map[tag.Key]bool, edited tag.TagSet, ve
 	return dropped
 }
 
+// detectJoinedValues finds the changed keys whose several values frames holds as one, joined by
+// the slash policy: a read gives the one joined value, so the values are no longer apart. Decided
+// from what frames reads back as, so it covers every frame the policy renders, and none under
+// v2.4, which separates values natively. Sorted for deterministic order.
+func detectJoinedValues(changed map[tag.Key]bool, edited tag.TagSet, frames []Frame, version byte, pol core.ID3MultiValuePolicy) []tag.Key {
+	if pol != core.ID3MultiSlash {
+		return nil
+	}
+	readBack := frameValues(frames, version)
+	var joined []tag.Key
+	for k := range changed {
+		vals, _ := edited.Get(k)
+		if got, _ := readBack.Get(k); len(vals) > 1 && len(got) == 1 && got[0] == strings.Join(vals, " / ") {
+			joined = append(joined, k)
+		}
+	}
+	slices.Sort(joined)
+	return joined
+}
+
 // detectDroppedEmptyValues finds the changed keys set to an all-empty value for which no
 // frame was written, so the key reads back absent. Keys the date and total detectors
 // already report are skipped so one drop warns once.
@@ -1249,14 +1267,49 @@ func detectDroppedInvolvedEmpties(changed map[tag.Key]bool, edited tag.TagSet) [
 	return dropped
 }
 
-// TransferClassifier grades the fields whose ID3 transfer fate the format-level capability
-// cannot express. A TRACKTOTAL, DISCTOTAL, or MOVEMENTTOTAL whose sibling number cannot
-// join it in a valid "number/total" frame is Dropped, decided by the same compose the
-// writer uses (see [AppendRebuildWarnings]); a lone total composes "/total" and is not
-// dropped. A MOVEMENT already carrying pair syntax ("3/12") is Lossy: MVIN stores it, but
-// the read path splits it into MOVEMENT and MOVEMENTTOTAL. MP3, AAC, AIFF, and WAV share
-// it. It is a plain [core.FieldClassifier] and allocates no closure.
-func TransferClassifier(key tag.Key, values []string, all tag.TagSet) (core.Disposition, string, bool) {
+// TransferRendering grades the fields of a format whose only tag store is an ID3v2 tag written
+// as version under opts (MP3, AAC): each by what [TransferTag] reads back as ([RenderedBy]).
+func TransferRendering(version byte, opts WriteOpts) core.RenderedFields {
+	return RenderedBy(func(written *core.Media, fields tag.TagSet) *core.Media {
+		p := Project(TransferTag(written, fields, version, opts))
+		return &core.Media{Format: core.FormatMP3, Tags: p.Tags, Comments: p.Comments, Lyrics: p.Lyrics}
+	})
+}
+
+// TransferTag is the tag a transfer writes onto a file holding none: fields rendered as version
+// under opts by the frame writer, with the comment and lyric items of written.
+func TransferTag(written *core.Media, fields tag.TagSet, version byte, opts WriteOpts) *Tag {
+	frames, _ := RebuildFrames(nil, tag.NewTagSet(), fields, version, StructuredEdit{
+		Comments: written.Comments, CommentsChanged: true,
+		Lyrics: written.Lyrics, LyricsChanged: true,
+		Carried: true,
+	}, opts)
+	return NewEmpty(version).WithFrames(frames)
+}
+
+// RenderedBy grades the fields of a format that writes an ID3v2 tag by what render reads back
+// ([core.RenderedFields]): every loss the frame writer makes is graded by the writer itself,
+// be it a second value on a key whose frame holds one, values a slash policy joins, a date v2.3
+// has no frame for, or a custom key read back under another name. The pair frames get reasons
+// that name what ID3 does where the generic one would not: a total the frame cannot hold
+// ([droppedTotalReason]), a movement stored as a pair ([splitMovementReason]).
+func RenderedBy(render func(written *core.Media, fields tag.TagSet) *core.Media) core.RenderedFields {
+	return core.RenderedFields{Render: render, Reason: renderedReason}
+}
+
+func renderedReason(k tag.Key, d core.Disposition, fields tag.TagSet) string {
+	if d == core.Dropped {
+		return droppedTotalReason(k, fields)
+	}
+	vals, _ := fields.Get(k)
+	return splitMovementReason(k, vals)
+}
+
+// droppedTotalReason says why a TRACKTOTAL, DISCTOTAL or MOVEMENTTOTAL has no place in its
+// "number/total" frame, "" where it has one: the sibling number cannot join it, decided by the
+// same compose the writer uses (see [AppendRebuildWarnings]). A lone total composes "/total"
+// and is stored.
+func droppedTotalReason(key tag.Key, all tag.TagSet) string {
 	switch key {
 	case tag.TrackTotal, tag.DiscTotal:
 		numKey := tag.TrackNumber
@@ -1266,22 +1319,28 @@ func TransferClassifier(key tag.Key, values []string, all tag.TagSet) (core.Disp
 		num, _ := all.First(numKey)
 		total, _ := all.First(key)
 		if _, dropped := composeNumTotal(numKey, num, total); dropped {
-			return core.Dropped, "the number it attaches to is non-numeric, so ID3 cannot store this total (a total is written only as the second half of \"number/total\")", true
+			return "the number it attaches to is non-numeric, so ID3 cannot store this total (a total is written only as the second half of \"number/total\")"
 		}
 	case tag.MovementTotal:
 		num, _ := all.First(tag.Movement)
 		total, _ := all.First(key)
 		if _, dropped := composeMovementPair(num, total); dropped {
-			return core.Dropped, "it cannot join the movement number in a valid \"number/total\" MVIN frame, so ID3 cannot store this total", true
-		}
-	case tag.Movement:
-		if len(values) > 0 {
-			if _, _, split := movementSplit(values[0]); split {
-				return core.Lossy, "stored in the MVIN \"number/total\" frame, which reads back split into MOVEMENT and MOVEMENTTOTAL", true
-			}
+			return "it cannot join the movement number in a valid \"number/total\" MVIN frame, so ID3 cannot store this total"
 		}
 	}
-	return core.Carried, "", false
+	return ""
+}
+
+// splitMovementReason says how a MOVEMENT already carrying pair syntax ("3/12") is stored, ""
+// for any other value: MVIN holds it, and the read path splits it into MOVEMENT and
+// MOVEMENTTOTAL.
+func splitMovementReason(key tag.Key, values []string) string {
+	if key == tag.Movement && len(values) > 0 {
+		if _, _, split := movementSplit(values[0]); split {
+			return "stored in the MVIN \"number/total\" frame, which reads back split into MOVEMENT and MOVEMENTTOTAL"
+		}
+	}
+	return ""
 }
 
 // renderDate renders a v2.4 date frame directly from an ISO date key.
@@ -1539,6 +1598,10 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 		}
 		ws = core.WarnKeyed(ws, core.WarnValueDropped,
 			fmt.Sprintf("%s: an empty value cannot be represented in this ID3 frame and was dropped; use --clear to remove the key", k), k)
+	}
+	for _, k := range info.JoinedValues {
+		ws = core.WarnKeyed(ws, core.WarnValueDropped,
+			fmt.Sprintf("%s: the values are stored joined by \" / \" as one under the slash multi-value policy, so they read back as a single value", k), k)
 	}
 	for _, k := range info.DroppedInvolvedEmpties {
 		ws = core.WarnKeyed(ws, core.WarnValueDropped,

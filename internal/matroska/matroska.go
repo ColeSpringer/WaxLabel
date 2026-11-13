@@ -14,6 +14,7 @@ package matroska
 import (
 	"context"
 	"encoding/binary"
+	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 )
@@ -99,8 +100,9 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	}
 	chapters := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
-		Representation: "Chapters > EditionEntry > ChapterAtom (default edition)",
-		Fidelity:       "lossless", // chapter times round-trip exactly (absolute nanoseconds)
+		Representation:  "Chapters > EditionEntry > ChapterAtom (default edition)",
+		Fidelity:        "lossless", // chapter times round-trip exactly (absolute nanoseconds)
+		ChapterTimeUnit: time.Nanosecond,
 		Constraints: []string{
 			"edits apply to the default edition; other editions and chapter UIDs are preserved, but clearing the chapters removes every edition",
 			"a chapter edit re-renders the default edition to a flat model (" + rendered + ") - nested sub-chapters, additional ChapterDisplays (other-language titles), and other unmodeled atom fields are not preserved (untouched chapters are kept verbatim)",

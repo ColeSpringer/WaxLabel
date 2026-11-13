@@ -11,12 +11,13 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // TestCheckItemSizes covers the write-side oversized-item check: a covr item past the
-// limit reports ErrPictureTooLarge, any other ilst item reports ErrSizeTooLarge, an item
+// limit reports ErrPictureTooLarge, any other ilst item reports ErrContentTooLarge, an item
 // within the limit passes, and a zero/unset limit falls back to the 256 MiB library ceiling.
 func TestCheckItemSizes(t *testing.T) {
 	const limit = 1024
@@ -26,8 +27,8 @@ func TestCheckItemSizes(t *testing.T) {
 	if err := checkItemSizes([]item{{name: atomName("covr"), payload: big}}, limit); !errors.Is(err, waxerr.ErrPictureTooLarge) {
 		t.Errorf("oversized covr: err = %v, want ErrPictureTooLarge", err)
 	}
-	if err := checkItemSizes([]item{{name: atomName("----"), payload: big}}, limit); !errors.Is(err, waxerr.ErrSizeTooLarge) {
-		t.Errorf("oversized freeform: err = %v, want ErrSizeTooLarge", err)
+	if err := checkItemSizes([]item{{name: atomName("----"), payload: big}}, limit); !errors.Is(err, waxerr.ErrContentTooLarge) {
+		t.Errorf("oversized freeform: err = %v, want ErrContentTooLarge", err)
 	}
 	if err := checkItemSizes([]item{{name: atomName("\xa9nam"), payload: small}}, limit); err != nil {
 		t.Errorf("within-limit item: err = %v, want nil", err)
@@ -69,14 +70,14 @@ func TestCheckBuiltItemsFloorsAtParsedItems(t *testing.T) {
 	}
 	// A newly authored item larger than anything parsed is still rejected.
 	bigger := []item{{name: atomName("----"), payload: make([]byte, 800)}}
-	if err := checkBuiltItems(bigger, parsed, limit); !errors.Is(err, waxerr.ErrSizeTooLarge) {
+	if err := checkBuiltItems(bigger, parsed, limit); !errors.Is(err, waxerr.ErrContentTooLarge) {
 		t.Errorf("an item larger than every parsed item must still be rejected, got %v", err)
 	}
 }
 
 // TestPlanRejectsOversizedItem checks the write path: a custom tag value larger than the
 // configured limit renders into an oversized "----" freeform that Plan must reject with
-// ErrSizeTooLarge.
+// ErrContentTooLarge.
 func TestPlanRejectsOversizedItem(t *testing.T) {
 	raw, err := os.ReadFile("../../testdata/sample.m4a")
 	if err != nil {
@@ -94,14 +95,14 @@ func TestPlanRejectsOversizedItem(t *testing.T) {
 	edited.Tags.Set(tag.Key("HUGEFIELD"), strings.Repeat("x", 4096))
 
 	opts := core.WriteOptions{Limits: bits.Limits{MaxAllocBytes: 1024}}
-	if _, err := (Codec{}).Plan(ctx, base, edited, opts); !errors.Is(err, waxerr.ErrSizeTooLarge) {
-		t.Fatalf("Plan with an oversized freeform item: err = %v, want ErrSizeTooLarge", err)
+	if _, err := (Codec{}).Plan(ctx, base, edited, opts); !errors.Is(err, waxerr.ErrContentTooLarge) {
+		t.Fatalf("Plan with an oversized freeform item: err = %v, want ErrContentTooLarge", err)
 	}
 }
 
 // TestPlanChapterPathRejectsOversizedItem checks the chapter write path (write_chapters.go)
 // too: a chapter edit that also carries an oversized tag routes through buildChapterUdta,
-// whose checkItemSizes must reject it with ErrSizeTooLarge.
+// whose checkItemSizes must reject it with ErrContentTooLarge.
 func TestPlanChapterPathRejectsOversizedItem(t *testing.T) {
 	raw, err := os.ReadFile("../../testdata/sample_chapters.m4b")
 	if err != nil {
@@ -125,8 +126,8 @@ func TestPlanChapterPathRejectsOversizedItem(t *testing.T) {
 	edited.Tags.Set(tag.Key("HUGEFIELD"), strings.Repeat("x", 4096))
 
 	opts := core.WriteOptions{Limits: bits.Limits{MaxAllocBytes: 1024}}
-	if _, err := (Codec{}).Plan(ctx, base, edited, opts); !errors.Is(err, waxerr.ErrSizeTooLarge) {
-		t.Fatalf("chapter-path Plan with an oversized item: err = %v, want ErrSizeTooLarge", err)
+	if _, err := (Codec{}).Plan(ctx, base, edited, opts); !errors.Is(err, waxerr.ErrContentTooLarge) {
+		t.Fatalf("chapter-path Plan with an oversized item: err = %v, want ErrContentTooLarge", err)
 	}
 }
 
@@ -202,5 +203,78 @@ func TestEmptyMetaRoundTripsTagEdit(t *testing.T) {
 	}
 	if v, ok := reparsed.Tags.Get(tag.Title); !ok || len(v) != 1 || v[0] != "Round Trip" {
 		t.Errorf("re-parsed TITLE = %v (ok=%v), want [\"Round Trip\"]", v, ok)
+	}
+}
+
+// A transfer grades by the limit the writer checks: a cover or a value past the item limit is
+// dropped from the copy before the write, where an item the file already holds raises the limit
+// to its own size.
+func TestCapabilitiesStateTheItemLimit(t *testing.T) {
+	opts := core.WriteOptions{Limits: bits.Limits{MaxAllocBytes: 1024}}
+	src := &core.Media{Tags: tag.NewTagSet(), Pictures: []core.Picture{
+		{Type: core.PicFrontCover, MIME: "image/png", Data: append(testfile.PNG(), make([]byte, 2000)...)},
+	}}
+	src.Tags.Set(tag.Title, "T")
+	src.Tags.Set(tag.Comment, strings.Repeat("x", 2000))
+	items := core.ProjectTransferOnto(src, nil, Codec{}.Capabilities(nil, opts)).Items
+	want := map[core.TransferKind]string{
+		core.TransferField:   "a value is 2.0 KiB, over the 1.0 KiB an MP4 metadata item holds under the allocation limit",
+		core.TransferPicture: "the picture is 2.0 KiB, over the 1.0 KiB an MP4 metadata item holds under the allocation limit",
+	}
+	dropped := 0
+	for _, it := range items {
+		if it.Disposition != core.Dropped {
+			continue
+		}
+		dropped++
+		if it.Reason != want[it.Kind] {
+			t.Errorf("%s %s: reason %q, want %q", it.Kind, it.Key, it.Reason, want[it.Kind])
+		}
+	}
+	if dropped != 2 {
+		t.Errorf("%d items dropped, want the comment and the cover: %+v", dropped, items)
+	}
+
+	held := &core.Media{Native: &doc{items: []item{{name: atomName("covr"), payload: make([]byte, 4096)}}}}
+	for _, it := range core.ProjectTransferOnto(src, nil, Codec{}.Capabilities(held, opts)).Items {
+		if it.Disposition == core.Dropped {
+			t.Errorf("a file holding a 4 KiB item takes a 2 KiB one: %+v", it)
+		}
+	}
+}
+
+// The ilst rendering says why the item builder stores nothing of a field: an empty value an
+// atom has no form for, or a freeform name read back as a key the source holds too.
+func TestIlstRenderingReasons(t *testing.T) {
+	src := &core.Media{Format: core.FormatFLAC, Tags: tag.NewTagSet()}
+	src.Tags.Set(tag.TrackNumber, "")
+	src.Tags.Set("MUSICBRAINZ ALBUM ID", "a")
+	src.Tags.Set(tag.Key("MUSICBRAINZ_ALBUMID"), "b")
+	src.Tags.Set(tag.DiscNumber, "1", "2")
+	src.Tags.Set(tag.DiscTotal, "", "")
+	src.Tags.Set(tag.Title, "T")
+	// A number is rendered as a transfer writes it, without the spaces around it.
+	src.Tags.Set(tag.MovementTotal, " 4 ")
+	src.Tags.Set(tag.BPM, "120.5")
+	grade := ilstRendering(false).Grade(src, src.Tags.Keys())
+	for _, c := range []struct {
+		key    tag.Key
+		want   core.Disposition
+		reason string
+	}{
+		{tag.TrackNumber, core.Dropped, "the MP4 atom for this key has no form for an empty value"},
+		{"MUSICBRAINZ ALBUM ID", core.Dropped, "the format reads it back as MUSICBRAINZ_ALBUMID, which the source holds too"},
+		{tag.Key("MUSICBRAINZ_ALBUMID"), core.Carried, ""},
+		{tag.DiscNumber, core.Lossy, "this field is a single-value MP4 atom; only the first value is stored"},
+		// Dropped for its empty values, whatever the single-atom rule would say of two.
+		{tag.DiscTotal, core.Dropped, "the MP4 atom for this key has no form for an empty value"},
+		{tag.Title, core.Carried, ""},
+		{tag.MovementTotal, core.Carried, ""},
+		// Lossy for another reason than the single atom.
+		{tag.BPM, core.Lossy, `stored as "121"`},
+	} {
+		if d, reason := grade(c.key); d != c.want || reason != c.reason {
+			t.Errorf("%s: %s %q, want %s %q", c.key, d, reason, c.want, c.reason)
+		}
 	}
 }

@@ -83,3 +83,20 @@ func TestDiffNumericFoldScopedToMP4(t *testing.T) {
 		}
 	})
 }
+
+// The numeric fold holds with the MP4 file on either side of the diff.
+func TestDiffNumericFoldEitherSide(t *testing.T) {
+	t.Parallel()
+	flac := buildTransferSource(t, notagsFLAC, func(e *wl.Editor) *wl.Editor { return e.Set(tag.MediaType, "01") })
+	m4a := buildTransferSource(t, notagsM4A, func(e *wl.Editor) *wl.Editor { return e.Set(tag.MediaType, "1") })
+	for _, pair := range [][2]string{{flac, m4a}, {m4a, flac}} {
+		out, _, code := runCLI(t, "--json", "diff", pair[0], pair[1])
+		var jd jsonDiff
+		if err := json.Unmarshal([]byte(out), &jd); err != nil || code > 1 {
+			t.Fatalf("diff exit %d, JSON %v\n%s", code, err, out)
+		}
+		if hasTagChange(jd, "MEDIATYPE") {
+			t.Errorf("diff %s %s reports MEDIATYPE 01 against 1 as a change", pair[0], pair[1])
+		}
+	}
+}

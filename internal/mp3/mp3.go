@@ -3,6 +3,7 @@ package mp3
 import (
 	"context"
 	"encoding/binary"
+	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
@@ -60,21 +61,24 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	}
 	chapters := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
-		Representation: "ID3v2 CHAP/CTOC frames",
-		Fidelity:       "start, end, and title stored; per-chapter language and hidden/disabled flags dropped",
-		Constraints:    []string{"chapter start/end limited to a 32-bit millisecond field (~49.7 days)"},
-		MaxItems:       255, // the CTOC entry count is a single byte
-		ChapterLoss:    core.ChapterLossLangFlags,
+		Representation:  "ID3v2 CHAP/CTOC frames",
+		Fidelity:        "start, end, and title stored; per-chapter language and hidden/disabled flags dropped",
+		Constraints:     []string{"chapter start/end limited to a 32-bit millisecond field (~49.7 days)"},
+		MaxItems:        255, // the CTOC entry count is a single byte
+		ChapterLoss:     core.ChapterLossLangFlags,
+		ChapterTimeUnit: time.Millisecond, // CHAP counts milliseconds
+		ChapterTimeMax:  id3.ChapterTimeMax,
 	}
 	// MP3's front ID3 tag is the authoritative tag store, so numeric genre and v2.3
 	// original-date reductions follow the shared ID3 capability rules.
-	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatMP3), opts.NumericGenre, true)
+	version := id3.WriteVersionFor(m, core.FormatMP3)
+	perField := id3.PerFieldCapabilities(version, opts.NumericGenre, true)
 	// ID3 front-tag padding is only partly controllable (ReuseOrTarget): a fit-in-place
 	// edit reuses the region's leftover, capped at the policy's Max.
 	return core.NewCapabilities(core.FormatMP3, false, fields, pictures, chapters, core.AccessPartial, perField).
 		WithSyncedLyrics(id3.SyncedLyricsCapability()).
 		WithTextQualifiers(core.TextLossNone, id3.DefaultLanguage).
-		WithFieldClassifier(id3.TransferClassifier)
+		WithRenderedFields(id3.TransferRendering(version, id3.WriteOptsOf(opts)))
 }
 
 // ID3Tag returns the parsed front ID3 tag, or nil when the file has none.

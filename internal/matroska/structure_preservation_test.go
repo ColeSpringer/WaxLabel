@@ -259,11 +259,11 @@ func TestMatroskaWarnsWhenExtraTitleValueDropped(t *testing.T) {
 // technical name to Dropped with a reason, and gives no verdict for a name merely
 // adjacent to the reserved set.
 func TestTransferClassifierDropsTechnicalName(t *testing.T) {
-	disp, reason, ok := TransferClassifier(tag.Key("DURATION"), []string{"x"}, tag.TagSet{})
+	disp, reason, ok := TransferClassifier(tag.Key("DURATION"), []string{"x"}, nil)
 	if !ok || disp != core.Dropped || reason == "" {
 		t.Errorf("TransferClassifier(DURATION) = %v, %q, %v; want Dropped, non-empty reason, true", disp, reason, ok)
 	}
-	if _, _, ok := TransferClassifier(tag.Key("DURATION_X"), []string{"v"}, tag.TagSet{}); ok {
+	if _, _, ok := TransferClassifier(tag.Key("DURATION_X"), []string{"v"}, nil); ok {
 		t.Errorf("TransferClassifier(DURATION_X) returned a verdict, want none")
 	}
 }
@@ -735,5 +735,58 @@ func TestUnmodeledChapterChildStillWarns(t *testing.T) {
 	src := segBytes(cat(mkInfo("Title"), encElement(idChapters, encElement(idEditionEntry, atom)), emptyCluster()))
 	if !warnsFlattened(editAddsChapterPlan(t, src)) {
 		t.Error("an unmodeled ChapterAtom child must trip chapters-flattened")
+	}
+}
+
+// A slashed track or disc number among several values is written as the number, with its total
+// under the total key where the set states none. Left slashed, each rewrite added another total.
+func TestSplitNumberValues(t *testing.T) {
+	ts := tag.NewTagSet()
+	ts.Set(tag.TrackNumber, "3/12", "4", "5/12", "x/y")
+	ts.Set(tag.DiscNumber, "1/2")
+	ts.Set(tag.Title, "a/b", "c")
+	got, split := splitNumberValues(ts)
+	if !split {
+		t.Error("a slashed number among several values is not reported split")
+	}
+	want := map[tag.Key][]string{
+		tag.TrackNumber: {"3", "4", "5", "x/y"},
+		tag.TrackTotal:  {"12"},
+		tag.DiscNumber:  {"1/2"}, // a sole value is the editor's to split
+		tag.Title:       {"a/b", "c"},
+	}
+	for k, w := range want {
+		if vals, _ := got.Get(k); !slices.Equal(vals, w) {
+			t.Errorf("%s = %q, want %q", k, vals, w)
+		}
+	}
+	if vals, _ := ts.Get(tag.TrackNumber); vals[0] != "3/12" || ts.Has(tag.TrackTotal) {
+		t.Error("the set given was changed")
+	}
+	// A total the set states is the total, whatever the slashed numbers say, and a set with
+	// nothing to split is returned as given.
+	for _, stated := range []string{"12", "99"} {
+		ts.Set(tag.TrackTotal, stated)
+		got, _ := splitNumberValues(ts)
+		if vals, _ := got.Get(tag.TrackTotal); !slices.Equal(vals, []string{stated}) {
+			t.Errorf("TRACKTOTAL beside a stated %s = %q", stated, vals)
+		}
+		if vals, _ := got.Get(tag.TrackNumber); !slices.Equal(vals, []string{"3", "4", "5", "x/y"}) {
+			t.Errorf("TRACKNUMBER beside a stated total = %q", vals)
+		}
+	}
+	plain := tag.NewTagSet()
+	plain.Set(tag.TrackNumber, "3", "4")
+	if got, split := splitNumberValues(plain); split || !got.Equal(plain) {
+		t.Errorf("a set with no slashed number changed (split %v): %v", split, got.Keys())
+	}
+	// The classifier grades it for a transfer.
+	src := &core.Media{Tags: ts}
+	vals, _ := ts.Get(tag.TrackNumber)
+	if d, reason, ok := TransferClassifier(tag.TrackNumber, vals, src); !ok || d != core.Lossy || reason != splitNumberReason {
+		t.Errorf("classifier: %s %q (%v), want lossy for the split", d, reason, ok)
+	}
+	if _, _, ok := TransferClassifier(tag.DiscNumber, []string{"1/2"}, src); ok {
+		t.Error("a sole slashed number is not the classifier's to grade")
 	}
 }

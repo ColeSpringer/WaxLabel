@@ -484,6 +484,59 @@ All notable changes to this project are documented here.
   marker description. Text behind the NUL is reported (`malformed-tag-entry`); it was read into
   the value, NUL and all, or kept the descriptor from being read.
 - `WM/IsCompilation` in a WMA file reads as `COMPILATION`.
+- `copy` grades each item by what the destination holds once written, so the report and
+  `--strict` say what the file gets. Lossy where they read carried: a second value on an ID3
+  key whose frame holds one (dates, track, disc and movement numbers and totals, the
+  MusicBrainz recording ID, a lyric under a description already in use, a v2.4 release date),
+  values `--id3-multi slash` joins into one, a custom key the format reads back under another
+  name (`TCMP` in ID3, `MUSICBRAINZ ALBUM ID` in MP4; beside the key it reads as it is
+  dropped), a comment, lyric or synced lyrics language an ID3 frame cuts to three bytes, a
+  chapter time finer than the format counts in (a millisecond in ID3 and Vorbis comments,
+  100 ns in MP4) or past the largest it stores, and the size a FLAC picture block declares for
+  a link or an image type that states none, copied to a format with no size fields.
+  `PlanTransfer` grades these from the format alone, as a write onto a file with no metadata
+  stores them; a prepared copy is also held to what its own plan writes, each picture, chapter
+  and synced lyrics set by its own fate.
+- A copy no longer fails whole over one item the destination cannot take: the item is dropped
+  with the reason and the rest is written. That covers a value holding a NUL byte (a chapter
+  list or a synced lyrics set holding one, which takes no place under the one set FLAC and Ogg
+  hold; a picture is carried without such a description), a link picture onto WavPack,
+  Monkey's Audio or Musepack, where the URL was stored as a cover, a cover or a value over
+  what the store holds (a 16 MiB FLAC block or APEv2 tag, an MP4 item or Ogg header packet
+  over the allocation limit), and an item the writer stores nothing of, or only under a key the
+  destination holds with another value. That one is left unwritten, so the destination keeps
+  what it held: an empty track number in MP4 deleted the number the destination had, and a
+  `TCMP` copied onto an MP3 whose COMPILATION says otherwise joined it as a second value.
+  Values that fit one by one and overflow together still refuse
+  the write (`content-too-large`). A dropped link reads `cannot store a linked (URL) picture`,
+  not `cannot store -->`.
+- A copy onto a file that already holds the source's metadata writes nothing and loses
+  nothing, onto itself too: what the destination holds as given is carried whatever its format
+  can write. `copy X X` rewrote an AIFF's text chunks, graded a Musepack file's chapters
+  dropped (so `--strict` refused), failed on WMA and on a file with no audio, trimmed the
+  spaces around a number, and on an MP3 holding a lyric in `eng` beside one in no language
+  kept only one of the two. A repeat of a copy finds what the first stored and writes nothing.
+- A copy that could store nothing says `no changes written; N item(s) could not be stored`
+  where it said `already up to date`. A refused or failed copy names the destination
+  (`waxlabel: <dest>: ...`), and `--json` reports a failed save in the copy object, `error`
+  beside the `transfer` report.
+- `set --id3-multi slash` warns (`value-dropped`, refused under `--strict`) when it joins
+  several values into one; it was silent.
+- An edit is checked for NUL bytes and invalid UTF-8 only in the chapters and synced lyrics
+  it adds: one the file already holds no longer refuses `--add-chapter` or a lyrics edit
+  beside it.
+- An MP4 tag value over the allocation limit refuses the write as `content-too-large` (exit
+  3), like a cover, not `invalid-data` (exit 4).
+- `copy` and `diff` read the spellings of a boolean every writer stores alike (`yes` and `1`
+  under COMPILATION) as one value.
+- JSON `subformat` is the format name for an Ogg file (`Ogg Vorbis`), no longer the less
+  specific `Ogg`.
+- `AddPicture` of a link picture on WavPack, Monkey's Audio or Musepack is refused
+  (`unsupported-tag`), or dropped with a warning under `WithAllowUnsupportedDrop`; the URL was
+  stored as a cover.
+- Matroska writes a slashed track or disc number that stands among several values as the
+  number, and its total under TRACKTOTAL or DISCTOTAL where the file states none, the way it
+  is read back. Left slashed, every rewrite of the file added another total.
 
 ### Changed
 
@@ -585,6 +638,12 @@ All notable changes to this project are documented here.
   `lyrics`.
 - `Editor.ReplacePictures(match, p)` puts a picture in place of the ones a predicate selects,
   keeping the order of the rest.
+- `Capability.ChapterTimeUnit` and `Capability.ChapterTimeMax`, the step a format counts
+  chapter times in and the largest it stores, and `Capability.PictureGeometry`, set where a
+  format has fields for a picture's size.
+- `TransferReport.NoChangesLine`, the headline of a transfer whose plan writes nothing: what
+  could not be stored, or nothing left to bring. `Plan.String` prints it for such a plan
+  where it printed `the edit was discarded`.
 - `verify` lists what reading a file warned about under its digests, as `dump` does (not with
   `--quiet`), and its JSON gains `warnings`; a chained file it refuses has that warning on
   stderr ahead of the error. `caps` says why a file of a format it writes is read-only, and

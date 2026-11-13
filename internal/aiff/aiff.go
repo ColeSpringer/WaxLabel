@@ -22,9 +22,11 @@ package aiff
 import (
 	"context"
 	"encoding/binary"
+	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
+	"github.com/colespringer/waxlabel/tag"
 )
 
 // Codec implements core.Codec for AIFF / AIFF-C.
@@ -75,17 +77,51 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 			"chapters require an ID3 chunk; AIFF has no native chapter representation",
 			"chapter start/end limited to a 32-bit millisecond field (~49.7 days)",
 		},
-		MaxItems:    255, // CTOC entry count is one byte
-		ChapterLoss: core.ChapterLossLangFlags,
+		MaxItems:        255, // CTOC entry count is one byte
+		ChapterLoss:     core.ChapterLossLangFlags,
+		ChapterTimeUnit: time.Millisecond, // CHAP counts milliseconds
+		ChapterTimeMax:  id3.ChapterTimeMax,
 	}
 	// No native genre; ID3 carries it. Shared numeric-genre / v2.3 date rules.
-	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatAIFF), opts.NumericGenre, true)
+	version := id3.WriteVersionFor(m, core.FormatAIFF)
+	perField := id3.PerFieldCapabilities(version, opts.NumericGenre, true)
 	// Padding is not the caller's to set: an ID3 chunk keeps what its tag had while the
 	// frames fit. Synced lyrics need ID3 (edit may create the chunk).
 	return core.NewCapabilities(core.FormatAIFF, false, fields, pictures, chapters, core.AccessNone, perField).
 		WithSyncedLyrics(id3.SyncedLyricsCapability()).
 		WithTextQualifiers(core.TextLossNone, id3.DefaultLanguage).
-		WithFieldClassifier(id3.TransferClassifier)
+		WithRenderedFields(id3.RenderedBy(transferRead(m, version, opts)))
+}
+
+// transferRead returns what a read of the file gives once a transfer has written fields onto it,
+// for a file with an ID3 chunk where m holds one and nothing in it (none for a nil m). It places
+// the fields as Plan does: in native text chunks alone where they hold all the transfer writes,
+// else in an ID3 chunk. Text chunks a file keeps beside its ID3 chunk are left out: the ID3
+// chunk holds every key they do, and a read takes its values.
+func transferRead(m *core.Media, version byte, opts core.WriteOptions) func(written *core.Media, fields tag.TagSet) *core.Media {
+	var id3Present bool
+	if m != nil {
+		if d, ok := m.Native.(*doc); ok && d != nil {
+			id3Present = d.id3 != nil
+		}
+	}
+	wopts := id3.WriteOptsOf(opts)
+	legacyStrip := opts.Legacy == core.LegacyStrip
+	return func(written *core.Media, fields tag.TagSet) *core.Media {
+		changed := core.ChangedKeys(tag.NewTagSet(), fields, nil)
+		edited := &core.Media{Tags: fields, Comments: written.Comments, Lyrics: written.Lyrics}
+		needID3 := id3Present || len(written.Pictures) > 0 || len(written.Chapters) > 0 || len(written.SyncedLyrics) > 0 ||
+			id3.NeedsTextFrames(edited) || !textRepresentable(fields, changed) || legacyStrip
+		out := &doc{}
+		if needID3 {
+			out.id3 = id3.TransferTag(written, fields, version, wopts)
+		} else {
+			out.texts = rebuildText(nil, fields, changed).created
+		}
+		read := &core.Media{Format: core.FormatAIFF}
+		project(out, read)
+		return read
+	}
 }
 
 // ID3Tag returns the parsed ID3-chunk tag, or nil when absent.

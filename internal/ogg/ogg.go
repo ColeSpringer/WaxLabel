@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"slices"
+	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/vorbis"
@@ -115,26 +116,51 @@ func (c Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabili
 	pictures := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: pictureRep, Fidelity: "lossless",
+		PictureGeometry: true,
 	}
 	chapters := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
-		Representation: "VorbisComment CHAPTERxxx",
-		Fidelity:       "start and title stored",
-		MaxItems:       vorbis.MaxChapters, // CHAPTERxxx is a 3-digit namespace
-		Constraints:    []string{"CHAPTERxxx stores start and title only (no end time, language, or flags)"},
-		ChapterLoss:    core.ChapterLossStartTitleOnly,
+		Representation:  "VorbisComment CHAPTERxxx",
+		Fidelity:        "start and title stored",
+		MaxItems:        vorbis.MaxChapters, // CHAPTERxxx is a 3-digit namespace
+		Constraints:     []string{"CHAPTERxxx stores start and title only (no end time, language, or flags)"},
+		ChapterLoss:     core.ChapterLossStartTitleOnly,
+		ChapterTimeUnit: time.Millisecond, // CHAPTERxxx=HH:MM:SS.mmm
+		ChapterTimeMax:  vorbis.MaxChapterTime,
 	}
 	var refusal error
+	// A header packet is written up to the allocation limit, or the largest the file holds.
+	var d *doc
 	if m != nil {
-		if d, ok := m.Native.(*doc); ok && d != nil {
-			refusal = d.refuseWrite()
+		d, _ = m.Native.(*doc)
+	}
+	limit, store := d.writeAllocLimit(opts), "an Ogg header packet holds under the allocation limit"
+	if d != nil {
+		refusal = d.refuseWrite()
+	}
+	if c.format == core.FormatOggFLAC {
+		// Each picture is a metadata block in a packet of its own: both limits hold.
+		packetLimit, packetStore := limit, store
+		pictures = core.WithPictureSizeLimit(pictures, func(p core.Picture) string {
+			if r := vorbis.PictureBlockTooLarge(p); r != "" {
+				return r
+			}
+			return core.SizeLimitReason("the picture", vorbis.PictureBlockLen(p), packetLimit, packetStore)
+		})
+		if limit > vorbis.MaxBlockBody {
+			limit, store = vorbis.MaxBlockBody, vorbis.BlockStore
 		}
+	} else {
+		pictures = core.WithPictureSizeLimit(pictures, func(p core.Picture) string {
+			return core.SizeLimitReason("the picture", vorbis.PictureCommentLen(p), limit, store)
+		})
 	}
 	// Comment padding round-tripped as-is; no padding control.
 	caps := core.NewCapabilities(c.format, refusal != nil, fields, pictures, chapters, core.AccessNone, nil).
 		WithSyncedLyrics(vorbis.SyncedLyricsCapability()).
 		WithFieldClassifier(vorbis.TransferClassifier).
-		WithReadOnlyReason(refusal)
+		WithReadOnlyReason(refusal).
+		WithValueSizeLimit(limit, store)
 	if c.format == core.FormatOggOpus {
 		caps = caps.WithOutputGain(core.AccessFull)
 	}

@@ -275,6 +275,9 @@ func (d *doc) writeAllocLimit(opts core.WriteOptions) int64 {
 	if limit <= 0 {
 		limit = bits.DefaultLimits.MaxAllocBytes
 	}
+	if d == nil {
+		return limit // a format with no file behind it
+	}
 	return max(limit, d.origMaxHeaderPacket())
 }
 

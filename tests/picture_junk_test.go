@@ -135,8 +135,9 @@ func TestUnsniffableCoverCarriesIntoMatroska(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if carried, _, dropped := pictureCounts(rep); carried != 1 || dropped != 0 {
-		t.Fatalf("the cover should carry into Matroska, report = %+v", rep)
+	// Matroska has no field for the size the FLAC block declares, so the cover is stored without it.
+	if carried, lossy, dropped := pictureCounts(rep); carried != 0 || lossy != 1 || dropped != 0 {
+		t.Fatalf("the cover should be stored in Matroska less its declared size, report = %+v", rep)
 	}
 	pics := mustParseBytes(t, applyToBytes(t, dstBytes, plan)).Pictures()
 	if len(pics) != 1 || !bytes.Equal(pics[0].Data, ico) {

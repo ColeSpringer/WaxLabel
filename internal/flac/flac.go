@@ -2,6 +2,7 @@ package flac
 
 import (
 	"encoding/binary"
+	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/vorbis"
@@ -50,19 +51,24 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 	pictures := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "FLAC PICTURE block", Fidelity: "lossless",
+		PictureGeometry: true,
 	}
 	chapters := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
-		Representation: "VorbisComment CHAPTERxxx",
-		Fidelity:       "start and title stored",
-		MaxItems:       vorbis.MaxChapters, // CHAPTERxxx is a 3-digit namespace
-		Constraints:    []string{"CHAPTERxxx stores start and title only; a CUESHEET is preserved opaque but not read"},
-		ChapterLoss:    core.ChapterLossStartTitleOnly,
+		Representation:  "VorbisComment CHAPTERxxx",
+		Fidelity:        "start and title stored",
+		MaxItems:        vorbis.MaxChapters, // CHAPTERxxx is a 3-digit namespace
+		Constraints:     []string{"CHAPTERxxx stores start and title only; a CUESHEET is preserved opaque but not read"},
+		ChapterLoss:     core.ChapterLossStartTitleOnly,
+		ChapterTimeUnit: time.Millisecond, // CHAPTERxxx=HH:MM:SS.mmm
+		ChapterTimeMax:  vorbis.MaxChapterTime,
 	}
+	pictures = core.WithPictureSizeLimit(pictures, vorbis.PictureBlockTooLarge)
 	// Metadata rewrite every edit: padding both grows and shrinks.
 	return core.NewCapabilities(core.FormatFLAC, false, fields, pictures, chapters, core.AccessFull, nil).
 		WithSyncedLyrics(vorbis.SyncedLyricsCapability()).
-		WithFieldClassifier(vorbis.TransferClassifier)
+		WithFieldClassifier(vorbis.TransferClassifier).
+		WithValueSizeLimit(vorbis.MaxBlockBody, vorbis.BlockStore)
 }
 
 // EssenceExtent: versioned name plus STREAMINFO config mixed ahead of audio frames.

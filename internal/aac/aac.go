@@ -14,6 +14,7 @@ package aac
 
 import (
 	"context"
+	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
@@ -76,19 +77,22 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	}
 	chapters := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
-		Representation: "ID3v2 CHAP/CTOC frames",
-		Fidelity:       "start, end, and title stored; per-chapter language and hidden/disabled flags dropped",
-		Constraints:    []string{"chapter start/end limited to a 32-bit millisecond field (~49.7 days)"},
-		MaxItems:       255, // CTOC entry count is one byte
-		ChapterLoss:    core.ChapterLossLangFlags,
+		Representation:  "ID3v2 CHAP/CTOC frames",
+		Fidelity:        "start, end, and title stored; per-chapter language and hidden/disabled flags dropped",
+		Constraints:     []string{"chapter start/end limited to a 32-bit millisecond field (~49.7 days)"},
+		MaxItems:        255, // CTOC entry count is one byte
+		ChapterLoss:     core.ChapterLossLangFlags,
+		ChapterTimeUnit: time.Millisecond, // CHAP counts milliseconds
+		ChapterTimeMax:  id3.ChapterTimeMax,
 	}
 	// Numeric genre and v2.3 original-date reductions follow shared ID3 rules.
-	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatAAC), opts.NumericGenre, true)
+	version := id3.WriteVersionFor(m, core.FormatAAC)
+	perField := id3.PerFieldCapabilities(version, opts.NumericGenre, true)
 	// Front-tag padding reuses the region (ReuseOrTarget), same as MP3.
 	return core.NewCapabilities(core.FormatAAC, false, fields, pictures, chapters, core.AccessPartial, perField).
 		WithSyncedLyrics(id3.SyncedLyricsCapability()).
 		WithTextQualifiers(core.TextLossNone, id3.DefaultLanguage).
-		WithFieldClassifier(id3.TransferClassifier)
+		WithRenderedFields(id3.TransferRendering(version, id3.WriteOptsOf(opts)))
 }
 
 // ID3Tag returns the parsed front ID3 tag, or nil when absent.

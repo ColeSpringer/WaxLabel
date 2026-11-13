@@ -35,8 +35,8 @@ const MaxChapters = 1000
 // parse would drop.
 const maxChapterSec = int64(1_000_000) * 3600
 
-// maxChapterDuration is that ceiling as a Duration, the value chapterComments clamps to.
-const maxChapterDuration = time.Duration(maxChapterSec) * time.Second
+// MaxChapterTime is that ceiling as a Duration, the value chapterComments clamps to.
+const MaxChapterTime = time.Duration(maxChapterSec) * time.Second
 
 // parseChapterName splits a CHAPTERxxx / CHAPTERxxxNAME comment name into its numeric
 // index and whether it is the NAME (title) half. ok is false for any other name,
@@ -197,8 +197,8 @@ func chapterComments(chs []core.Chapter) ([]Comment, bool) {
 	}
 	for i, ch := range chs {
 		start := ch.Start
-		if start > maxChapterDuration {
-			start = maxChapterDuration // clamp to the reader's ceiling so it round-trips
+		if start > MaxChapterTime {
+			start = MaxChapterTime // clamp to the reader's ceiling so it round-trips
 			overflow = true
 		}
 		num := fmt.Sprintf("%s%03d", chapterNamePrefix, base+i)

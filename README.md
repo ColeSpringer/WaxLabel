@@ -176,10 +176,15 @@ A corrupt file (exit 4) outranks a mistyped path (exit 6).
 
 When `set` authors a structural edit a format cannot store (cover art on WebM,
 chapters with no chapter store), it drops that item with a warning and applies the
-rest. `set --strict` promotes drops to failures (exit 2). `copy --strict` refuses a
-non-lossless transfer, or one whose destination write would itself lose metadata.
-Copy onto a read-only destination (WMA, fragmented MP4) exits 3 after the per-field
-report.
+rest. `set --strict` promotes drops to failures (exit 2). `copy` grades each item by what
+the destination holds once written: carried means it reads back as the source gives it, and
+an item the destination cannot take (a value with a NUL byte, a cover over the format's size
+limit, a link picture where only images are stored) is dropped with the reason while the rest
+is written. A dropped item is not written at all, and a key only the destination holds stays
+as it was. `copy --strict` refuses a transfer with a lossy or dropped item, or one whose
+destination write would itself lose metadata. What the destination already holds as given is
+carried and not written again, so a copy onto itself changes nothing. Copy onto a read-only
+destination (WMA, fragmented MP4) that lacks an item exits 3 after the per-field report.
 
 Table below is generated from the same capability model as `waxlabel caps`.
 

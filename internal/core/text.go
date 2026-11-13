@@ -155,22 +155,13 @@ func pairTextItems(items []TextItem, vals []string) []int {
 	return from
 }
 
-// WithoutLanguage returns items with the language of each that holds lang cleared: how a carry
-// treats the language a source format's writer fills in.
-func WithoutLanguage(items []TextItem, lang string) []TextItem {
-	out := slices.Clone(items)
-	for i := range out {
-		if out[i].Language == lang {
-			out[i].Language = ""
-		}
-	}
-	return out
-}
-
 // CarryTextItems returns src's items as a carry onto a file holding dst writes them: each keeps
 // what src's format stores of it (srcLoss says what it does not) and takes the rest from the dst
 // item of the same text, so a source with no field for a description leaves the destination's.
-func CarryTextItems(src, dst []TextItem, srcLoss TextItemLoss) []TextItem {
+// A language equal to filler says nothing either: it is the one src's writer fills in, given
+// where the destination fills in the same or stores none, and such an item takes the dst item's
+// language, or none.
+func CarryTextItems(src, dst []TextItem, srcLoss TextItemLoss, filler string) []TextItem {
 	byText := make(map[string][]int, len(dst)) // the dst items holding a text, first to last
 	for j, it := range dst {
 		byText[it.Text] = append(byText[it.Text], j)
@@ -184,7 +175,7 @@ func CarryTextItems(src, dst []TextItem, srcLoss TextItemLoss) []TextItem {
 		if srcLoss == TextLossNone {
 			out[i].Description = s.Description
 		}
-		if srcLoss != TextLossDescriptionAndLanguage {
+		if srcLoss != TextLossDescriptionAndLanguage && (filler == "" || s.Language != filler) {
 			out[i].Language = s.Language
 		}
 	}
@@ -256,6 +247,19 @@ func TextItemChanges(key tag.Key, a, b []TextItem, loss TextItemLoss, unsetLangu
 		}
 	}
 	return out
+}
+
+// WritableTextReason returns "" when s can be written to every supported format, else a reason
+// phrase ("contains a NUL byte" / "contains invalid UTF-8"): a NUL cuts a C-string field short,
+// and invalid UTF-8 is reprojected on read, so neither reads back as written.
+func WritableTextReason(s string) string {
+	if strings.IndexByte(s, 0) >= 0 {
+		return "contains a NUL byte"
+	}
+	if !utf8.ValidString(s) {
+		return "contains invalid UTF-8"
+	}
+	return ""
 }
 
 // LowerASCII folds A-Z to lowercase and leaves every other byte alone: the form a language code

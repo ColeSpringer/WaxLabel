@@ -24,6 +24,9 @@ type Plan struct {
 	// The edit set the comment or lyrics qualifiers itself: Changes then lists a language that
 	// appears, which is otherwise the writer's default and no change of the edit's.
 	commentsAuthored, lyricsAuthored bool
+	// noChanges heads the plan of a transfer where it writes nothing
+	// ([TransferReport.NoChangesLine]); "" for an edit's plan.
+	noChanges string
 }
 
 // zero reports an uninitialized plan. Safe on a nil receiver.
@@ -49,7 +52,9 @@ func (p *Plan) IsNoOp() bool {
 	return p.plan.NoOp
 }
 
-// String renders the preview: changes then WriteReport. Terminal-safe.
+// String renders the preview: changes then WriteReport. Terminal-safe. A transfer's plan that
+// writes nothing is headed by the transfer ([TransferReport.NoChangesLine]), not as an edit
+// that was discarded.
 func (p *Plan) String() string {
 	if p.zero() {
 		return "<uninitialized plan>"
@@ -57,6 +62,9 @@ func (p *Plan) String() string {
 	report := p.Report()
 	changes := p.Changes()
 	if len(changes) == 0 {
+		if report.NoOp && p.noChanges != "" {
+			return core.NoChangesReport(p.noChanges, report.Warnings)
+		}
 		return report.String()
 	}
 	var b strings.Builder

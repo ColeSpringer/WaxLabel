@@ -128,6 +128,60 @@ func pictureLosesMetadata(p Picture, loss PictureLoss) bool {
 	return false
 }
 
+// declaredGeometryReason is the loss of a size only the source's format had a field for.
+const declaredGeometryReason = "the size declared for a picture whose bytes give none is not stored"
+
+// declaresGeometry reports a size the picture's bytes do not give: one a file declared beside a
+// link, an image type the sniffer does not read, or one it names without a size (AVIF). Only a
+// format with size fields keeps it.
+func (p Picture) declaresGeometry() bool {
+	q := p.withoutDeclaredGeometry()
+	return p.Width != q.Width || p.Height != q.Height || p.Depth != q.Depth || p.Colors != q.Colors
+}
+
+// withoutDeclaredGeometry is p as a format with no size fields reads it back: a dimension its
+// bytes do not give is gone. One they do give is not the file's word to lose ([SniffStored]
+// settles it from the bytes in every format).
+func (p Picture) withoutDeclaredGeometry() Picture {
+	info, _ := bits.SniffImage(p.Data)
+	for _, d := range []struct {
+		held    *int
+		sniffed int
+	}{{&p.Width, info.Width}, {&p.Height, info.Height}, {&p.Depth, info.Depth}, {&p.Colors, info.Colors}} {
+		if d.sniffed == 0 {
+			*d.held = 0
+		}
+	}
+	return p
+}
+
+// WithoutDeclaredGeometry is pics as a format with no size fields holds them: a size the bytes do
+// not give is gone. pics is returned as given when no picture declares one.
+func WithoutDeclaredGeometry(pics []Picture) []Picture {
+	out := pics
+	for i, p := range pics {
+		if !p.declaresGeometry() {
+			continue
+		}
+		if &out[0] == &pics[0] {
+			out = slices.Clone(pics)
+		}
+		out[i] = p.withoutDeclaredGeometry()
+	}
+	return out
+}
+
+// pictureLossReason is why c stores p in less than the form given, "" when it stores it whole.
+func pictureLossReason(p Picture, c Capability) string {
+	switch {
+	case pictureLosesMetadata(p, c.PictureLoss):
+		return c.Reason()
+	case !c.PictureGeometry && p.declaresGeometry():
+		return declaredGeometryReason
+	}
+	return ""
+}
+
 // PicturesLoseMetadata folds pictureLosesMetadata over pics.
 func PicturesLoseMetadata(pics []Picture, loss PictureLoss) bool {
 	for _, p := range pics {
@@ -348,12 +402,16 @@ func EqualPictures(a, b []Picture) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].Type != b[i].Type || a[i].MIME != b[i].MIME ||
-			a[i].Description != b[i].Description || a[i].Width != b[i].Width ||
-			a[i].Height != b[i].Height || a[i].Depth != b[i].Depth ||
-			a[i].Colors != b[i].Colors || !slices.Equal(a[i].Data, b[i].Data) {
+		if !equalPicture(a[i], b[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+// equalPicture reports whether two pictures are identical by content.
+func equalPicture(a, b Picture) bool {
+	return a.Type == b.Type && a.MIME == b.MIME && a.Description == b.Description &&
+		a.Width == b.Width && a.Height == b.Height && a.Depth == b.Depth &&
+		a.Colors == b.Colors && slices.Equal(a.Data, b.Data)
 }

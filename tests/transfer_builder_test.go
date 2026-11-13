@@ -191,22 +191,30 @@ func TestTransferPlanMatchesPrepareWithReplacement(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)
 	dst := mustParseBytes(t, readFixture(t, notagsMP3))
 	repl := []wl.Chapter{{Start: 0, Title: "Cut A"}, {Start: time.Second, Title: "Cut B"}}
+	assertPlanMatchesPrepare(t, src.Transfer().SetChapters(repl...), dst)
+}
 
-	simulated, err := src.Transfer().SetChapters(repl...).Plan(dst.Format())
-	if err != nil {
-		t.Fatalf("Plan: %v", err)
+// Replacement chapters and lyrics are graded as the source's own are, on every blank destination:
+// times finer than a format counts, text no format stores.
+func TestTransferPlanMatchesPrepareWithReplacementOnBlankDestinations(t *testing.T) {
+	chapters := []wl.Chapter{
+		{Start: 0, Title: "Cut A"},
+		{Start: 1500*time.Millisecond + 300*time.Microsecond, Title: "Cut B"},
+		{Start: 3*time.Second + 50, End: 4 * time.Second, Title: "Cut C", Language: "eng"},
+		{Start: 60 * 24 * time.Hour, Title: "Past a 32-bit millisecond field"},
+		{Start: 1_100_000 * time.Hour, Title: "Past a million hours"},
 	}
-	_, prepared, err := src.Transfer().SetChapters(repl...).Prepare(dst)
-	if err != nil {
-		t.Fatalf("Prepare: %v", err)
+	lyrics := []wl.SyncedLyrics{
+		{Lines: []wl.SyncedLine{{Time: time.Second, Text: "one"}}},
+		{Language: "deu", Description: "second", Lines: []wl.SyncedLine{{Time: 2 * time.Second, Text: "zwei\x00"}}},
 	}
-	if len(simulated.Items) != len(prepared.Items) {
-		t.Fatalf("item counts differ: %d vs %d", len(simulated.Items), len(prepared.Items))
-	}
-	for i := range simulated.Items {
-		if simulated.Items[i] != prepared.Items[i] {
-			t.Errorf("item %d: Plan %+v, Prepare %+v", i, simulated.Items[i], prepared.Items[i])
-		}
+	for _, d := range blankTransferDestinations {
+		t.Run(d.name, func(t *testing.T) {
+			t.Parallel()
+			src := mustParseFile(t, sampleM4B)
+			dst := mustParseBytes(t, d.data(t))
+			assertPlanMatchesPrepare(t, src.Transfer().SetChapters(chapters...).SetSyncedLyrics(lyrics...), dst)
+		})
 	}
 }
 

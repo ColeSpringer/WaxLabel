@@ -188,14 +188,22 @@ func Capabilities(f core.Format, items []Item) core.Capabilities {
 			"item names are unique, so a role holds one picture written here; descriptions have nowhere to go",
 		},
 		PictureLoss: core.PictureLossDescriptionOnly,
+		// A cover item holds image bytes of any kind. A link's URL would read back as a cover.
+		PictureMIMEs: []string{"image/*", core.UnrecognizedMIME},
 	}
 	// One name per role; shared partition with editor/transfer.
 	pictures = core.WithPictureSlots(pictures, func(pics []core.Picture, added []bool) []int {
 		keptIdx, _ := PartitionCovers(pics, added, items)
 		return keptIdx
 	}, CoverSlotsReason)
+	// Readers refuse a tag past the size limit outright, so no one item may reach it.
+	const store = "an APEv2 tag holds"
+	pictures = core.WithPictureSizeLimit(pictures, func(p core.Picture) string {
+		return core.SizeLimitReason("the picture", int64(len(p.Data)), maxTagBytes, store)
+	})
 	return core.NewCapabilities(f, false, fields, pictures, core.Capability{}, core.AccessNone, nil).
-		WithFieldClassifier(NewTransferClassifier(items))
+		WithFieldClassifier(NewTransferClassifier(items)).
+		WithValueSizeLimit(maxTagBytes, store)
 }
 
 // NewTransferClassifier returns the classifier for a destination whose tag holds items, nil for a
@@ -217,7 +225,7 @@ func NewTransferClassifier(items []Item) core.FieldClassifier {
 		}
 		return m
 	})
-	return func(key tag.Key, vals []string, _ tag.TagSet) (core.Disposition, string, bool) {
+	return func(key tag.Key, vals []string, _ *core.Media) (core.Disposition, string, bool) {
 		return classify(held()[key], key, vals)
 	}
 }

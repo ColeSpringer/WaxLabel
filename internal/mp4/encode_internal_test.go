@@ -190,7 +190,7 @@ func TestNumberSlotTransferGrading(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			ts := tag.NewTagSet()
 			ts.Set(c.key, c.val)
-			got := dispositionOf(core.ProjectTransfer(&core.Media{Tags: ts}, caps), c.key)
+			got := dispositionOf(core.ProjectTransferOnto(&core.Media{Tags: ts}, nil, caps).Items, c.key)
 			if got != c.want {
 				t.Errorf("disposition of %s=%q = %v, want %v", c.key, c.val, got, c.want)
 			}
@@ -207,7 +207,7 @@ func TestNumberDispositionAgreesWithRoundTrip(t *testing.T) {
 		t.Run(form, func(t *testing.T) {
 			ts := tag.NewTagSet()
 			ts.Set(tag.TrackNumber, form)
-			disp := dispositionOf(core.ProjectTransfer(&core.Media{Tags: ts}, caps), tag.TrackNumber)
+			disp := dispositionOf(core.ProjectTransferOnto(&core.Media{Tags: ts}, nil, caps).Items, tag.TrackNumber)
 			back, present := roundTripTrackNumber(form)
 			diffEqual := present && tag.NumericValuesEqual(tag.TrackNumber, []string{back}, []string{form})
 			if (disp == core.Carried) != diffEqual {
@@ -239,7 +239,7 @@ func roundTripTrackNumber(form string) (string, bool) {
 	return "", false
 }
 
-// dispositionOf returns the disposition ProjectTransfer assigned the field item for key.
+// dispositionOf returns the disposition the projection assigned the field item for key.
 func dispositionOf(items []core.TransferItem, key tag.Key) core.Disposition {
 	for _, it := range items {
 		if it.Kind == core.TransferField && it.Key == key {

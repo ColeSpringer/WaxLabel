@@ -97,15 +97,31 @@ func RenderPicture(p core.Picture) []byte {
 	return buf.Bytes()
 }
 
+// BlockStore names what [MaxBlockBody] bounds, for the reason a transfer drops an item past it.
+const BlockStore = "a FLAC metadata block holds"
+
+// PictureBlockTooLarge is why p does not fit a PICTURE block ([MaxBlockBody]), "" when it does:
+// the size check a FLAC or Ogg FLAC destination's picture capability carries.
+func PictureBlockTooLarge(p core.Picture) string {
+	return core.SizeLimitReason("the picture", PictureBlockLen(p), MaxBlockBody, BlockStore)
+}
+
+// pictureFixedFields is the eight 32-bit fields RenderPicture writes around the MIME,
+// description and image bytes.
+const pictureFixedFields = 8 * 4
+
+// PictureBlockLen is len(RenderPicture(p)), measured without rendering.
+func PictureBlockLen(p core.Picture) int64 {
+	return int64(pictureFixedFields + len(p.MIME) + len(p.Description) + len(p.Data))
+}
+
 // PictureCommentLen returns the size of the picture as a base64 METADATA_BLOCK_PICTURE
 // comment value, so a write-side size check can measure a cover without rendering it.
 // It equals base64.StdEncoding.EncodedLen(len(RenderPicture(p))), computed from
 // RenderPicture's layout (eight 32-bit fields, then MIME, description, and image bytes).
 // TestPictureCommentLenMatchesRender checks the arithmetic against RenderPicture.
 func PictureCommentLen(p core.Picture) int64 {
-	const fixedFields = 8 * 4 // the eight 32-bit fields RenderPicture writes before the image data
-	rendered := fixedFields + len(p.MIME) + len(p.Description) + len(p.Data)
-	return int64(base64.StdEncoding.EncodedLen(rendered))
+	return int64(base64.StdEncoding.EncodedLen(int(PictureBlockLen(p))))
 }
 
 func writeU32BE(buf *bytes.Buffer, v uint32) {

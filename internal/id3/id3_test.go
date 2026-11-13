@@ -851,13 +851,10 @@ func TestCustomFrameIDKeysGoToTXXX(t *testing.T) {
 						t.Errorf("%s: the edit changed or dropped the %s frame", name, f.ID)
 					}
 				}
-				stored, viaTXXX := CustomFrameIDFate(tag.Key(id), version)
+				// TXXX:TCMP is how ffmpeg stores a compilation flag, so it reads back as that.
 				want := tag.Key(id)
 				if id == "TCMP" {
 					want = tag.Compilation
-				}
-				if stored != want || !viaTXXX {
-					t.Errorf("%s: CustomFrameIDFate = (%s, %v), want (%s, true)", name, stored, viaTXXX, want)
 				}
 				if v, _ := Project(buildTag(t, version, out)).Tags.Get(want); !slices.Contains(v, "custom") {
 					t.Errorf("%s: %s reads back %v, want it to hold custom", name, want, v)
@@ -869,26 +866,20 @@ func TestCustomFrameIDKeysGoToTXXX(t *testing.T) {
 
 // A custom key spelled like a T frame this package does not read as anything else is stored in a
 // frame of its own, which reads back as that key; any other custom key goes to TXXX.
-func TestCustomFrameIDFateOwnFrame(t *testing.T) {
-	for key, want := range map[tag.Key]struct {
-		stored  tag.Key
-		viaTXXX bool
-	}{
-		"TFOO": {"TFOO", false}, "TMCL": {"TMCL", false}, "MYKEY": {"MYKEY", true}, "TIT": {"TIT", true},
-		"COMM": {"COMM", true}, tag.ISRC: {tag.ISRC, false},
+func TestCustomFrameIDOwnFrame(t *testing.T) {
+	for key, wantFrame := range map[tag.Key]string{
+		"TFOO": "TFOO", "TMCL": "TMCL", "MYKEY": "TXXX", "TIT": "TXXX", "COMM": "TXXX", tag.ISRC: "TSRC",
 	} {
-		if stored, via := CustomFrameIDFate(key, 4); stored != want.stored || via != want.viaTXXX {
-			t.Errorf("CustomFrameIDFate(%s) = (%s, %v), want (%s, %v)", key, stored, via, want.stored, want.viaTXXX)
+		edited := tag.NewTagSet()
+		edited.Set(key, "x")
+		out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, StructuredEdit{}, WriteOpts{})
+		if len(out) != 1 || out[0].ID != wantFrame {
+			t.Errorf("%s: frames %+v, want one %s frame", key, out, wantFrame)
+			continue
 		}
-	}
-	edited := tag.NewTagSet()
-	edited.Set("TFOO", "x")
-	out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, StructuredEdit{}, WriteOpts{})
-	if len(out) != 1 || out[0].ID != "TFOO" {
-		t.Fatalf("frames %+v, want one TFOO frame", out)
-	}
-	if v, _ := Project(buildTag(t, 4, out)).Tags.Get("TFOO"); !slices.Equal(v, []string{"x"}) {
-		t.Errorf("TFOO reads back %v, want [x]", v)
+		if v, _ := Project(buildTag(t, 4, out)).Tags.Get(key); !slices.Equal(v, []string{"x"}) {
+			t.Errorf("%s reads back %v, want [x]", key, v)
+		}
 	}
 }
 

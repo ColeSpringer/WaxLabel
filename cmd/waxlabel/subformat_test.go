@@ -18,6 +18,11 @@ func TestSubformatJSON(t *testing.T) {
 		{"aifc", sampleAIFC, "AIFF", "AIFC"},
 		{"rf64", sampleRF64, "WAV", "RF64"},
 		{"flac", sampleFLAC, "FLAC", "FLAC"}, // plain: subformat == format
+		// A container the format name already opens with says less than the format does.
+		{"ogg", filepath.Join("..", "..", "testdata", "sample.ogg"), "Ogg Vorbis", "Ogg Vorbis"},
+		{"opus", filepath.Join("..", "..", "testdata", "sample.opus"), "Ogg Opus", "Ogg Opus"},
+		{"oga", filepath.Join("..", "..", "testdata", "sample.oga"), "Ogg FLAC", "Ogg FLAC"},
+		{"wma", filepath.Join("..", "..", "testdata", "sample.wma"), "WMA", "ASF"},
 	}
 	for _, c := range cases {
 		t.Run("dump/"+c.name, func(t *testing.T) {

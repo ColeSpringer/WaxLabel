@@ -23,9 +23,11 @@ package wav
 import (
 	"context"
 	"encoding/binary"
+	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
+	"github.com/colespringer/waxlabel/tag"
 )
 
 // Codec implements core.Codec for WAV.
@@ -80,18 +82,52 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 			"chapters require an id3 chunk; native cue/adtl chapters are preserved opaque but not read",
 			"chapter start/end limited to a 32-bit millisecond field (~49.7 days)",
 		},
-		MaxItems:    255, // CTOC entry count is one byte
-		ChapterLoss: core.ChapterLossLangFlags,
+		MaxItems:        255, // CTOC entry count is one byte
+		ChapterLoss:     core.ChapterLossLangFlags,
+		ChapterTimeUnit: time.Millisecond, // CHAP counts milliseconds
+		ChapterTimeMax:  id3.ChapterTimeMax,
 	}
 	// Genre may route through id3; capability is value-blind so numeric GENRE is
 	// partial. Shared v2.3 original-date rules.
-	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatWAV), opts.NumericGenre, true)
+	version := id3.WriteVersionFor(m, core.FormatWAV)
+	perField := id3.PerFieldCapabilities(version, opts.NumericGenre, true)
 	// Padding is not the caller's to set: an id3 chunk keeps what its tag had while the
 	// frames fit. Synced lyrics need id3 (edit may create the chunk).
 	return core.NewCapabilities(core.FormatWAV, false, fields, pictures, chapters, core.AccessNone, perField).
 		WithSyncedLyrics(id3.SyncedLyricsCapability()).
 		WithTextQualifiers(core.TextLossNone, id3.DefaultLanguage).
-		WithFieldClassifier(id3.TransferClassifier)
+		WithRenderedFields(id3.RenderedBy(transferRead(m, version, opts)))
+}
+
+// transferRead returns what a read of the file gives once a transfer has written fields onto it,
+// for a file with the tag containers m holds and nothing in them (none for a nil m). It places
+// the fields as Plan does: in LIST/INFO alone where that holds all the transfer writes, else in
+// an id3 chunk, beside a LIST/INFO only where the file has one.
+func transferRead(m *core.Media, version byte, opts core.WriteOptions) func(written *core.Media, fields tag.TagSet) *core.Media {
+	var infoPresent, id3Present bool
+	if m != nil {
+		if d, ok := m.Native.(*doc); ok && d != nil {
+			infoPresent, id3Present = d.infoIdx >= 0, d.id3 != nil
+		}
+	}
+	wopts := id3.WriteOptsOf(opts)
+	legacyStrip := opts.Legacy == core.LegacyStrip
+	return func(written *core.Media, fields tag.TagSet) *core.Media {
+		changed := foldInfoTrackPair(core.ChangedKeys(tag.NewTagSet(), fields, nil))
+		edited := &core.Media{Tags: fields, Comments: written.Comments, Lyrics: written.Lyrics}
+		needID3 := id3Present || len(written.Pictures) > 0 || len(written.Chapters) > 0 || len(written.SyncedLyrics) > 0 ||
+			id3.NeedsTextFrames(edited) || !infoRepresentable(fields, changed) || legacyStrip
+		out := &doc{}
+		if needID3 {
+			out.id3 = id3.TransferTag(written, fields, version, wopts)
+		}
+		if (infoPresent && !legacyStrip) || !needID3 {
+			out.info = rebuildInfo(nil, fields, changed, false)
+		}
+		read := &core.Media{Format: core.FormatWAV}
+		project(out, read)
+		return read
+	}
 }
 
 // ID3Tag returns the parsed id3-chunk tag, or nil when absent.

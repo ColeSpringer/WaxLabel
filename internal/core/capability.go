@@ -1,11 +1,13 @@
 package core
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -40,12 +42,18 @@ type Capability struct {
 	MaxItems int
 	// MaxValues is a discovery cardinality hint; transfer uses Fidelity/Constraints instead.
 	MaxValues int
-	// PictureLoss on pictures capability only; per-picture loss grading in ProjectTransfer.
+	// PictureLoss on pictures capability only; per-picture loss grading in [ProjectTransferOnto].
 	PictureLoss PictureLoss
 	// ChapterLoss on chapters capability only.
 	ChapterLoss ChapterLoss
 	// ChapterTitleByteMax title byte cap; 0 = none (MP4 chpl 255).
 	ChapterTitleByteMax int
+	// ChapterTimeUnit is the step the format counts chapter times in, so a finer time is not
+	// stored exactly. 0 = not stated. Chapters capability only.
+	ChapterTimeUnit time.Duration
+	// ChapterTimeMax is the largest chapter time the format's field holds; its writer clamps a
+	// later one. 0 = none. Chapters capability only.
+	ChapterTimeMax time.Duration
 	// SyncedLyricsLoss on synced-lyrics capability only.
 	SyncedLyricsLoss SyncedLyricsLoss
 	// SyncedLyricsTimeMax line timestamp cap; 0 = none (SYLT/LRC).
@@ -54,6 +62,9 @@ type Capability struct {
 	TextLoss TextItemLoss
 	// PictureMIMEs allowed cover MIMEs; nil = unrestricted. Pictures capability only.
 	PictureMIMEs []string
+	// PictureGeometry: the format has fields for a picture's size, so one declared for bytes
+	// that give none (a link, an image type nothing here reads) is stored (FLAC PICTURE block).
+	PictureGeometry bool
 
 	// reducesValue: per-value Lossy vs Carried in [dispose].
 	reducesValue func(string) bool
@@ -62,6 +73,10 @@ type Capability struct {
 	// slotPictures: which pictures a store of uniquely named items holds (APE). nil added = transfer path.
 	slotPictures func(pics []Picture, added []bool) []int
 	slotReason   string
+	// pictureTooLarge: why a picture is past what the store holds, "" when it fits. nil = any size.
+	pictureTooLarge func(Picture) string
+	// storedLanguage: see [WithStoredLanguage]. nil = as given.
+	storedLanguage func(string) string
 }
 
 // WithValueReduction attaches a per-value reduction predicate.
@@ -82,6 +97,49 @@ func WithPictureSlots(c Capability, slots func(pics []Picture, added []bool) []i
 	c.slotPictures = slots
 	c.slotReason = reason
 	return c
+}
+
+// WithPictureSizeLimit attaches the size check of a store that holds a picture only up to a
+// size: tooLarge returns why p does not fit ([SizeLimitReason]), "" when it does.
+func WithPictureSizeLimit(c Capability, tooLarge func(Picture) string) Capability {
+	c.pictureTooLarge = tooLarge
+	return c
+}
+
+// WithStoredLanguage attaches the form a synced lyrics set's language takes in a store that
+// keeps it in a field of its own shape (the three bytes of an ID3 frame): stored returns what a
+// read gives for a language written as lang.
+func WithStoredLanguage(c Capability, stored func(lang string) string) Capability {
+	c.storedLanguage = stored
+	return c
+}
+
+// PartitionPictureSize returns the indexes of the pics within c's size limit, and the reason the
+// first of the others is dropped. No limit keeps all.
+func PartitionPictureSize(c Capability, pics []Picture) (keptIdx []int, reason string) {
+	keptIdx = make([]int, 0, len(pics))
+	for i, p := range pics {
+		if c.pictureTooLarge != nil {
+			if r := c.pictureTooLarge(p); r != "" {
+				if reason == "" {
+					reason = r
+				}
+				continue
+			}
+		}
+		keptIdx = append(keptIdx, i)
+	}
+	return keptIdx, reason
+}
+
+// SizeLimitReason words an item of n bytes past limit, which holds says of the format's store
+// ("the picture is 17.0 MiB, over the 16.0 MiB a FLAC metadata block holds"), "" when n fits.
+func SizeLimitReason(item string, n, limit int64, holds string) string {
+	if n <= limit {
+		return ""
+	}
+	got, max := bits.SizeOverLimit(n, limit)
+	return fmt.Sprintf("%s is %s, over the %s %s", item, got, max, holds)
 }
 
 // Representable reports whether c can store p's effective MIME.
@@ -117,20 +175,17 @@ func PartitionRepresentable(c Capability, pics []Picture) (kept []Picture, keptI
 	return kept, keptIdx, droppedMIMEs
 }
 
-// PartitionPictureSlots applies slot partition; no partition keeps all.
-func PartitionPictureSlots(c Capability, pics []Picture) (kept []Picture, dropped int, reason string) {
+// PartitionPictureSlots returns the indexes of the pics a store of uniquely named items holds,
+// and the reason it holds no more. No such store keeps all.
+func PartitionPictureSlots(c Capability, pics []Picture) (keptIdx []int, reason string) {
 	if c.slotPictures == nil || len(pics) == 0 {
-		return pics, 0, ""
+		keptIdx = make([]int, len(pics))
+		for i := range keptIdx {
+			keptIdx[i] = i
+		}
+		return keptIdx, ""
 	}
-	keptIdx := c.slotPictures(pics, nil)
-	if len(keptIdx) == len(pics) {
-		return pics, 0, ""
-	}
-	kept = make([]Picture, 0, len(keptIdx))
-	for _, i := range keptIdx {
-		kept = append(kept, pics[i])
-	}
-	return kept, len(pics) - len(kept), c.slotReason
+	return c.slotPictures(pics, nil), c.slotReason
 }
 
 // PartitionPictureSlotsEdited is editor path with added mask. ok false: no slot limit.
@@ -183,13 +238,32 @@ type Capabilities struct {
 	GenericField    Capability             // default for canonical keys
 	perField        map[tag.Key]Capability // overrides
 	fieldClassifier FieldClassifier        // per-field transfer override; unexported for JSON
+	// rendered: see [Capabilities.WithRenderedFields].
+	rendered RenderedFields
 	// textDefaultLanguage: see [Capabilities.TextDefaultLanguage].
 	textDefaultLanguage string
-	readOnlyReason      error // codec write refusal; unexported for JSON
+	// maxValueBytes: see [Capabilities.WithValueSizeLimit]. 0 = no limit.
+	maxValueBytes  int64
+	valueSizeStore string
+	readOnlyReason error // codec write refusal; unexported for JSON
 }
 
-// FieldClassifier overrides transfer grading for one field (cardinality, reserved keys, siblings).
-type FieldClassifier func(key tag.Key, values []string, all tag.TagSet) (Disposition, string, bool)
+// FieldClassifier overrides transfer grading for one field (cardinality, reserved keys,
+// siblings). values are the key's as a transfer writes them ([GradedTransferValues]), and
+// written is the source with the pictures, chapters and synced lyrics the transfer brings.
+type FieldClassifier func(key tag.Key, values []string, written *Media) (Disposition, string, bool)
+
+// RenderedFields grades the fields of a transfer by what a format's own writer stores of them,
+// so every loss the writer makes is graded by the writer itself.
+type RenderedFields struct {
+	// Render writes fields as a write onto a file holding no metadata does, beside the comment
+	// and lyric items, pictures, chapters and synced lyrics of written, and returns what a read
+	// of that file gives: the tags, and the comment and lyric items.
+	Render func(written *Media, fields tag.TagSet) *Media
+	// Reason may say in the format's terms why k, one of fields, is graded d by the rendering:
+	// "" keeps the reason the grade came with.
+	Reason func(k tag.Key, d Disposition, fields tag.TagSet) string
+}
 
 // NewCapabilities builds a Capabilities with the given padding level and per-field
 // overrides.
@@ -235,13 +309,29 @@ func (c Capabilities) WithTextQualifiers(loss TextItemLoss, defaultLanguage stri
 	return c
 }
 
+// WithValueSizeLimit states the most bytes one field value can take in this format's store,
+// which holds names in the reason a longer one is dropped from a transfer ("a FLAC metadata
+// block holds").
+func (c Capabilities) WithValueSizeLimit(max int64, holds string) Capabilities {
+	c.maxValueBytes, c.valueSizeStore = max, holds
+	return c
+}
+
 // TextDefaultLanguage is the language this format's writer fills in for a comment or lyric given
 // none, so one read from it says little about the text; "" when the format has no such default.
 func (c Capabilities) TextDefaultLanguage() string { return c.textDefaultLanguage }
 
-// WithFieldClassifier attaches per-field transfer grading. Overrides Carried only.
+// WithFieldClassifier attaches per-field transfer grading. It grades what the capability table
+// calls carried, and may drop what the table calls lossy.
 func (c Capabilities) WithFieldClassifier(fn FieldClassifier) Capabilities {
 	c.fieldClassifier = fn
+	return c
+}
+
+// WithRenderedFields attaches grading by the format's writer, under the rule of
+// [Capabilities.WithFieldClassifier]. Only the fields the table stores are rendered.
+func (c Capabilities) WithRenderedFields(r RenderedFields) Capabilities {
+	c.rendered = r
 	return c
 }
 

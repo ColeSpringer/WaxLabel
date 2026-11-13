@@ -468,16 +468,22 @@ func nativeSize(e wl.NativeEntry) string {
 	}
 }
 
+// renderNoChanges prints the preview of a plan that writes nothing: the headline, then the
+// warnings it still carries.
+func renderNoChanges(w io.Writer, path, headline string, warnings []wl.Warning) {
+	fmt.Fprintf(w, "%s: %s\n", displayName(path), headline)
+	for _, x := range warnings {
+		fmt.Fprintf(w, "  warning: %s\n", x.String())
+	}
+}
+
 // renderReport prints a write plan. addedPics detail picture adds under the count change (C4a).
 func renderReport(w io.Writer, path string, plan *wl.Plan, addedPics []wl.Picture) {
 	r := plan.Report()
 	name := displayName(path)
 	if plan.IsNoOp() {
 		// No-op may still warn (e.g. value dropped); headline matches Plan.String via HasDiscardWarning.
-		fmt.Fprintf(w, "%s: %s\n", name, wl.NoChangesLine(wl.HasDiscardWarning(r.Warnings)))
-		for _, x := range r.Warnings {
-			fmt.Fprintf(w, "  warning: %s\n", x.String())
-		}
+		renderNoChanges(w, path, wl.NoChangesLine(wl.HasDiscardWarning(r.Warnings)), r.Warnings)
 		return
 	}
 	fmt.Fprintf(w, "%s: plan\n", name)

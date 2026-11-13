@@ -41,6 +41,9 @@ const (
 	chapTimeMax uint32 = 0xFFFFFFFE
 )
 
+// ChapterTimeMax is the largest chapter time a CHAP frame stores; the writer clamps a later one.
+const ChapterTimeMax = time.Duration(chapTimeMax) * time.Millisecond
+
 // CTOC flag bits (the flags byte is %000000ab: a = top-level, b = ordered).
 const (
 	ctocOrdered  byte = 0x01

@@ -549,7 +549,7 @@ func checkItemSizes(items []item, limit int64) error {
 		if it.name == atomName("covr") {
 			return fmt.Errorf("%w: cover art is %s, max %s", waxerr.ErrPictureTooLarge, got, max)
 		}
-		return fmt.Errorf("%w: ilst item %q is %s, max %s", waxerr.ErrSizeTooLarge, string(it.name[:]), got, max)
+		return fmt.Errorf("%w: ilst item %q is %s, max %s", waxerr.ErrContentTooLarge, string(it.name[:]), got, max)
 	}
 	return nil
 }
@@ -557,13 +557,16 @@ func checkItemSizes(items []item, limit int64) error {
 // checkBuiltItems is the one check both write paths pass buildItems' output through, so
 // the size limit and its floor are applied the same way at every call site.
 func checkBuiltItems(items, parsed []item, limit int64) error {
+	return checkItemSizes(items, itemSizeLimit(parsed, limit))
+}
+
+// itemSizeLimit is the most bytes a written item's payload may hold: the allocation limit (its
+// default when unset), raised to the largest item the file already holds.
+func itemSizeLimit(parsed []item, limit int64) int64 {
 	if limit <= 0 {
 		limit = bits.DefaultLimits.MaxAllocBytes
 	}
-	if f := largestItemPayload(parsed); f > limit {
-		limit = f
-	}
-	return checkItemSizes(items, limit)
+	return max(limit, largestItemPayload(parsed))
 }
 
 // largestItemPayload returns the largest ilst item payload in items, or 0 when there are none.

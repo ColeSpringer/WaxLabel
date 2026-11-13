@@ -435,6 +435,18 @@ func UndecodableCover(it Item) bool {
 	return !ok
 }
 
+// CheckCoverFormats refuses a link picture: a cover item holds image bytes, so the URL would be
+// written as a cover and read back as one. A transfer drops such a picture before the write
+// (the pictures capability's PictureMIMEs).
+func CheckCoverFormats(pics []core.Picture) error {
+	for _, p := range pics {
+		if p.MIME == core.LinkMIME {
+			return fmt.Errorf("%w: an APEv2 cover art item holds an image, not a link to one (got a URL picture)", waxerr.ErrUnsupportedTag)
+		}
+	}
+	return nil
+}
+
 // Render limits: ffmpeg APE reader caps; maxItemBytes is the 32-bit length field.
 const (
 	maxTagBytes  = 16 << 20

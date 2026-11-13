@@ -26,6 +26,7 @@ import (
 	"context"
 	"encoding/binary"
 	"slices"
+	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
@@ -119,6 +120,7 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		MaxItems:            maxChplChapters,
 		ChapterLoss:         core.ChapterLossInteriorEndsLangFlags,
 		ChapterTitleByteMax: 255,
+		ChapterTimeUnit:     time.Second / chplStartUnit,
 		Constraints: []string{
 			"at most 255 chapters (8-bit chpl count)",
 			"chapter titles are truncated to 255 bytes (8-bit chpl length prefix)",
@@ -157,23 +159,65 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	add(tag.ShowMovement, core.WithValueDrop(fields, showMovementValueDropped))
 	// ReadOnly from the same refuseWrite Plan uses (capability matches write outcome).
 	var refusal error
+	var parsed []item
+	ilst := true
 	if m != nil {
 		if d, ok := m.Native.(*doc); ok && d != nil {
-			refusal = d.refuseWrite()
+			refusal, parsed = d.refuseWrite(), d.items
+			// A keys store, the file's own or a second one beside its ilst, holds what an
+			// iTunes ilst has no form for: the plan's own result grades those.
+			ilst = !mdtaStore(d) && d.second == nil
 		}
 	}
+	// The limit checkBuiltItems holds every written item to.
+	limit, store := itemSizeLimit(parsed, opts.Limits.MaxAllocBytes), "an MP4 metadata item holds under the allocation limit"
+	pictures = core.WithPictureSizeLimit(pictures, func(p core.Picture) string {
+		return core.SizeLimitReason("the picture", int64(len(p.Data)), limit, store)
+	})
 	// An edit that fits reuses the ilst and free region in place unless the policy reuses none.
-	return core.NewCapabilities(core.FormatMP4, refusal != nil, fields, pictures, chapters, core.AccessPartial, perField).
-		WithFieldClassifier(transferClassifier).
-		WithReadOnlyReason(refusal)
+	caps := core.NewCapabilities(core.FormatMP4, refusal != nil, fields, pictures, chapters, core.AccessPartial, perField).
+		WithReadOnlyReason(refusal).
+		WithValueSizeLimit(limit, store)
+	if ilst {
+		return caps.WithRenderedFields(ilstRendering(opts.NumericGenre))
+	}
+	return caps.WithFieldClassifier(singleAtomClassifier)
 }
 
-// transferClassifier: multi-value on a single-atom key stores only the first (Lossy).
-func transferClassifier(key tag.Key, values []string, _ tag.TagSet) (core.Disposition, string, bool) {
+// singleAtomReason: a single-atom key stores only the first of several values.
+const singleAtomReason = "this field is a single-value MP4 atom; only the first value is stored"
+
+// singleAtomClassifier: multi-value on a single-atom key stores only the first (Lossy).
+func singleAtomClassifier(key tag.Key, values []string, _ *core.Media) (core.Disposition, string, bool) {
 	if structuredSingleAtomKeys[key] && len(values) > 1 {
-		return core.Lossy, "this field is a single-value MP4 atom; only the first value is stored", true
+		return core.Lossy, singleAtomReason, true
 	}
 	return core.Carried, "", false
+}
+
+// ilstRendering grades the fields of a file whose tags go to an iTunes ilst, or of the format
+// with no file, by what the item builder stores of them ([core.RenderedFields]): the one value
+// of a single-atom key, a number an integer atom rounds, a custom key whose freeform name reads
+// back as another key, an empty value an atom has no form for.
+func ilstRendering(numericGenre bool) core.RenderedFields {
+	return core.RenderedFields{
+		Render: func(_ *core.Media, fields tag.TagSet) *core.Media {
+			tags, _, _, _ := project(&doc{items: buildItems(fields, nil, nil, numericGenre)})
+			read := &core.Media{Format: core.FormatMP4, Tags: tags}
+			core.SyncTextItems(read)
+			return read
+		},
+		Reason: func(k tag.Key, d core.Disposition, fields tag.TagSet) string {
+			vals, _ := fields.Get(k)
+			switch {
+			case d == core.Dropped && !slices.ContainsFunc(vals, func(v string) bool { return v != "" }):
+				return "the MP4 atom for this key has no form for an empty value"
+			case d == core.Lossy && structuredSingleAtomKeys[k] && len(vals) > 1:
+				return singleAtomReason
+			}
+			return ""
+		},
+	}
 }
 
 // bpmValueReduced adapts writer coercion to the capability reduction predicate.

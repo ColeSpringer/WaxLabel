@@ -287,23 +287,31 @@ func TestPrepareTransferCarriesPictures(t *testing.T) {
 func TestPlanTransferMatchesPrepareTransfer(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)
 	dst := mustParseBytes(t, readFixture(t, "../testdata/notags.flac"))
+	assertPlanMatchesPrepare(t, src.Transfer(), dst)
+}
 
-	sim, err := src.PlanTransfer(dst.Format())
-	if err != nil {
-		t.Fatalf("PlanTransfer: %v", err)
-	}
-	_, applied, err := src.PrepareTransfer(dst)
-	if err != nil {
-		t.Fatalf("PrepareTransfer: %v", err)
-	}
+// With no file to consult, the simulation still says what a write to a blank file of the format
+// stores: every loss a writer makes is one the format's capabilities state.
+func TestPlanTransferMatchesPrepareOnBlankDestinations(t *testing.T) {
+	forEachTransfer(t, blankTransferDestinations, func(t *testing.T, s transferSource, srcBytes, dstBytes []byte) {
+		assertPlanMatchesPrepare(t, mustParseBytes(t, srcBytes).Transfer(), mustParseBytes(t, dstBytes), s.opts...)
+	})
+}
 
-	if len(sim.Items) != len(applied.Items) {
-		t.Fatalf("item counts differ: sim %d, applied %d", len(sim.Items), len(applied.Items))
+// assertPlanMatchesPrepare holds the report of tr simulated for dst's format to the one prepared
+// onto dst itself.
+func assertPlanMatchesPrepare(t *testing.T, tr *wl.Transfer, dst *wl.Document, opts ...wl.WriteOption) {
+	t.Helper()
+	sim, err := tr.Plan(dst.Format(), opts...)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
-	for i := range sim.Items {
-		if sim.Items[i] != applied.Items[i] {
-			t.Errorf("item %d: sim %+v != applied %+v", i, sim.Items[i], applied.Items[i])
-		}
+	_, applied, err := tr.Prepare(dst, opts...)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if !slices.Equal(sim.Items, applied.Items) {
+		t.Errorf("the simulation and the prepared transfer differ:\n   Plan %+v\nPrepare %+v", sim.Items, applied.Items)
 	}
 }
 
@@ -460,12 +468,19 @@ func TestPlanTransferMatroskaToMP4ChapterLoss(t *testing.T) {
 func TestPrepareTransferToWebMWithExistingCover(t *testing.T) {
 	src := mustParseBytes(t, coverBearingFLAC(t, "WebM Cover Src"))
 
-	cover := testfile.El(idAttachments, testfile.El(idAttached, concat(
-		mkStr(idFileName, "cover.png"),
-		mkStr(idFileMime, "image/png"),
-		testfile.El(idFileData, testfile.PNG()),
-	)))
-	dstBytes := testfile.Matroska("webm", "WebM Dst", cover)
+	webmWithCover := func(name, mime string, data []byte) []byte {
+		return testfile.Matroska("webm", "WebM Dst", testfile.El(idAttachments, testfile.El(idAttached, concat(
+			mkStr(idFileName, name), mkStr(idFileMime, mime), testfile.El(idFileData, data)))))
+	}
+	pictureItem := func(report wl.TransferReport) (pic wl.TransferItem) {
+		for _, it := range report.Items {
+			if it.Kind == wl.TransferPicture {
+				pic = it
+			}
+		}
+		return pic
+	}
+	dstBytes := webmWithCover("cover.jpg", "image/jpeg", testfile.JPEG())
 	if n := len(mustParseBytes(t, dstBytes).Pictures()); n != 1 {
 		t.Fatalf("setup: the WebM destination should surface its 1 cover attachment, got %d", n)
 	}
@@ -474,18 +489,24 @@ func TestPrepareTransferToWebMWithExistingCover(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareTransfer onto a WebM with an existing cover must not error: %v", err)
 	}
-	var pic wl.TransferItem
-	for _, it := range report.Items {
-		if it.Kind == wl.TransferPicture {
-			pic = it
-		}
-	}
-	if pic.Disposition != wl.Dropped {
+	if pic := pictureItem(report); pic.Disposition != wl.Dropped {
 		t.Errorf("source cover = %s, want dropped for a WebM destination", pic.Disposition)
 	}
-	out := applyToBytes(t, dstBytes, plan)
-	if got, _ := mustParseBytes(t, out).Get(tag.Title); len(got) == 0 || got[0] != "WebM Cover Src" {
+	out := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
+	if got, _ := out.Get(tag.Title); len(got) == 0 || got[0] != "WebM Cover Src" {
 		t.Errorf("carried TITLE = %v, want [WebM Cover Src] (tags carry despite the WebM cover)", got)
+	}
+	if pics := out.Pictures(); len(pics) != 1 || !bytes.Equal(pics[0].Data, testfile.JPEG()) {
+		t.Errorf("the destination's own cover should stay, got %d pictures", len(pics))
+	}
+
+	// A WebM that already holds the source's cover loses nothing: there is nothing to write.
+	same := mustParseBytes(t, webmWithCover("cover.png", "image/png", testfile.PNG()))
+	if _, report, err = src.PrepareTransfer(same); err != nil {
+		t.Fatal(err)
+	}
+	if pic := pictureItem(report); pic.Disposition != wl.Carried || pic.Count != 1 {
+		t.Errorf("a cover the destination already holds = %+v, want 1 carried", pic)
 	}
 }
 
@@ -1024,5 +1045,249 @@ func TestTransferKeepsDestinationQualifiersTheSourceCannotExpress(t *testing.T) 
 				t.Errorf("Comments() = %+v, want %+v", got, c.want)
 			}
 		})
+	}
+}
+
+// The report a transfer prepares is what the write does: over sources whose values a writer stores
+// in another shape, onto every destination a transfer can write.
+func TestTransferReportMatchesWrittenResult(t *testing.T) {
+	forEachTransfer(t, transferDestinations, func(t *testing.T, s transferSource, srcBytes, dstBytes []byte) {
+		src, before := mustParseBytes(t, srcBytes), mustParseBytes(t, dstBytes)
+		plan, report, err := src.PrepareTransfer(before, s.opts...)
+		if err != nil {
+			t.Fatalf("PrepareTransfer: %v\nreport: %+v", err, report.Items)
+		}
+		after := before
+		if !plan.IsNoOp() {
+			after = mustParseBytes(t, applyToBytes(t, dstBytes, plan))
+		}
+		assertTransferMatchesResult(t, src, before, after, plan, report)
+	})
+}
+
+// A cover or a value past what the destination's store holds is dropped from the copy with the
+// limit named, and the rest is written. Items that fit alone and overflow together still refuse
+// the write.
+func TestTransferDropsOversizeItems(t *testing.T) {
+	bigCover := append(testfile.PNG(), make([]byte, 17<<20)...)
+	coverSrc := mustParseBytes(t, writeBack(t, notagsMP3, func(e *wl.Editor) {
+		e.Set(tag.Title, "Big Cover")
+		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: bigCover})
+		e.AddPicture(wl.Picture{Type: wl.PicBackCover, Data: testfile.JPEG()})
+	}))
+	for _, c := range []struct{ dst, reason string }{
+		{"notags.flac", "the picture is 17.0 MiB, over the 16.0 MiB a FLAC metadata block holds"},
+		{"notags.oga", "the picture is 17.0 MiB, over the 16.0 MiB a FLAC metadata block holds"},
+		{"notags.wv", "the picture is 17.0 MiB, over the 16.0 MiB an APEv2 tag holds"},
+	} {
+		t.Run(c.dst, func(t *testing.T) {
+			dstBytes := readFixture(t, "../testdata/"+c.dst)
+			plan, report, err := coverSrc.PrepareTransfer(mustParseBytes(t, dstBytes))
+			if err != nil {
+				t.Fatalf("PrepareTransfer: %v", err)
+			}
+			if carried, lossy, dropped := pictureCounts(report); carried != 1 || lossy != 0 || dropped != 1 {
+				t.Errorf("pictures: %d carried, %d lossy, %d dropped, want the small one carried and the large one dropped\n%+v", carried, lossy, dropped, report.Items)
+			}
+			for _, it := range report.Items {
+				if it.Kind == wl.TransferPicture && it.Disposition == wl.Dropped && it.Reason != c.reason {
+					t.Errorf("reason %q, want %q", it.Reason, c.reason)
+				}
+			}
+			out := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
+			if got, _ := out.Get(tag.Title); !slices.Equal(got, []string{"Big Cover"}) {
+				t.Errorf("TITLE = %q, want the rest of the copy written", got)
+			}
+			if pics := out.Pictures(); len(pics) != 1 || pics[0].Type != wl.PicBackCover {
+				t.Errorf("destination holds %d pictures, want the one that fits", len(pics))
+			}
+		})
+	}
+
+	valueSrc := mustParseBytes(t, writeBack(t, "../testdata/notags.ogg", func(e *wl.Editor) {
+		e.Set(tag.Title, "Big Comment").Set(tag.Comment, strings.Repeat("c", 17<<20))
+	}))
+	for _, c := range []struct{ dst, reason string }{
+		{"notags.flac", "a value is 17.0 MiB, over the 16.0 MiB a FLAC metadata block holds"},
+		{"notags.wv", "a value is 17.0 MiB, over the 16.0 MiB an APEv2 tag holds"},
+	} {
+		t.Run("value/"+c.dst, func(t *testing.T) {
+			dstBytes := readFixture(t, "../testdata/"+c.dst)
+			plan, report, err := valueSrc.PrepareTransfer(mustParseBytes(t, dstBytes))
+			if err != nil {
+				t.Fatalf("PrepareTransfer: %v", err)
+			}
+			if it := transferItemFor(t, report, tag.Comment); it.Disposition != wl.Dropped || it.Reason != c.reason {
+				t.Errorf("COMMENT = %s (%s), want dropped with the limit named", it.Disposition, it.Reason)
+			}
+			out := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
+			if got, _ := out.Get(tag.Title); !slices.Equal(got, []string{"Big Comment"}) {
+				t.Errorf("TITLE = %q, want the rest of the copy written", got)
+			}
+			if out.Tags().Has(tag.Comment) {
+				t.Error("the dropped COMMENT was written")
+			}
+		})
+	}
+
+	t.Run("together", func(t *testing.T) {
+		src := mustParseBytes(t, writeBack(t, "../testdata/notags.ogg", func(e *wl.Editor) {
+			e.Set(tag.Comment, strings.Repeat("c", 9<<20)).Set(tag.Lyrics, strings.Repeat("l", 9<<20))
+		}))
+		_, report, err := src.PrepareTransfer(mustParseBytes(t, readFixture(t, "../testdata/notags.flac")))
+		if !errors.Is(err, waxerr.ErrContentTooLarge) {
+			t.Fatalf("err = %v, want content too large: neither value is over the limit alone", err)
+		}
+		if !report.Lossless() {
+			t.Errorf("report = %+v, want both values graded as fitting", report.Items)
+		}
+	})
+}
+
+// A link picture holds a URL, not an image. An APEv2 cover item has no way to say so, so the
+// formats that store pictures there drop it instead of writing the URL as a cover.
+func TestTransferDropsLinkPictureOntoAPE(t *testing.T) {
+	src := mustParseBytes(t, linkPictureFLAC("the cover"))
+	for _, d := range []string{"notags.wv", "notags.ape", "chapters.mpc"} {
+		dstBytes := readFixture(t, "../testdata/"+d)
+		plan, report, err := src.PrepareTransfer(mustParseBytes(t, dstBytes))
+		if err != nil {
+			t.Fatalf("%s: %v", d, err)
+		}
+		carried, lossy, dropped := pictureCounts(report)
+		if carried != 0 || lossy != 0 || dropped != 1 {
+			t.Errorf("%s: pictures %d carried, %d lossy, %d dropped, want the link dropped", d, carried, lossy, dropped)
+		}
+		for _, it := range report.Items {
+			if want := mustParseBytes(t, dstBytes).Format().String() + " cannot store a linked (URL) picture"; it.Kind == wl.TransferPicture && it.Reason != want {
+				t.Errorf("%s: reason %q, want %q", d, it.Reason, want)
+			}
+		}
+		if out := mustParseBytes(t, applyToBytes(t, dstBytes, plan)); len(out.Pictures()) != 0 {
+			t.Errorf("%s: %d pictures written, want none", d, len(out.Pictures()))
+		} else if got, _ := out.Get(tag.Title); !slices.Equal(got, []string{"Linked"}) {
+			t.Errorf("%s: TITLE = %q, want the rest of the copy written", d, got)
+		}
+	}
+	// A direct edit refuses the link the same way a transfer drops it.
+	doc := mustParseBytes(t, readFixture(t, "../testdata/notags.wv"))
+	link := src.Pictures()[0]
+	if _, err := doc.Edit().AddPicture(link).Prepare(wl.WithUnrecognizedPictures()); !errors.Is(err, waxerr.ErrUnsupportedTag) {
+		t.Errorf("adding a link picture to WavPack: err = %v, want an unsupported-tag refusal", err)
+	}
+}
+
+// A size a FLAC picture block states for an image whose bytes give none (AVIF here) has no field
+// in ID3: the copy is lossy for it, and a repeat finds the picture there and writes nothing.
+func TestTransferOfADeclaredPictureSizeSettles(t *testing.T) {
+	avif := []byte("\x00\x00\x00\x1cftypavif\x00\x00\x00\x00avifmif1miaf")
+	block := slices.Concat(
+		testfile.BE32(3), testfile.BE32(len("image/avif")), []byte("image/avif"), testfile.BE32(0),
+		testfile.BE32(1920), testfile.BE32(1080), testfile.BE32(24), testfile.BE32(0),
+		testfile.BE32(len(avif)), avif)
+	src := mustParseBytes(t, testfile.FLAC(testfile.CommentBlock("v", "TITLE=T"), testfile.FLACBlock(6, block)))
+	if pics := src.Pictures(); len(pics) != 1 || pics[0].Width != 1920 || pics[0].MIME != "image/avif" {
+		t.Fatalf("setup: source pictures = %+v", pics)
+	}
+	dstBytes := readFixture(t, notagsMP3)
+	plan, report, err := src.PrepareTransfer(mustParseBytes(t, dstBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if carried, lossy, dropped := pictureCounts(report); carried != 0 || lossy != 1 || dropped != 0 {
+		t.Errorf("first copy: pictures %d carried, %d lossy, %d dropped, want lossy for the size", carried, lossy, dropped)
+	}
+	written := applyToBytes(t, dstBytes, plan)
+	dst := mustParseBytes(t, written)
+	if pics := dst.Pictures(); len(pics) != 1 || pics[0].Width != 0 || !bytes.Equal(pics[0].Data, avif) {
+		t.Fatalf("written pictures = %+v, want the image without a size", pics)
+	}
+	plan, report, err = src.PrepareTransfer(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.IsNoOp() {
+		t.Errorf("a repeat copy plans a write: %+v", plan.Report().Operations)
+	}
+	if _, lossy, _ := pictureCounts(report); lossy != 1 {
+		t.Errorf("repeat copy: %+v, want the picture still lossy for its size", report.Items)
+	}
+}
+
+// Where the format has fields for a picture's size, the size a link picture declares is carried.
+func TestTransferKeepsADeclaredPictureSizeWhereTheFormatHoldsIt(t *testing.T) {
+	src := mustParseBytes(t, linkPictureFLAC(""))
+	for _, d := range []string{"notags.flac", "notags.ogg", "notags.opus", "notags.oga"} {
+		dstBytes := readFixture(t, "../testdata/"+d)
+		plan, report, err := src.PrepareTransfer(mustParseBytes(t, dstBytes))
+		if err != nil {
+			t.Fatalf("%s: %v", d, err)
+		}
+		if carried, lossy, dropped := pictureCounts(report); carried != 1 || lossy != 0 || dropped != 0 {
+			t.Errorf("%s: pictures %d carried, %d lossy, %d dropped, want the link carried", d, carried, lossy, dropped)
+		}
+		pics := mustParseBytes(t, applyToBytes(t, dstBytes, plan)).Pictures()
+		if len(pics) != 1 || pics[0].Width != 1 || pics[0].Height != 1 || pics[0].Depth != 24 || pics[0].MIME != wl.LinkMIME {
+			t.Errorf("%s: written pictures = %+v, want the link with its 1x1, 24-bit size", d, pics)
+		}
+	}
+}
+
+// A language longer than the three bytes an ID3 frame holds is cut by the write, so the comment
+// is lossy though its text is carried, and the format-only simulation says the same.
+func TestTransferGradesALanguageCutToTheFrame(t *testing.T) {
+	src := mustParseBytes(t, writeBack(t, "../testdata/notags.mka", func(e *wl.Editor) {
+		e.SetComments(wl.Comment{Text: "d", Language: "en-us"})
+	}))
+	if c := src.Comments(); len(c) != 1 || c[0].Language != "en-us" {
+		t.Skipf("setup: Matroska reads the comment as %+v, not in en-us", c)
+	}
+	for _, d := range []string{"notags.mp3", "notags.wav", "notags.aiff", "notags.aac"} {
+		dstBytes := readFixture(t, "../testdata/"+d)
+		dst := mustParseBytes(t, dstBytes)
+		plan, report, err := src.PrepareTransfer(dst)
+		if err != nil {
+			t.Fatalf("%s: %v", d, err)
+		}
+		if it := transferItemFor(t, report, tag.Comment); it.Disposition != wl.Lossy || it.Reason != `language "en-us" reads back as "en-"` {
+			t.Errorf("%s: COMMENT = %s (%s), want lossy for the cut language", d, it.Disposition, it.Reason)
+		}
+		if got := mustParseBytes(t, applyToBytes(t, dstBytes, plan)).Comments(); len(got) != 1 || got[0].Language != "en-" {
+			t.Errorf("%s: written comment = %+v, want the language cut to en-", d, got)
+		}
+		assertPlanMatchesPrepare(t, src.Transfer(), dst)
+	}
+}
+
+// An MP4 whose tags live in a QuickTime keys store, alone or beside an ilst, stores what an
+// iTunes ilst has no form for, an empty number and a name the ilst would read as another key:
+// such a destination is graded from its own write, not as an ilst.
+func TestTransferOntoAKeysStoreKeepsWhatAnIlstCannot(t *testing.T) {
+	src := mustParseBytes(t, testfile.TaggedFLAC("v", "TRACKNUMBER=", "MUSICBRAINZ ALBUM ID=a", "TITLE=T"))
+	udta := testfile.MP4Atom("udta", testfile.MP4Meta(testfile.MP4HdlrMdir(), testfile.MP4Ilst(testfile.MP4Text("\xa9nam", "U"))))
+	for name, dstBytes := range map[string][]byte{
+		"a keys store":                mp4MoovMetaFile(mp4MdtaMeta([]string{"title", "track"}, []string{"Meta Title", "2"})),
+		"an ilst beside a keys store": mp4MoovMetaFile(udta, mp4MdtaMeta([]string{"title", "track"}, []string{"M", "2"})),
+	} {
+		plan, report, err := src.PrepareTransfer(mustParseBytes(t, dstBytes))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if it := transferItemFor(t, report, tag.TrackNumber); it.Disposition != wl.Carried {
+			t.Errorf("%s: an empty TRACKNUMBER = %s (%s), want carried", name, it.Disposition, it.Reason)
+		}
+		after := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
+		if got, _ := after.Get(tag.TrackNumber); !slices.Equal(got, []string{""}) {
+			t.Errorf("%s: TRACKNUMBER reads back %q, want the empty value", name, got)
+		}
+	}
+	// On the keys store alone the custom name is its own key.
+	keys := mp4MoovMetaFile(mp4MdtaMeta([]string{"title"}, []string{"Meta Title"}))
+	_, report, err := src.PrepareTransfer(mustParseBytes(t, keys))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it := transferItemFor(t, report, "MUSICBRAINZ ALBUM ID"); it.Disposition != wl.Carried {
+		t.Errorf("a custom name on a keys store = %s (%s), want carried", it.Disposition, it.Reason)
 	}
 }

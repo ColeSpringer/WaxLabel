@@ -27,12 +27,65 @@ func technicalNameReason(name string) string {
 	return name + " is a reserved Matroska technical/statistics tag name (derived from the stream, never read back as a tag), so the value is not written"
 }
 
+// splitNumberReason grades a slashed number among several values, which [splitNumberValues]
+// writes split.
+const splitNumberReason = "a slashed number among several values is stored as the number alone; its total goes under the total key where that holds none"
+
+// splitNumberValues is ts as a write stores it: of several TRACKNUMBER or DISCNUMBER values, one
+// spelled "n/total" is written as the number. Its total goes under the total key only where ts
+// holds none there: a total the set states is the total, and one read out of a number does not
+// join it. A read splits every such SimpleTag ([projectTag]), so one left slashed would read
+// back as a second total on each rewrite. A sole value is the editor's to split. split is false,
+// and ts returned as given, when nothing splits.
+func splitNumberValues(ts tag.TagSet) (out tag.TagSet, split bool) {
+	out = ts
+	for _, numKey := range []tag.Key{tag.TrackNumber, tag.DiscNumber} {
+		vals, _ := ts.Get(numKey)
+		if len(vals) < 2 {
+			continue
+		}
+		nums := make([]string, 0, len(vals))
+		var totals []string
+		slashed := false
+		for _, v := range vals {
+			num, total, ok := tag.NumberTotalSplit(numKey, v)
+			if !ok {
+				nums = append(nums, v)
+				continue
+			}
+			slashed = true
+			if num != "" {
+				nums = append(nums, num)
+			}
+			if total != "" && !slices.Contains(totals, total) {
+				totals = append(totals, total)
+			}
+		}
+		if !slashed {
+			continue
+		}
+		if !split {
+			out, split = ts.Clone(), true
+		}
+		out.Set(numKey, nums...)
+		if totalKey := tag.TotalKey(numKey); len(totals) > 0 && !ts.Has(totalKey) {
+			out.Set(totalKey, totals...)
+		}
+	}
+	return out, split
+}
+
 // TransferClassifier: multi-value TITLE => Lossy (Info.Title is single-valued;
-// first kept); reserved technical/statistics names => Dropped. Reuses shared
-// reason consts. Plain [core.FieldClassifier]; other fields use format grade.
-func TransferClassifier(key tag.Key, values []string, _ tag.TagSet) (core.Disposition, string, bool) {
+// first kept); a slashed number among several values => Lossy (stored split); reserved
+// technical/statistics names => Dropped. Reuses shared reason consts. Plain
+// [core.FieldClassifier]; other fields use format grade.
+func TransferClassifier(key tag.Key, values []string, _ *core.Media) (core.Disposition, string, bool) {
 	if key == tag.Title && len(values) > 1 {
 		return core.Lossy, multiTitleDroppedReason, true
+	}
+	if (key == tag.TrackNumber || key == tag.DiscNumber) && len(values) > 1 &&
+		slices.ContainsFunc(values, func(v string) bool { _, _, split := tag.NumberTotalSplit(key, v); return split }) {
+		return core.Lossy, splitNumberReason, true
 	}
 	if name := mapping.MatroskaTagName(key); mapping.MatroskaTechnicalName(name) {
 		return core.Dropped, technicalNameReason(name), true
@@ -53,6 +106,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 	if d.wb == nil {
 		return nil, fmt.Errorf("%w: Matroska document must be re-parsed before editing", waxerr.ErrInvalidData)
+	}
+	if tags, split := splitNumberValues(edited.Tags); split {
+		e := *edited
+		e.Tags = tags
+		edited = &e
 	}
 
 	ch := detectChanges(base, edited)

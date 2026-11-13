@@ -324,6 +324,11 @@ func PlanTrailingWrite(w TrailingWrite, base, edited *core.Media, opts core.Writ
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
+	if picturesChanged {
+		if err := ape.CheckCoverFormats(edited.Pictures); err != nil {
+			return nil, err
+		}
+	}
 	tp, err := RebuildTrailer(w.Trailer, base.Tags, edited.Tags, edited.Pictures,
 		Rewrite{Tags: tagsChanged, Pictures: picturesChanged, StripLegacy: stripTrailing, ClearCovers: clearCovers})
 	if err != nil {

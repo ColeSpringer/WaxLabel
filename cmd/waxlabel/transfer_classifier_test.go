@@ -1,19 +1,26 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// notagsMP3: tag-free MP3 destination for ID3 transfer repro.
-var notagsMP3 = filepath.Join("..", "..", "testdata", "notags.mp3")
+// Tag-free destinations for ID3 transfer repros.
+var (
+	notagsMP3 = filepath.Join("..", "..", "testdata", "notags.mp3")
+	notagsWAV = filepath.Join("..", "..", "testdata", "notags.wav")
+)
 
 // buildTransferSource copies fixture, applies library edit, returns source path.
 // Authors values the CLI edit surface cannot easily express.
@@ -194,5 +201,266 @@ func TestCopyNumericGenreToID3IsLossy(t *testing.T) {
 	}
 	if lossyGenre.MatchString(stdout) {
 		t.Errorf("copy of GENRE=Rock to mp3 graded lossy:\n%s", stdout)
+	}
+}
+
+// rawFLAC writes a FLAC holding the Vorbis comments as given, which no edit would write so.
+func rawFLAC(t *testing.T, comments ...string) string {
+	t.Helper()
+	return writeTempFile(t, "source.flac", testfile.TaggedFLAC("test", comments...))
+}
+
+// strictCopy runs copy --strict --json onto a copy of dstFixture, then diff, and holds the two to
+// each other: a lossless report exits 0 and leaves nothing to diff on the keys it carried, a
+// lossy one exits 2 and writes nothing.
+func strictCopy(t *testing.T, src, dstFixture string, flags ...string) (jsonCopy, string) {
+	t.Helper()
+	dst := copyFixture(t, dstFixture)
+	before, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, code := runCLI(t, append(append([]string{"--json", "copy", "--strict"}, flags...), src, dst)...)
+	var jc jsonCopy
+	if err := json.Unmarshal([]byte(out), &jc); err != nil {
+		t.Fatalf("copy JSON: %v\n%s\n%s", err, out, stderr)
+	}
+	lossless := true
+	for _, it := range jc.Transfer {
+		if it.Disposition == "lossy" || it.Disposition == "dropped" {
+			lossless = false
+		}
+	}
+	after, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	switch {
+	case lossless && code != 0:
+		t.Errorf("copy --strict exit = %d with a lossless report\n%s", code, out)
+	case !lossless && code != 2:
+		t.Errorf("copy --strict exit = %d with a report that is not lossless, want 2\n%s", code, out)
+	case !lossless && !bytes.Equal(before, after):
+		t.Error("copy --strict refused and still changed the destination")
+	}
+	return jc, dst
+}
+
+// Custom keys spelled like ID3 frame IDs are stored as user-text frames and read back as given,
+// so a copy carries them. One ID3 reads under another name says so.
+func TestCopyFrameIDKeysOntoID3(t *testing.T) {
+	t.Parallel()
+	src := rawFLAC(t, "TITLE=T", "TSRC=USRC17607839", "TORY=1999", "TMED=CD", "TPE1=Someone", "ARTIST=Real")
+	jc, dst := strictCopy(t, src, notagsMP3)
+	for _, k := range []string{"TSRC", "TORY", "TMED", "TPE1", "ARTIST"} {
+		if it := fieldItem(t, jc, k); it.Disposition != "carried" {
+			t.Errorf("%s = %s (%s), want carried", k, it.Disposition, it.Reason)
+		}
+	}
+	if out, _, code := runCLI(t, "diff", src, dst); code != 0 {
+		t.Errorf("diff after the copy exit = %d\n%s", code, out)
+	}
+
+	jc, _ = strictCopy(t, rawFLAC(t, "TCMP=1"), notagsMP3)
+	if it := fieldItem(t, jc, "TCMP"); it.Disposition != "lossy" || it.Reason != "stored as COMPILATION" {
+		t.Errorf("TCMP = %s (%s), want lossy, stored as COMPILATION", it.Disposition, it.Reason)
+	}
+	jc, _ = strictCopy(t, rawFLAC(t, "TCMP=1", "COMPILATION=0"), notagsMP3)
+	if it := fieldItem(t, jc, "TCMP"); it.Disposition != "dropped" {
+		t.Errorf("TCMP beside COMPILATION = %s (%s), want dropped", it.Disposition, it.Reason)
+	}
+	if it := fieldItem(t, jc, "COMPILATION"); it.Disposition != "carried" {
+		t.Errorf("COMPILATION beside a custom TCMP = %s (%s), want carried", it.Disposition, it.Reason)
+	}
+}
+
+// A second value on a key whose ID3 frame holds one is lossy on every ID3 destination, and
+// --strict refuses the copy.
+func TestCopySingleSlotID3KeysAreLossy(t *testing.T) {
+	t.Parallel()
+	src := rawFLAC(t, "DATE=2023", "YEAR=2022", "TRACKNUMBER=3", "TRACKTOTAL=12", "TOTALTRACKS=13",
+		"RELEASEDATE=2001", "RELEASEDATE=2002")
+	rf64 := filepath.Join("..", "..", "testdata", "sample-rf64.wav")
+	aac := filepath.Join("..", "..", "testdata", "notags.aac")
+	for _, dst := range []string{notagsMP3, notagsWAV, notagsAIFF, aac, rf64} {
+		jc, _ := strictCopy(t, src, dst)
+		for _, k := range []string{"RECORDINGDATE", "TRACKTOTAL"} {
+			if it := fieldItem(t, jc, k); it.Disposition != "lossy" || it.Reason != "only the first of 2 values is stored" {
+				t.Errorf("%s onto %s = %s (%s), want lossy, first value only", k, filepath.Base(dst), it.Disposition, it.Reason)
+			}
+		}
+		if it := fieldItem(t, jc, "TRACKNUMBER"); it.Disposition != "carried" {
+			t.Errorf("TRACKNUMBER onto %s = %s, want carried", filepath.Base(dst), it.Disposition)
+		}
+	}
+	// ID3v2.3 has no release date frame, so the two values sit in one user-text frame; v2.4's
+	// TDRL holds one.
+	jc, _ := strictCopy(t, src, notagsMP3)
+	if it := fieldItem(t, jc, "RELEASEDATE"); it.Disposition != "carried" {
+		t.Errorf("RELEASEDATE onto an ID3v2.3 tag = %s (%s), want carried", it.Disposition, it.Reason)
+	}
+	jc, _ = strictCopy(t, src, notagsWAV)
+	if it := fieldItem(t, jc, "RELEASEDATE"); it.Disposition != "lossy" {
+		t.Errorf("RELEASEDATE onto an ID3v2.4 tag = %s (%s), want lossy", it.Disposition, it.Reason)
+	}
+}
+
+// --id3-multi slash joins a key's values into one, which a copy grades lossy and an edit warns of.
+func TestSlashJoinedValuesAreReported(t *testing.T) {
+	t.Parallel()
+	src := rawFLAC(t, "ARTIST=AC/DC", "ARTIST=Queen", "TITLE=T")
+	jc, _ := strictCopy(t, src, notagsMP3, "--id3-multi", "slash")
+	if it := fieldItem(t, jc, "ARTIST"); it.Disposition != "lossy" || it.Reason != `the values are stored joined as "AC/DC / Queen"` {
+		t.Errorf("ARTIST = %s (%s), want lossy, joined", it.Disposition, it.Reason)
+	}
+	if jc, _ := strictCopy(t, src, notagsMP3); fieldItem(t, jc, "ARTIST").Disposition != "carried" {
+		t.Error("ARTIST without the slash policy should carry")
+	}
+
+	dst := copyFixture(t, notagsMP3)
+	out, stderr, code := runCLI(t, "--json", "set", "--id3-multi", "slash", dst, "--set", "ARTIST=AC/DC", "--add", "ARTIST=Queen")
+	if code != 0 {
+		t.Fatalf("set exit = %d\n%s", code, stderr)
+	}
+	var reports []jsonReport
+	if err := json.Unmarshal([]byte(out), &reports); err != nil {
+		t.Fatalf("set JSON: %v\n%s", err, out)
+	}
+	if len(reports) != 1 || !slices.ContainsFunc(reports[0].Warnings, func(w jsonWarning) bool {
+		return w.Code == "value-dropped" && strings.Contains(w.Message, "ARTIST")
+	}) {
+		t.Errorf("set --id3-multi slash of two values warns nothing of the join:\n%s", out)
+	}
+	_, _, code = runCLI(t, "set", "--strict", "--id3-multi", "slash", copyFixture(t, notagsMP3), "--set", "ARTIST=AC/DC", "--add", "ARTIST=Queen")
+	if code != 2 {
+		t.Errorf("set --strict --id3-multi slash exit = %d, want 2", code)
+	}
+	// One value is stored as given, and v2.4 separates values natively.
+	_, stderr, code = runCLI(t, "set", "--strict", "--id3-multi", "slash", copyFixture(t, notagsMP3), "--set", "ARTIST=AC/DC")
+	if code != 0 {
+		t.Errorf("set --strict of one value exit = %d\n%s", code, stderr)
+	}
+}
+
+// Chapter starts finer than a millisecond are cut by the formats that count in milliseconds.
+func TestCopyGradesSubMillisecondChapters(t *testing.T) {
+	t.Parallel()
+	mpc := filepath.Join("..", "..", "testdata", "chapters.mpc")
+	for _, dst := range []string{notagsMP3, notagsFLAC} {
+		jc, _ := strictCopy(t, mpc, dst)
+		var lossy int
+		for _, it := range jc.Transfer {
+			if it.Kind == "chapter" && it.Disposition == "lossy" {
+				lossy += it.Count
+				if it.Reason != "a chapter time finer than the 1ms the format counts in is not stored exactly" {
+					t.Errorf("chapters onto %s: reason %q", filepath.Base(dst), it.Reason)
+				}
+			}
+		}
+		if lossy != 3 {
+			t.Errorf("chapters onto %s: %d lossy, want the 3 that start off the millisecond", filepath.Base(dst), lossy)
+		}
+	}
+}
+
+// An empty value an APEv2 item cannot end with is lossy on the APEv2 formats alone.
+func TestCopyGradesEmptyValuesOntoAPE(t *testing.T) {
+	t.Parallel()
+	src := rawFLAC(t, "ARTIST=A", "ARTIST=", "ARTIST=B", "GENRE=X", "GENRE=")
+	for _, name := range []string{"notags.wv", "notags.ape", "chapters.mpc"} {
+		jc, _ := strictCopy(t, src, filepath.Join("..", "..", "testdata", name))
+		if it := fieldItem(t, jc, "ARTIST"); it.Disposition != "carried" {
+			t.Errorf("ARTIST onto %s = %s (%s), want carried: an empty value between two is stored", name, it.Disposition, it.Reason)
+		}
+		if it := fieldItem(t, jc, "GENRE"); it.Disposition != "lossy" {
+			t.Errorf("GENRE onto %s = %s (%s), want lossy: the empty value at the end is not stored", name, it.Disposition, it.Reason)
+		}
+	}
+	if jc, _ := strictCopy(t, src, notagsFLAC); fieldItem(t, jc, "GENRE").Disposition != "carried" {
+		t.Error("GENRE onto FLAC should carry its empty value")
+	}
+}
+
+// A value holding a NUL is dropped from the copy and the rest is written; onto a file that
+// already holds it, there is nothing to write.
+func TestCopyDropsNULValues(t *testing.T) {
+	t.Parallel()
+	src := rawFLAC(t, "TITLE=abc\x00", "ARTIST=A", "ALBUM=Al")
+	dst := copyFixture(t, notagsMP3)
+	out, stderr, code := runCLI(t, "--json", "copy", src, dst)
+	if code != 0 {
+		t.Fatalf("copy exit = %d\n%s\n%s", code, out, stderr)
+	}
+	var jc jsonCopy
+	if err := json.Unmarshal([]byte(out), &jc); err != nil {
+		t.Fatalf("copy JSON: %v\n%s", err, out)
+	}
+	if it := fieldItem(t, jc, "TITLE"); it.Disposition != "dropped" || it.Reason != "a value contains a NUL byte" {
+		t.Errorf("TITLE = %s (%s), want dropped for its NUL", it.Disposition, it.Reason)
+	}
+	got := dumpJSON(t, dst)
+	if len(tagValues(got, "TITLE")) != 0 || !slices.Equal(tagValues(got, "ARTIST"), []string{"A"}) || !slices.Equal(tagValues(got, "ALBUM"), []string{"Al"}) {
+		t.Errorf("destination tags = %v, want ARTIST and ALBUM without TITLE", got.Tags)
+	}
+	strictCopy(t, src, notagsMP3)
+
+	// The file's own NUL is no loss on a copy onto itself, even under --strict.
+	self := rawFLAC(t, "TITLE=abc\x00", "ARTIST=A", "ALBUM=Al")
+	out, stderr, code = runCLI(t, "--json", "copy", "--strict", self, self)
+	if code != 0 {
+		t.Fatalf("copy onto itself exit = %d\n%s\n%s", code, out, stderr)
+	}
+	if err := json.Unmarshal([]byte(out), &jc); err != nil {
+		t.Fatalf("copy JSON: %v\n%s", err, out)
+	}
+	if !jc.NoOp || jc.Committed {
+		t.Errorf("copy onto itself: noOp %v, committed %v, want a no-op", jc.NoOp, jc.Committed)
+	}
+}
+
+// An edit of a key whose value holds a NUL names the key; an edit of another key goes through.
+func TestPlanBesideANULValue(t *testing.T) {
+	t.Parallel()
+	path := rawFLAC(t, "TITLE=abc\x00", "ARTIST=A")
+	if _, stderr, code := runCLI(t, "plan", path, "--add", "ARTIST=second"); code != 0 {
+		t.Errorf("plan --add ARTIST exit = %d\n%s", code, stderr)
+	}
+	_, stderr, code := runCLI(t, "plan", path, "--add", "TITLE=second")
+	if code != 4 || !strings.Contains(stderr, `"TITLE"`) || !strings.Contains(stderr, "NUL") {
+		t.Errorf("plan --add TITLE exit = %d, want 4 naming TITLE\n%s", code, stderr)
+	}
+}
+
+// A link picture is dropped from a copy onto an APEv2 format with a reason a person can read.
+func TestCopyDropsLinkPictureOntoAPE(t *testing.T) {
+	t.Parallel()
+	url := "http://example.com/cover.jpg"
+	body := slices.Concat(
+		testfile.BE32(3), testfile.BE32(3), []byte("-->"), testfile.BE32(0),
+		testfile.BE32(1), testfile.BE32(1), testfile.BE32(24), testfile.BE32(0),
+		testfile.BE32(len(url)), []byte(url))
+	src := writeTempFile(t, "link.flac", testfile.FLAC(testfile.CommentBlock("test", "TITLE=Linked"), testfile.FLACBlock(6, body)))
+	jc, dst := strictCopy(t, src, filepath.Join("..", "..", "testdata", "notags.wv"))
+	found := false
+	for _, it := range jc.Transfer {
+		if it.Kind == "picture" {
+			found = true
+			if it.Disposition != "dropped" || it.Reason != "WavPack cannot store a linked (URL) picture" {
+				t.Errorf("picture = %s (%s), want dropped as a link", it.Disposition, it.Reason)
+			}
+		}
+	}
+	if !found {
+		t.Error("the report has no picture item")
+	}
+	if got := dumpJSON(t, dst); len(got.Pictures) != 0 {
+		t.Errorf("--strict refused, but the destination holds %d pictures", len(got.Pictures))
+	}
+	dst = copyFixture(t, filepath.Join("..", "..", "testdata", "notags.wv"))
+	if out, stderr, code := runCLI(t, "copy", src, dst); code != 0 || !strings.Contains(out, "dropped pictures (1): WavPack cannot store a linked (URL) picture") {
+		t.Errorf("copy exit = %d\n%s\n%s", code, out, stderr)
+	}
+	if got := dumpJSON(t, dst); len(got.Pictures) != 0 || !slices.Equal(tagValues(got, "TITLE"), []string{"Linked"}) {
+		t.Errorf("destination: %d pictures, TITLE %v, want the title without a picture", len(got.Pictures), tagValues(got, "TITLE"))
 	}
 }

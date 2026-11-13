@@ -1182,7 +1182,7 @@ func TestRebuildEmptyValuesWithinMultiValue(t *testing.T) {
 			if vals, _ := Project(tg).Tags.Get(tag.Artist); !slices.Equal(vals, c.read) {
 				t.Errorf("read back %q, want %q", vals, c.read)
 			}
-			d, reason, override := NewTransferClassifier(nil)(tag.Artist, c.vals, edited)
+			d, reason, override := NewTransferClassifier(nil)(tag.Artist, c.vals, nil)
 			if c.dropped && (!override || d != core.Lossy || reason == "") {
 				t.Errorf("classifier = %v,%q,%v, want Lossy with a reason", d, reason, override)
 			}

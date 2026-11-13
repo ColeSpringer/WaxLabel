@@ -102,7 +102,7 @@ func TestRebuildKeepsReservedItemOnRefusedSet(t *testing.T) {
 // TestTransferClassifierGradesReservedKeys: reserved => Dropped (report==write).
 func TestTransferClassifierGradesReservedKeys(t *testing.T) {
 	for _, k := range []tag.Key{"ID3", "TAG", "OGGS", "MP+"} {
-		d, reason, override := NewTransferClassifier(nil)(k, []string{"v"}, tag.NewTagSet())
+		d, reason, override := NewTransferClassifier(nil)(k, []string{"v"}, nil)
 		if !override || d != core.Dropped {
 			t.Errorf("classifier(%s) = %v,%v, want Dropped,true", k, d, override)
 		}
@@ -110,7 +110,7 @@ func TestTransferClassifierGradesReservedKeys(t *testing.T) {
 			t.Errorf("classifier(%s) gave no reason", k)
 		}
 	}
-	if _, _, override := NewTransferClassifier(nil)(tag.Title, []string{"v"}, tag.NewTagSet()); override {
+	if _, _, override := NewTransferClassifier(nil)(tag.Title, []string{"v"}, nil); override {
 		t.Error("classifier overrode an ordinary key's format-level grade")
 	}
 }
@@ -118,7 +118,7 @@ func TestTransferClassifierGradesReservedKeys(t *testing.T) {
 // TestTransferClassifierGradesCoverNameKeys: Cover Art text => Dropped.
 func TestTransferClassifierGradesCoverNameKeys(t *testing.T) {
 	for _, k := range []tag.Key{"COVER ART (FRONT)", "COVER ART (BACK)"} {
-		d, reason, override := NewTransferClassifier(nil)(k, []string{"v"}, tag.NewTagSet())
+		d, reason, override := NewTransferClassifier(nil)(k, []string{"v"}, nil)
 		if !override || d != core.Dropped {
 			t.Errorf("classifier(%s) = %v,%v, want Dropped,true", k, d, override)
 		}
@@ -134,7 +134,7 @@ func TestCapabilitiesCarryTransferClassifier(t *testing.T) {
 	src.Tags.Add("ID3", "hazard")
 	src.Tags.Add(tag.Title, "Song")
 	for _, f := range []core.Format{core.FormatWavPack, core.FormatMonkeysAudio, core.FormatMusepack} {
-		items := core.ProjectTransfer(src, Capabilities(f, nil))
+		items := core.ProjectTransferOnto(src, nil, Capabilities(f, nil)).Items
 		for _, it := range items {
 			if it.Key == "ID3" && it.Disposition != core.Dropped {
 				t.Errorf("%s: ID3 graded %v, want Dropped", f, it.Disposition)
@@ -255,7 +255,7 @@ func TestRebuildKeepsUntouchedOutOfSpecItem(t *testing.T) {
 // TestTransferClassifierGradesOutOfSpecNames: Dropped, as the writer refuses them.
 func TestTransferClassifierGradesOutOfSpecNames(t *testing.T) {
 	for _, k := range []tag.Key{"X", longKey} {
-		d, reason, override := NewTransferClassifier(nil)(k, []string{"v"}, tag.NewTagSet())
+		d, reason, override := NewTransferClassifier(nil)(k, []string{"v"}, nil)
 		if !override || d != core.Dropped || !strings.Contains(reason, "2 to 255") {
 			t.Errorf("classifier(%.8s) = %v,%q,%v, want Dropped with the length rule", k, d, reason, override)
 		}
@@ -383,7 +383,7 @@ func TestTransferClassifierKnowsTheDestinationsItems(t *testing.T) {
 		{"Z", []string{"new"}, core.Dropped},
 		{tag.Title, []string{"T"}, core.Carried},
 	} {
-		d, reason, override := classify(c.key, c.vals, tag.NewTagSet())
+		d, reason, override := classify(c.key, c.vals, nil)
 		if !override {
 			d = core.Carried
 		}
@@ -393,16 +393,16 @@ func TestTransferClassifierKnowsTheDestinationsItems(t *testing.T) {
 	}
 	// A spelling the format allows, behind an item that has none, is the one a write uses.
 	spelled := NewTransferClassifier([]Item{{Key: "X", Value: "one"}, {Key: " X ", Value: "uno"}})
-	if d, reason, override := spelled("X", []string{"new"}, tag.NewTagSet()); override {
+	if d, reason, override := spelled("X", []string{"new"}, nil); override {
 		t.Errorf("a writable spelling behind an unwritable one: X graded %v (%q), want carried", d, reason)
 	}
 	// A binary item under the key's name holds no text of it.
 	binary := NewTransferClassifier([]Item{{Key: "X", Data: []byte{1}, Flags: itemTypeBinary << itemTypeShift}})
-	if d, _, override := binary("X", []string{""}, tag.NewTagSet()); !override || d != core.Dropped {
+	if d, _, override := binary("X", []string{""}, nil); !override || d != core.Dropped {
 		t.Errorf("beside a binary item: X graded %v,%v, want Dropped", d, override)
 	}
 	// With no file, a key is graded by its own name.
-	if d, _, override := NewTransferClassifier(nil)("Y", []string{"other"}, tag.NewTagSet()); !override || d != core.Dropped {
+	if d, _, override := NewTransferClassifier(nil)("Y", []string{"other"}, nil); !override || d != core.Dropped {
 		t.Errorf("no file: Y graded %v,%v, want Dropped", d, override)
 	}
 }

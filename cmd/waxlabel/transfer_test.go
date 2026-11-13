@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/testfile"
@@ -516,5 +517,210 @@ func TestCopyDiffArgCounts(t *testing.T) {
 		if _, _, code := runCLI(t, args...); code != 2 {
 			t.Errorf("%v exit = %d, want 2 (usage)", args, code)
 		}
+	}
+}
+
+// copy X X writes nothing and loses nothing for every fixture, the read-only and no-audio ones
+// too, and --strict agrees.
+func TestCopyOntoItselfIsANoOp(t *testing.T) {
+	t.Parallel()
+	fixtures, err := filepath.Glob(filepath.Join("..", "..", "testdata", "*"))
+	if err != nil || len(fixtures) < 40 {
+		t.Fatalf("fixtures: %d found, err %v", len(fixtures), err)
+	}
+	for _, fixture := range fixtures {
+		t.Run(filepath.Base(fixture), func(t *testing.T) {
+			t.Parallel()
+			path := copyFixture(t, fixture)
+			old := time.Now().Add(-time.Hour).Truncate(time.Second)
+			if err := os.Chtimes(path, old, old); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, stderr, code := runCLI(t, "--json", "copy", "--strict", path, path)
+			if code != 0 {
+				t.Fatalf("exit = %d\n%s\n%s", code, out, stderr)
+			}
+			var jc jsonCopy
+			if err := json.Unmarshal([]byte(out), &jc); err != nil {
+				t.Fatalf("copy JSON: %v\n%s", err, out)
+			}
+			if !jc.NoOp || jc.Committed || jc.Error != nil {
+				t.Errorf("noOp %v, committed %v, error %+v; want a no-op", jc.NoOp, jc.Committed, jc.Error)
+			}
+			for _, it := range jc.Transfer {
+				if it.Disposition == "lossy" || it.Disposition == "dropped" {
+					t.Errorf("%s %s is %s (%s)", it.Kind, it.Key, it.Disposition, it.Reason)
+				}
+			}
+			after, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !os.SameFile(before, after) || !after.ModTime().Equal(old) {
+				t.Errorf("the file was replaced or rewritten (modified %s, was %s)", after.ModTime(), old)
+			}
+			if human, _, code := runCLI(t, "copy", path, path); code != 0 || !strings.Contains(human, "no changes (already up to date)") {
+				t.Errorf("human copy exit = %d\n%s", code, human)
+			}
+		})
+	}
+}
+
+// A destination no write reaches gets the report first, with what it lacks dropped, then exit 3.
+func TestCopyOntoChainedOggReportsThenRefuses(t *testing.T) {
+	t.Parallel()
+	first, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sample.ogg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(filepath.Join("..", "..", "testdata", "notags.ogg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := writeTempFile(t, "chained.ogg", append(first, second...))
+	src := rawFLAC(t, "TITLE=Other", "GENRE=New")
+	out, stderr, code := runCLI(t, "copy", src, dst)
+	if code != 3 {
+		t.Fatalf("exit = %d, want 3\n%s\n%s", code, out, stderr)
+	}
+	if !strings.Contains(out, "0 carried, 0 lossy, 2 dropped") || !strings.Contains(out, "dropped TITLE: destination is read-only") {
+		t.Errorf("the report should come before the refusal with both fields dropped:\n%s", out)
+	}
+	if !strings.Contains(stderr, displayName(dst)) {
+		t.Errorf("the refusal should name the destination:\n%s", stderr)
+	}
+	jout, _, code := runCLI(t, "--json", "copy", src, dst)
+	var jc jsonCopy
+	if err := json.Unmarshal([]byte(jout), &jc); err != nil || code != 3 {
+		t.Fatalf("copy --json exit %d, JSON %v\n%s", code, err, jout)
+	}
+	if jc.Error == nil || jc.Error.Code != "unsupported-stream" || len(jc.Transfer) != 2 {
+		t.Errorf("JSON: error %+v, %d transfer items; want the refusal beside the report", jc.Error, len(jc.Transfer))
+	}
+}
+
+// A copy that could store nothing says so, where it used to print the dropped items and then
+// "already up to date".
+func TestCopyNothingStoredHeadline(t *testing.T) {
+	t.Parallel()
+	coverOnly := buildTransferSource(t, notagsMP3, func(e *wl.Editor) *wl.Editor {
+		return e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()})
+	})
+	dst := copyFixture(t, sampleWebMF)
+	out, stderr, code := runCLI(t, "copy", coverOnly, dst)
+	if code != 0 {
+		t.Fatalf("exit = %d\n%s", code, stderr)
+	}
+	if !strings.Contains(out, "dropped pictures (1)") || !strings.Contains(out, "no changes written; 1 item(s) could not be stored") {
+		t.Errorf("want the dropped picture and a headline that says nothing was stored:\n%s", out)
+	}
+	if strings.Contains(out, "already up to date") {
+		t.Errorf("a copy that dropped its only item is not up to date:\n%s", out)
+	}
+
+	lyricsOnly := buildTransferSource(t, notagsMP3, func(e *wl.Editor) *wl.Editor {
+		return e.SetSyncedLyrics(
+			wl.SyncedLyrics{Lines: []wl.SyncedLine{{Time: time.Second, Text: "la"}}},
+			wl.SyncedLyrics{Language: "deu", Lines: []wl.SyncedLine{{Time: time.Second, Text: "la"}}})
+	})
+	out, _, code = runCLI(t, "copy", lyricsOnly, copyFixture(t, notagsM4A))
+	if code != 0 || !strings.Contains(out, "no changes written; 2 item(s) could not be stored") {
+		t.Errorf("synced lyrics onto MP4, exit %d:\n%s", code, out)
+	}
+	// A copy with nothing to bring is still up to date.
+	out, _, _ = runCLI(t, "copy", copyFixture(t, notagsMP3), copyFixture(t, notagsM4A))
+	if !strings.Contains(out, "no changes (already up to date)") {
+		t.Errorf("an empty copy:\n%s", out)
+	}
+	// So is a repeat of a copy that stored all the destination can hold: the second TITLE has
+	// nowhere to go in Matroska, the lossy line says so, and no edit was "discarded".
+	twoTitles := rawFLAC(t, "TITLE=T1", "TITLE=T2")
+	mka := copyFixture(t, notagsMKA)
+	if _, stderr, code := runCLI(t, "copy", twoTitles, mka); code != 0 {
+		t.Fatalf("first copy exit = %d\n%s", code, stderr)
+	}
+	out, _, code = runCLI(t, "copy", twoTitles, mka)
+	if code != 0 || !strings.Contains(out, "lossy   TITLE") || !strings.Contains(out, "no changes (already up to date)") ||
+		!strings.Contains(out, "No changes; ") || strings.Contains(out, "discarded") {
+		t.Errorf("repeat copy, exit %d:\n%s", code, out)
+	}
+}
+
+// A copy the destination's writer refuses names the destination, in the per-file form the other
+// commands use, and --json carries the refusal in the copy envelope beside the report.
+func TestCopyRefusalNamesTheDestination(t *testing.T) {
+	t.Parallel()
+	src := buildTransferSource(t, filepath.Join("..", "..", "testdata", "notags.ogg"), func(e *wl.Editor) *wl.Editor {
+		return e.Set(tag.Comment, strings.Repeat("c", 9<<20)).Set(tag.Lyrics, strings.Repeat("l", 9<<20))
+	})
+	dst := copyFixture(t, notagsFLAC)
+	out, stderr, code := runCLI(t, "copy", src, dst)
+	if code != 3 {
+		t.Fatalf("exit = %d, want 3\n%s", code, stderr)
+	}
+	if want := "waxlabel: " + displayName(dst) + ": content too large"; !strings.Contains(stderr, want) {
+		t.Errorf("stderr = %q, want it to open %q", stderr, want)
+	}
+	if !strings.Contains(out, "2 carried, 0 lossy, 0 dropped") {
+		t.Errorf("the report should still print:\n%s", out)
+	}
+	jout, _, code := runCLI(t, "--json", "copy", src, dst)
+	var jc jsonCopy
+	if err := json.Unmarshal([]byte(jout), &jc); err != nil || code != 3 {
+		t.Fatalf("copy --json exit %d, JSON %v\n%.300s", code, err, jout)
+	}
+	if jc.Error == nil || jc.Error.Code != "content-too-large" || jc.File != dst || len(jc.Transfer) < 2 {
+		t.Errorf("JSON: file %q, error %+v, %d transfer items", jc.File, jc.Error, len(jc.Transfer))
+	}
+}
+
+// A copy whose save fails names the destination and its directory, and --json reports the
+// failure in the copy envelope.
+func TestCopyWriteFailureNamesTheDestination(t *testing.T) {
+	t.Parallel()
+	requireUnwritableDir(t)
+	roDir := filepath.Join(t.TempDir(), "ro")
+	if err := os.Mkdir(roDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(notagsFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(roDir, "dst.flac")
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(roDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(roDir, 0o755) })
+	src := rawFLAC(t, "TITLE=T")
+
+	_, stderr, code := runCLI(t, "copy", src, dst)
+	if code != 6 {
+		t.Fatalf("exit = %d, want 6\n%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "waxlabel: "+displayName(dst)+": ") || !strings.Contains(stderr, "create temp file in "+roDir) {
+		t.Errorf("stderr should name the destination and its directory: %q", stderr)
+	}
+	if strings.Contains(stderr, ".waxlabel-") {
+		t.Errorf("internal temp pattern should not leak: %q", stderr)
+	}
+	jout, _, code := runCLI(t, "--json", "copy", src, dst)
+	var jc jsonCopy
+	if err := json.Unmarshal([]byte(jout), &jc); err != nil || code != 6 {
+		t.Fatalf("copy --json exit %d, JSON %v\n%s", code, err, jout)
+	}
+	if jc.Error == nil || jc.Error.Code != "io" || jc.Committed || len(jc.Transfer) != 1 {
+		t.Errorf("JSON: error %+v, committed %v, %d transfer items; want the io failure beside the report", jc.Error, jc.Committed, len(jc.Transfer))
+	}
+	// The plan whose save failed is in the object too: what would have been written.
+	if len(jc.Changes) != 1 || jc.Changes[0].Key != "TITLE" || jc.NoOp {
+		t.Errorf("JSON: changes %+v, noOp %v; want the planned TITLE change", jc.Changes, jc.NoOp)
 	}
 }

@@ -245,7 +245,7 @@ func TestITunesTransferGrading(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			ts := tag.NewTagSet()
 			ts.Set(c.key, c.vals...)
-			got := dispositionOf(core.ProjectTransfer(&core.Media{Tags: ts}, caps), c.key)
+			got := dispositionOf(core.ProjectTransferOnto(&core.Media{Tags: ts}, nil, caps).Items, c.key)
 			if got != c.want {
 				t.Errorf("disposition of %s=%v = %v, want %v", c.key, c.vals, got, c.want)
 			}
