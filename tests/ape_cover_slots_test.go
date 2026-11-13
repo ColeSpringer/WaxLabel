@@ -10,37 +10,41 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// APEv2 item names are unique within a tag, and the Cover Art convention has exactly two of them,
-// so a picture set is resolved onto those two slots: exact front and back roles keep their own
-// name, any other role takes a free name, an added picture claims a slot from a pre-existing
-// same-role one, and only a picture left with no name at all is dropped.
+// APEv2 item names are unique within a tag, and the Cover Art convention names one item per
+// picture role, so a picture set is resolved onto those names: each role keeps its own, an added
+// picture takes the name from a picture the file held under it, and only a second picture of a
+// role in one edit is left with no name.
 
-// front + artist + band cannot all fit in two items.
-func TestWavPackCoverSlotWrite(t *testing.T) {
+// A front cover, an artist and a band picture are three items, each read back under its role.
+func TestWavPackCoverRolesWrite(t *testing.T) {
 	src := readFixture(t, notagsWV)
 	plan, err := mustParseBytes(t, src).Edit().
 		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
 		AddPicture(wl.Picture{Type: wl.PicArtist, Data: testfile.JPEG()}).
 		AddPicture(wl.Picture{Type: wl.PicBand, Data: testfile.GIF()}).
-		Prepare(wl.WithAllowUnsupportedDrop())
+		Prepare()
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
-	if !planWarns(t, plan, wl.WarnPictureUnsupported) {
-		t.Errorf("plan warnings = %+v, want picture-unsupported for the slotless band picture", plan.Report().Warnings)
-	}
-	if !planWarns(t, plan, wl.WarnPictureMetadataDropped) {
-		t.Errorf("plan warnings = %+v, want picture-metadata-dropped for the artist role", plan.Report().Warnings)
+	for _, code := range []wl.WarningCode{wl.WarnPictureUnsupported, wl.WarnPictureMetadataDropped} {
+		if planWarns(t, plan, code) {
+			t.Errorf("plan warnings = %+v, want no %s: every role has a name", plan.Report().Warnings, code)
+		}
 	}
 	out := applyToBytes(t, src, plan)
+	for _, name := range []string{"Cover Art (Front)", "Cover Art (Artist)", "Cover Art (Band)"} {
+		if !bytes.Contains(out, []byte(name+"\x00")) {
+			t.Errorf("no %q item written", name)
+		}
+	}
 
 	doc := mustParseBytes(t, out)
 	pics := doc.Pictures()
-	if len(pics) != 2 || pics[0].Type != wl.PicFrontCover || pics[1].Type != wl.PicBackCover {
-		t.Fatalf("pictures = %+v, want the front cover plus the artist stored under the back name", pics)
+	if len(pics) != 3 || pics[0].Type != wl.PicFrontCover || pics[1].Type != wl.PicArtist || pics[2].Type != wl.PicBand {
+		t.Fatalf("pictures = %+v, want the front, artist and band pictures", pics)
 	}
-	if !bytes.Equal(pics[0].Data, testfile.PNG()) || !bytes.Equal(pics[1].Data, testfile.JPEG()) {
-		t.Error("written cover bytes do not match the added images")
+	if !bytes.Equal(pics[0].Data, testfile.PNG()) || !bytes.Equal(pics[1].Data, testfile.JPEG()) || !bytes.Equal(pics[2].Data, testfile.GIF()) {
+		t.Error("written picture bytes do not match the added images")
 	}
 	for _, f := range doc.Lint() {
 		if f.Code == "multiple-front-covers" || f.Code == "duplicate-picture" {
@@ -49,27 +53,46 @@ func TestWavPackCoverSlotWrite(t *testing.T) {
 	}
 }
 
-// for a library caller the slotless picture is refused like an unrepresentable cover format;
-// WithAllowUnsupportedDrop (which the CLI always passes) turns the refusal into the warned drop
-// above.
-func TestWavPackSlotlessPictureRefusedWithoutDropOption(t *testing.T) {
+// A second picture of a role added in one edit has no name: dropped with a warning under
+// WithAllowUnsupportedDrop (which the CLI always passes), refused without it.
+func TestWavPackSecondPictureOfARole(t *testing.T) {
 	src := readFixture(t, notagsWV)
-	_, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
-		AddPicture(wl.Picture{Type: wl.PicArtist, Data: testfile.JPEG()}).
-		AddPicture(wl.Picture{Type: wl.PicBand, Data: testfile.GIF()}).
-		Prepare()
-	if !errors.Is(err, waxerr.ErrUnsupportedTag) {
-		t.Errorf("Prepare err = %v, want ErrUnsupportedTag for a slotless picture without the drop option", err)
+	edit := func() *wl.Editor {
+		return mustParseBytes(t, src).Edit().
+			AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
+			AddPicture(wl.Picture{Type: wl.PicBand, Data: testfile.JPEG()}).
+			AddPicture(wl.Picture{Type: wl.PicBand, Data: testfile.GIF()})
+	}
+	if _, err := edit().Prepare(); !errors.Is(err, waxerr.ErrUnsupportedTag) {
+		t.Errorf("Prepare err = %v, want ErrUnsupportedTag for a picture with no name left", err)
+	}
+	// One picture added twice in one edit is two pictures: the second has no name either.
+	twice := mustParseBytes(t, src).Edit().
+		AddPicture(wl.Picture{Type: wl.PicBand, Data: testfile.JPEG()}).
+		AddPicture(wl.Picture{Type: wl.PicBand, Data: testfile.JPEG()})
+	if _, err := twice.Prepare(); !errors.Is(err, waxerr.ErrUnsupportedTag) {
+		t.Errorf("the same picture added twice: Prepare err = %v, want ErrUnsupportedTag", err)
+	}
+	plan, err := edit().Prepare(wl.WithAllowUnsupportedDrop())
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if !planWarns(t, plan, wl.WarnPictureUnsupported) {
+		t.Errorf("plan warnings = %+v, want picture-unsupported for the second band picture", plan.Report().Warnings)
+	}
+	pics := mustParseBytes(t, applyToBytes(t, src, plan)).Pictures()
+	if len(pics) != 2 || pics[1].Type != wl.PicBand || !bytes.Equal(pics[1].Data, testfile.JPEG()) {
+		t.Fatalf("pictures = %+v, want the front and the first band picture", pics)
 	}
 }
 
-// An edit targets the slot, so an added front cover replaces the file's existing front, and the
+// An edit targets the name, so an added front cover replaces the file's existing front, and the
 // replacement is warned. No drop option is needed: the added picture is stored.
 func TestWavPackAddedFrontReplacesExisting(t *testing.T) {
 	src := readFixture(t, notagsWV)
 	seed, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
+		AddPicture(wl.Picture{Type: wl.PicArtist, Data: testfile.GIF()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,45 +110,46 @@ func TestWavPackAddedFrontReplacesExisting(t *testing.T) {
 		t.Errorf("plan warnings = %+v, want a warning for the replaced pre-existing front", plan.Report().Warnings)
 	}
 	pics := mustParseBytes(t, applyToBytes(t, fronted, plan)).Pictures()
-	if len(pics) != 1 || pics[0].Type != wl.PicFrontCover || !bytes.Equal(pics[0].Data, testfile.JPEG()) {
-		t.Fatalf("pictures = %+v, want only the newly added front cover", pics)
+	if len(pics) != 2 || pics[0].Type != wl.PicArtist || pics[1].Type != wl.PicFrontCover || !bytes.Equal(pics[1].Data, testfile.JPEG()) {
+		t.Fatalf("pictures = %+v, want the artist picture and the newly added front cover", pics)
 	}
 }
 
-// with both slots already held, an added picture that resolves away entirely changes nothing on
-// disk, but the loss must survive the no-op collapse so --strict still catches it.
-func TestWavPackCoverSlotNoOpKeepsWarning(t *testing.T) {
+// Adding the front cover the file already holds beside one that loses the name to it changes
+// nothing on disk, but the loss must survive the no-op collapse so --strict still catches it.
+func TestWavPackCoverNameNoOpKeepsWarning(t *testing.T) {
 	src := readFixture(t, notagsWV)
 	seed, err := mustParseBytes(t, src).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
-		AddPicture(wl.Picture{Type: wl.PicBackCover, Data: testfile.JPEG()}).Prepare()
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
 	full := applyToBytes(t, src, seed)
 
 	plan, err := mustParseBytes(t, full).Edit().
-		AddPicture(wl.Picture{Type: wl.PicArtist, Data: testfile.GIF()}).Prepare(wl.WithAllowUnsupportedDrop())
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.GIF()}).Prepare(wl.WithAllowUnsupportedDrop())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !plan.IsNoOp() {
-		t.Error("an edit whose only picture had no slot should collapse to a no-op")
+		t.Error("an edit that leaves the file's own front cover in place should collapse to a no-op")
 	}
 	if !planWarns(t, plan, wl.WarnPictureUnsupported) {
 		t.Errorf("no-op warnings = %+v, want the picture-unsupported drop preserved", plan.Report().Warnings)
 	}
 }
 
-// copying a FLAC carrying front + artist + band pictures into WavPack reports the front carried,
-// the artist stored with reduced fidelity (its role becomes the back cover), and the band picture
-// dropped for want of a name; the written destination holds exactly those two covers.
-func TestTransferCoverSlotReport(t *testing.T) {
+// Copying a FLAC carrying a front, an artist and two band pictures into WavPack carries the first
+// three under their roles and drops the second band picture for want of a name; the written
+// destination holds exactly those three.
+func TestTransferCoverRoleReport(t *testing.T) {
 	flacSrc := readFixture(t, sampleFLAC)
 	seed, err := mustParseBytes(t, flacSrc).Edit().
 		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
 		AddPicture(wl.Picture{Type: wl.PicArtist, Data: testfile.JPEG()}).
 		AddPicture(wl.Picture{Type: wl.PicBand, Data: testfile.GIF()}).
+		AddPicture(wl.Picture{Type: wl.PicBand, Data: append(testfile.PNG(), 0)}).
 		Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -136,8 +160,8 @@ func TestTransferCoverSlotReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanTransfer: %v", err)
 	}
-	if carried, lossy, dropped := pictureCounts(report); carried != 1 || lossy != 1 || dropped != 1 {
-		t.Errorf("picture grades = %d carried %d lossy %d dropped, want 1/1/1\nreport: %+v",
+	if carried, lossy, dropped := pictureCounts(report); carried != 3 || lossy != 0 || dropped != 1 {
+		t.Errorf("picture grades = %d carried %d lossy %d dropped, want 3/0/1\nreport: %+v",
 			carried, lossy, dropped, report.Items)
 	}
 
@@ -147,16 +171,16 @@ func TestTransferCoverSlotReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareTransfer: %v", err)
 	}
-	if carried, lossy, dropped := pictureCounts(report2); carried != 1 || lossy != 1 || dropped != 1 {
-		t.Errorf("prepare picture grades = %d carried %d lossy %d dropped, want 1/1/1", carried, lossy, dropped)
+	if carried, lossy, dropped := pictureCounts(report2); carried != 3 || lossy != 0 || dropped != 1 {
+		t.Errorf("prepare picture grades = %d carried %d lossy %d dropped, want 3/0/1", carried, lossy, dropped)
 	}
 	out := applyToBytes(t, dstBytes, plan)
 	pics := mustParseBytes(t, out).Pictures()
-	if len(pics) != 2 || pics[0].Type != wl.PicFrontCover || pics[1].Type != wl.PicBackCover {
-		t.Fatalf("transferred pictures = %+v, want the front plus the artist under the back name", pics)
+	if len(pics) != 3 || pics[0].Type != wl.PicFrontCover || pics[1].Type != wl.PicArtist || pics[2].Type != wl.PicBand {
+		t.Fatalf("transferred pictures = %+v, want the front, the artist and the first band picture", pics)
 	}
-	if !bytes.Equal(pics[0].Data, testfile.PNG()) || !bytes.Equal(pics[1].Data, testfile.JPEG()) {
-		t.Error("transferred cover bytes do not match the source images")
+	if !bytes.Equal(pics[0].Data, testfile.PNG()) || !bytes.Equal(pics[1].Data, testfile.JPEG()) || !bytes.Equal(pics[2].Data, testfile.GIF()) {
+		t.Error("transferred picture bytes do not match the source images")
 	}
 }
 
@@ -176,4 +200,26 @@ func pictureCounts(r wl.TransferReport) (carried, lossy, dropped int) {
 		}
 	}
 	return carried, lossy, dropped
+}
+
+// Adding again the picture the file holds under its role's name replaces nothing: the edit is a
+// no-op with no warning, so a tagging run repeated under --strict passes.
+func TestWavPackReAddedPictureIsNoChange(t *testing.T) {
+	src := readFixture(t, notagsWV)
+	seed, err := mustParseBytes(t, src).Edit().
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).
+		AddPicture(wl.Picture{Type: wl.PicArtist, Data: testfile.GIF()}).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := applyToBytes(t, src, seed)
+
+	plan, err := mustParseBytes(t, full).Edit().
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: testfile.PNG()}).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.IsNoOp() || len(plan.Report().Warnings) != 0 {
+		t.Errorf("noOp=%v warnings=%+v, want a no-op that warns of nothing", plan.IsNoOp(), plan.Report().Warnings)
+	}
 }

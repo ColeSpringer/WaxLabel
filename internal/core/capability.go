@@ -59,7 +59,7 @@ type Capability struct {
 	reducesValue func(string) bool
 	// dropsValue: per-value Dropped; precedes reducesValue.
 	dropsValue func(string) bool
-	// slotPictures: fixed slot selection (APE). nil added = transfer path.
+	// slotPictures: which pictures a store of uniquely named items holds (APE). nil added = transfer path.
 	slotPictures func(pics []Picture, added []bool) []int
 	slotReason   string
 }
@@ -76,7 +76,8 @@ func WithValueDrop(c Capability, drops func(string) bool) Capability {
 	return c
 }
 
-// WithPictureSlots attaches fixed slot selection for pictures (APE).
+// WithPictureSlots attaches the selection of the pictures a store of uniquely named items holds
+// (APE): slots returns the indexes kept, and may depend on the items the file holds.
 func WithPictureSlots(c Capability, slots func(pics []Picture, added []bool) []int, reason string) Capability {
 	c.slotPictures = slots
 	c.slotReason = reason

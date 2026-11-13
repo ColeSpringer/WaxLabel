@@ -3,6 +3,7 @@ package waxlabel_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -448,6 +449,52 @@ func TestWavPackDifferentialFFprobeReadsOurTags(t *testing.T) {
 	}
 }
 
+// ffmpeg takes a binary item for a picture by the file name it stores, so a picture written under
+// any role's name must show as an attached picture, tagged with its item name.
+func TestWavPackDifferentialFFprobeListsRolePictures(t *testing.T) {
+	requireTool(t, "ffprobe")
+	path := copyToTemp(t, sampleWV)
+	ed := mustParseFile(t, path).Edit()
+	for i, typ := range []wl.PictureType{wl.PicFrontCover, wl.PicArtist, wl.PicPublisherLogo} {
+		ed.AddPicture(wl.Picture{Type: typ, Data: append(testfile.PNG(), byte(i))})
+	}
+	plan, err := ed.Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error",
+		"-show_entries", "stream=codec_name:stream_disposition=attached_pic:stream_tags", "-of", "json", path).Output()
+	if err != nil {
+		t.Fatalf("ffprobe: %v", err)
+	}
+	var probe struct {
+		Streams []struct {
+			CodecName   string            `json:"codec_name"`
+			Disposition map[string]int    `json:"disposition"`
+			Tags        map[string]string `json:"tags"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatalf("parse ffprobe json: %v\n%s", err, out)
+	}
+	var names []string
+	for _, st := range probe.Streams {
+		if st.Disposition["attached_pic"] != 1 || st.CodecName != "png" {
+			continue
+		}
+		for k := range st.Tags {
+			names = append(names, k)
+		}
+	}
+	slices.Sort(names)
+	if want := []string{"Cover Art (Artist)", "Cover Art (Front)", "Cover Art (Publisher Logotype)"}; !slices.Equal(names, want) {
+		t.Errorf("ffprobe attached pictures = %q, want %q\n%s", names, want, out)
+	}
+}
+
 // the rewritten tail must not disturb the blocks; ffmpeg fails if the audio extent moved.
 func TestWavPackDifferentialFFmpegDecodes(t *testing.T) {
 	requireTool(t, "ffmpeg")
@@ -468,5 +515,281 @@ func TestWavPackDifferentialFFmpegDecodes(t *testing.T) {
 	}
 	if got := mustParseFile(t, path).Fields().Title; got != "Valid WavPack" {
 		t.Errorf("title after edit = %q", got)
+	}
+}
+
+// bareWV is notags.wv without the APE tag its encoder wrote: the blocks alone.
+func bareWV(t *testing.T) []byte {
+	t.Helper()
+	wv := readFixture(t, notagsWV)
+	return wv[:apeTagStart(wv)]
+}
+
+// An item name outside the 2 to 255 characters the APEv2 specification allows is read and reported,
+// an unrelated edit keeps the item byte for byte, and a set of its key is refused with a warning,
+// the item left as the file holds it.
+func TestWavPackOutOfSpecItemName(t *testing.T) {
+	src := slices.Concat(bareWV(t), headedAPETag(t, "X", "one", "Title", "T"))
+	doc := mustParseBytes(t, src)
+	if v, _ := doc.Tags().Get("X"); !slices.Equal(v, []string{"one"}) {
+		t.Fatalf("X = %q, want the item read", v)
+	}
+	w, ok := docWarning(doc, wl.WarnMalformedTagEntry)
+	if !ok || !slices.Equal(w.Keys, []tag.Key{"X"}) {
+		t.Fatalf("warnings = %+v, want malformed-tag-entry keyed X", doc.Warnings())
+	}
+
+	plan, err := doc.Edit().Set(tag.Title, "New").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planWarns(t, plan, wl.WarnValueDropped) {
+		t.Errorf("an unrelated edit warned of a drop: %+v", plan.Report().Warnings)
+	}
+	out := applyToBytes(t, src, plan)
+	if !bytes.Contains(out, []byte("\x03\x00\x00\x00\x00\x00\x00\x00X\x00one")) {
+		t.Error("the unrelated edit did not keep the X item byte for byte")
+	}
+
+	plan, err = doc.Edit().Set("X", "two").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.IsNoOp() || !planWarns(t, plan, wl.WarnValueDropped) {
+		t.Errorf("noOp=%v warnings=%+v, want a warned no-op: the name cannot be written", plan.IsNoOp(), plan.Report().Warnings)
+	}
+}
+
+// headedAPETagCount is headedAPETag with the header and the footer counting n items.
+func headedAPETagCount(t *testing.T, n uint32, kv ...string) []byte {
+	t.Helper()
+	b := headedAPETag(t, kv...)
+	binary.LittleEndian.PutUint32(b[16:], n)
+	binary.LittleEndian.PutUint32(b[len(b)-16:], n)
+	return b
+}
+
+// Items past the count the footer states are not read, and reported; an edit of the tag drops them
+// with a warning, and an edit that changes nothing leaves the file as it is.
+func TestWavPackItemsPastTheFooterCount(t *testing.T) {
+	src := slices.Concat(bareWV(t), headedAPETagCount(t, 1, "Title", "T", "Artist", "A", "Album", "B"))
+	doc := mustParseBytes(t, src)
+	if got := doc.Tags().Keys(); !slices.Equal(got, []tag.Key{tag.Title}) {
+		t.Fatalf("keys = %v, want the one item the footer counts", got)
+	}
+	if w, ok := docWarning(doc, wl.WarnMalformedTagEntry); !ok || !strings.Contains(w.Message, "past the 1 item(s) read") {
+		t.Fatalf("warnings = %+v, want malformed-tag-entry for the items past the count", doc.Warnings())
+	}
+
+	plan, err := doc.Edit().Set(tag.Title, "T").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.IsNoOp() || planWarns(t, plan, wl.WarnMalformedTagEntryDropped) {
+		t.Errorf("noOp=%v warnings=%+v, want a no-op that drops nothing", plan.IsNoOp(), plan.Report().Warnings)
+	}
+
+	plan, err = doc.Edit().Set(tag.Genre, "Rock").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !planWarns(t, plan, wl.WarnMalformedTagEntryDropped) {
+		t.Errorf("plan warnings = %+v, want malformed-tag-entry-dropped", plan.Report().Warnings)
+	}
+	out := applyToBytes(t, src, plan)
+	if bytes.Contains(out, []byte("Artist\x00A")) {
+		t.Error("the items past the count are still in the output")
+	}
+	re := mustParseBytes(t, out)
+	if got := re.Tags().Keys(); !slices.Equal(got, []tag.Key{tag.Title, tag.Genre}) {
+		t.Errorf("keys = %v, want the title and the genre", got)
+	}
+	if ws := re.Warnings(); len(ws) != 0 {
+		t.Errorf("warnings after the rewrite = %+v, want none", ws)
+	}
+}
+
+// A tag marked read-only is edited all the same, and the rewritten tag keeps the mark in its
+// header and its footer.
+func TestWavPackReadOnlyTagFlagSurvivesARewrite(t *testing.T) {
+	tagBytes := headedAPETag(t, "Title", "T")
+	binary.LittleEndian.PutUint32(tagBytes[20:], 0xA0000001)
+	binary.LittleEndian.PutUint32(tagBytes[len(tagBytes)-12:], 0x80000001)
+	src := slices.Concat(bareWV(t), tagBytes)
+
+	plan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "A longer title").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, src, plan)
+	start := apeTagStart(out)
+	if start < 0 {
+		t.Fatal("no APE tag ends the output")
+	}
+	if got := binary.LittleEndian.Uint32(out[start+20:]); got != 0xA0000001 {
+		t.Errorf("header flags = %#x, want 0xa0000001", got)
+	}
+	if got := binary.LittleEndian.Uint32(out[len(out)-12:]); got != 0x80000001 {
+		t.Errorf("footer flags = %#x, want 0x80000001", got)
+	}
+	if got := mustParseBytes(t, out).Fields().Title; got != "A longer title" {
+		t.Errorf("title = %q, want the edit applied", got)
+	}
+}
+
+// A duplicate APE tag whose footer counts fewer items than it holds takes the items nothing read
+// with it when a rewrite drops it, and the write says so.
+func TestWavPackDuplicateTagUnreadItemsReported(t *testing.T) {
+	dup := headedAPETagCount(t, 1, "Title", "T", "Composer", "Only Here")
+	src := slices.Concat(bareWV(t), dup, headedAPETag(t, "Title", "T"))
+	plan, err := mustParseBytes(t, src).Edit().Set(tag.Album, "A").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, ok := warningFor(plan, wl.WarnDuplicateTagBlockDropped)
+	if !ok || !strings.Contains(w.Message, "unread item byte(s)") {
+		t.Errorf("warnings = %+v, want duplicate-tag-block-dropped naming the unread bytes", plan.Report().Warnings)
+	}
+}
+
+// An item under a name outside the specification whose key has a name inside it ("Artist" with a
+// tab behind it reads as ARTIST): an edit of the key writes the key's own name, and a copy that
+// sets the key is graded carried and stores it.
+func TestWavPackEditRenamesAnItemItCannotWriteAsNamed(t *testing.T) {
+	src := slices.Concat(bareWV(t), headedAPETag(t, "Artist\t", "Old", "Title", "T"))
+	doc := mustParseBytes(t, src)
+	if got := doc.Fields().Artists; !slices.Equal(got, []string{"Old"}) {
+		t.Fatalf("artists = %q, want the item read", got)
+	}
+	if !hasWarning(doc, wl.WarnMalformedTagEntry) {
+		t.Errorf("warnings = %+v, want malformed-tag-entry for the item name", doc.Warnings())
+	}
+	plan, err := doc.Edit().Set(tag.Artist, "New").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.IsNoOp() || planWarns(t, plan, wl.WarnValueDropped) {
+		t.Fatalf("noOp=%v warnings=%+v, want the edit written with no drop", plan.IsNoOp(), plan.Report().Warnings)
+	}
+	out := applyToBytes(t, src, plan)
+	if !bytes.Contains(out, []byte("Artist\x00New")) || bytes.Contains(out, []byte("Artist\t")) {
+		t.Error("the edit did not write the key under its own name in place of the item's")
+	}
+	if re := mustParseBytes(t, out); len(re.Warnings()) != 0 || !slices.Equal(re.Fields().Artists, []string{"New"}) {
+		t.Errorf("after the edit: artists %q, warnings %+v", re.Fields().Artists, re.Warnings())
+	}
+
+	flacSrc := readFixture(t, sampleFLAC)
+	seed, err := mustParseBytes(t, flacSrc).Edit().Set(tag.Artist, "Copied").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyPlan, report, err := mustParseBytes(t, applyToBytes(t, flacSrc, seed)).PrepareTransfer(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range report.Items {
+		if it.Kind == wl.TransferField && it.Key == tag.Artist && it.Disposition != wl.Carried {
+			t.Errorf("ARTIST graded %v, want carried", it.Disposition)
+		}
+	}
+	if got := mustParseBytes(t, applyToBytes(t, src, copyPlan)).Fields().Artists; !slices.Equal(got, []string{"Copied"}) {
+		t.Errorf("artists after the copy = %q, want the copied value", got)
+	}
+}
+
+// A key held in two items under a name no edit can write: a refused set leaves both, and a copy of
+// the file onto itself grades the key carried and writes nothing.
+func TestWavPackRefusedSetKeepsEveryItemOfTheKey(t *testing.T) {
+	src := slices.Concat(bareWV(t), headedAPETag(t, "X", "one", "X", "uno", "Title", "T"))
+	doc := mustParseBytes(t, src)
+	plan, err := doc.Edit().Set("X", "New").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.IsNoOp() || !planWarns(t, plan, wl.WarnValueDropped) {
+		t.Errorf("noOp=%v warnings=%+v, want a warned no-op", plan.IsNoOp(), plan.Report().Warnings)
+	}
+	// The same refusal beside an edit that does write.
+	plan, err = doc.Edit().Set("X", "New").Set(tag.Title, "Written").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := mustParseBytes(t, applyToBytes(t, src, plan))
+	if got, _ := re.Tags().Get("X"); !slices.Equal(got, []string{"one", "uno"}) || re.Fields().Title != "Written" {
+		t.Errorf("X = %q, title %q, want both X items kept beside the new title", got, re.Fields().Title)
+	}
+
+	selfPlan, report, err := doc.PrepareTransfer(mustParseBytes(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.HasDropped() || !selfPlan.IsNoOp() {
+		t.Errorf("self-copy: dropped=%v noOp=%v, want every key carried and nothing written: %+v", report.HasDropped(), selfPlan.IsNoOp(), report.Items)
+	}
+}
+
+// A legacy strip that edits nothing copies the tag as the file holds it: the items past the footer's
+// count stay, with the read-only mark, and only the ID3v1 tag goes.
+func TestWavPackStripAloneCopiesTheTag(t *testing.T) {
+	tagBytes := headedAPETagCount(t, 1, "Title", "T", "Artist", "A")
+	binary.LittleEndian.PutUint32(tagBytes[20:], 0xA0000001)
+	binary.LittleEndian.PutUint32(tagBytes[len(tagBytes)-12:], 0x80000001)
+	stream := bareWV(t)
+	src := slices.Concat(stream, tagBytes, testfile.ID3v1("Legacy", "", "", "", "", 255))
+
+	plan, err := mustParseBytes(t, src).Edit().Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.IsNoOp() || planWarns(t, plan, wl.WarnMalformedTagEntryDropped) {
+		t.Errorf("noOp=%v warnings=%+v, want a write that drops no item bytes", plan.IsNoOp(), plan.Report().Warnings)
+	}
+	if out := applyToBytes(t, src, plan); !bytes.Equal(out, slices.Concat(stream, tagBytes)) {
+		t.Errorf("output is %d bytes, want the stream and the tag as the file held them (%d)", len(out), len(stream)+len(tagBytes))
+	}
+}
+
+// An edit the writer refuses, made beside a legacy strip, leaves the tag as the file holds it: the
+// strip is written, the items past the footer's count stay, and only the refused value is warned.
+func TestWavPackRefusedEditBesideAStripCopiesTheTag(t *testing.T) {
+	tagBytes := headedAPETagCount(t, 1, "Title", "T", "Artist", "A")
+	stream := bareWV(t)
+	src := slices.Concat(stream, tagBytes, testfile.ID3v1("Legacy", "", "", "", "", 255))
+
+	plan, err := mustParseBytes(t, src).Edit().Set("X", "1").Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planWarns(t, plan, wl.WarnMalformedTagEntryDropped) || !planWarns(t, plan, wl.WarnValueDropped) {
+		t.Errorf("warnings = %+v, want the refused value and no dropped item bytes", plan.Report().Warnings)
+	}
+	if ops := plan.Report().Operations; slices.Contains(ops, "APEv2 rewrite") {
+		t.Errorf("operations = %q, want no rewrite of the tag reported", ops)
+	}
+	if out := applyToBytes(t, src, plan); !bytes.Equal(out, slices.Concat(stream, tagBytes)) {
+		t.Errorf("output is %d bytes, want the stream and the tag as the file held them (%d)", len(out), len(stream)+len(tagBytes))
+	}
+}
+
+// A tag the element limit cut short: a legacy strip copies it whole, the items that were not read
+// with it, and an edit of it is refused.
+func TestWavPackStripCopiesATagTheElementLimitCut(t *testing.T) {
+	tagBytes := headedAPETag(t, "Title", "T", "Artist", "A", "Album", "B")
+	stream := bareWV(t)
+	src := slices.Concat(stream, tagBytes, testfile.ID3v1("Legacy", "", "", "", "", 255))
+	doc := mustParseLimited(t, src, wl.Limits{MaxElements: 2})
+	if !hasWarning(doc, wl.WarnElementCap) {
+		t.Fatalf("warnings = %+v, want the element limit reported", doc.Warnings())
+	}
+	plan, err := doc.Edit().Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+	if err != nil {
+		t.Fatalf("strip: %v", err)
+	}
+	if out := applyToBytes(t, src, plan); !bytes.Equal(out, slices.Concat(stream, tagBytes)) {
+		t.Errorf("output is %d bytes, want the stream and the whole tag (%d)", len(out), len(stream)+len(tagBytes))
+	}
+	if _, err := doc.Edit().Set(tag.Genre, "Rock").Prepare(); !errors.Is(err, waxerr.ErrSizeTooLarge) {
+		t.Errorf("an edit of the tag: err = %v, want ErrSizeTooLarge", err)
 	}
 }

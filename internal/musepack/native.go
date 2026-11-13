@@ -27,6 +27,14 @@ type doc struct {
 	ctEnd    int64
 }
 
+// StoreTrailer returns the trailer whose APE tag is the tag store ([tail.Capabilities]).
+func (d *doc) StoreTrailer() tail.Trailer {
+	if d == nil {
+		return tail.Trailer{}
+	}
+	return d.trailer
+}
+
 func (d *doc) Format() core.Format { return core.FormatMusepack }
 
 // chapterStore: SV8 with a known sample rate. Shared by parse and capability.

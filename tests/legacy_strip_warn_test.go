@@ -587,3 +587,25 @@ func frontTagLen(b []byte) int {
 	}
 	return 10 + (int(b[6])<<21 | int(b[7])<<14 | int(b[8])<<7 | int(b[9]))
 }
+
+// A legacy APE tag whose footer counts fewer items than it holds has items nothing read: a strip
+// that removes the tag says it may destroy content, though every value read is in the ID3v2 tag.
+func TestLegacyStripWarnsOfUnreadAPEItems(t *testing.T) {
+	head := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Same Title"))
+	whole := headedAPETag(t, "Title", "Same Title")
+	short := headedAPETagCount(t, 1, "Title", "Same Title", "Composer", "Only Here")
+	for _, c := range []struct {
+		name   string
+		apeTag []byte
+		want   bool
+	}{{"whole tag", whole, false}, {"items past the count", short, true}} {
+		data := slices.Concat(head, mp3Audio(t), c.apeTag)
+		plan, err := mustParseBytes(t, data).Edit().Set(tag.Artist, "A").Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := warningFor(plan, wl.WarnLegacyStripDropped); ok != c.want {
+			t.Errorf("%s: legacy-strip-dropped warned = %v, want %v: %v", c.name, ok, c.want, plan.Report().Warnings)
+		}
+	}
+}

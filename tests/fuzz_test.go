@@ -13,6 +13,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/ape"
 	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
@@ -263,6 +264,30 @@ func FuzzParse(f *testing.F) {
 		f.Add(slices.Concat(stream, apeTagText(map[string]string{"Title": "a"}), apeTagText(map[string]string{"Title": "b"}), trailerJunk(40),
 			testfile.Lyrics3v2([2]string{"LYR", "x"}), testfile.ID3v1("t", "", "", "", "", 255), testfile.ID3v1("u", "", "", "", "", 255)))
 	}
+	// APE tags as other taggers and damaged files leave them, after a one-block WavPack stream: cover
+	// items under several names with two of one role and one that does not decode; a tag marked
+	// read-only whose footer counts fewer items than it holds; names outside the specification, a
+	// terminated value, empty values and an external locator.
+	oneBlock := wvBlock(1|wvRate44k|wvFinal, 4410, make([]byte, 16))
+	apeSeed := func(count int, flags uint32, items ...ape.Item) []byte {
+		b, err := ape.Render(items, 2000, true, flags)
+		if err != nil {
+			f.Fatal(err)
+		}
+		if count >= 0 {
+			binary.LittleEndian.PutUint32(b[16:], uint32(count))
+			binary.LittleEndian.PutUint32(b[len(b)-16:], uint32(count))
+		}
+		return slices.Concat(oneBlock, b)
+	}
+	f.Add(apeSeed(-1, 0, append(roleItems(), ape.Item{Key: "Cover Art (Back)", Data: []byte("no-nul"), Flags: 2},
+		ape.Item{Key: "Cover Art (Artist)", Data: []byte("a.png\x00x"), Flags: 2})...))
+	f.Add(apeSeed(1, 1, ape.Item{Key: "Title", Value: "T"}, ape.Item{Key: "Artist", Value: "A"}, ape.Item{Key: "Album", Value: "B"}))
+	f.Add(apeSeed(-1, 0, ape.Item{Key: "X", Value: "one"}, ape.Item{Key: "Track\t", Value: "3/12"}, ape.Item{Key: "Title", Value: "T\x00"},
+		ape.Item{Key: "Artist", Value: "A\x00\x00B"}, ape.Item{Key: "Genre", Value: "\x00"}, ape.Item{Key: "Link", Data: []byte("http://x"), Flags: 4}))
+	// ASF text with bytes behind a NUL: a Content Description field, a descriptor name and value.
+	f.Add(asfFile(asfStreamProperties(0x0161, 2, 44100, 16), asfContentDescriptionRaw(asfUTF16Raw("Ti\x00tle"), asfUTF16(""), asfUTF16(""), asfUTF16(""), asfUTF16("")),
+		asfExtContentDescription(asfDescriptor{"WM/Genre\x00x", 0, asfUTF16("Rock\x00Pop")}, asfDescriptor{"WM/IsCompilation", 2, []byte{1, 0, 0, 0}})))
 	// MP4 tag stores and properties: a store under moov.meta, alone and beside one under moov.udta; a
 	// keys store under ffmpeg's names, with a key held twice, a non-text item and cover art; atoms in
 	// encodings no rebuild renders; sound and video chunks placed by sample tables; a TrueHD entry
@@ -393,6 +418,51 @@ func FuzzParse(f *testing.F) {
 		roundTrip(func(e *wl.Editor) {
 			e.Add(tag.Comment, "fuzz").SetLyrics(wl.Lyrics{Text: "fuzz", Description: "d", Language: "fra"})
 		})
+
+		// Picture write: in a format whose pictures are named APE items, an added picture takes its
+		// role's name beside the items the file holds. It must be in the output, and so must every
+		// picture of another role the file held: only items under the added role's own name give way.
+		switch doc.Format() {
+		case wl.FormatWavPack, wl.FormatMonkeysAudio, wl.FormatMusepack:
+			added := wl.Picture{Type: wl.PicArtist, Data: append(testfile.PNG(), 0x16)}
+			pp, err := doc.Edit().AddPicture(added).Prepare()
+			if err != nil {
+				if errors.Is(err, waxerr.ErrInvalidData) || errors.Is(err, waxerr.ErrSizeTooLarge) {
+					return
+				}
+				t.Fatalf("picture edit prepare failed: %v", err)
+			}
+			var pout bytes.Buffer
+			if _, _, err := pp.Execute(ctx, wl.WriteTo(&pout, wl.BytesSource(data))); err != nil {
+				t.Fatalf("picture edit write failed: %v", err)
+			}
+			re, err := wl.Parse(ctx, wl.BytesSource(pout.Bytes()))
+			if err != nil {
+				t.Fatalf("re-parse of picture-edited output failed: %v", err)
+			}
+			pics := re.Pictures()
+			if !slices.ContainsFunc(pics, func(p wl.Picture) bool { return p.Type == added.Type && bytes.Equal(p.Data, added.Data) }) {
+				t.Fatalf("the added picture is not in the output (%d pictures)", len(pics))
+			}
+			same := func(a, b wl.Picture) bool { return a.Type == b.Type && bytes.Equal(a.Data, b.Data) }
+			for _, held := range doc.Pictures() {
+				if held.Type == added.Type {
+					continue
+				}
+				count := func(in []wl.Picture) int {
+					n := 0
+					for _, p := range in {
+						if same(p, held) {
+							n++
+						}
+					}
+					return n
+				}
+				if before, after := count(doc.Pictures()), count(pics); after != before {
+					t.Fatalf("the output holds %d of the file's %d %s pictures of %d bytes", after, before, held.Type, len(held.Data))
+				}
+			}
+		}
 
 		// Chapter write: a chapter edit on an accepted MP4 rebuilds the QuickTime chapter track; on an
 		// accepted Matroska it re-renders the Chapters element. A crafted shape that parses must not panic

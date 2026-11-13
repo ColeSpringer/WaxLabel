@@ -382,7 +382,7 @@ func parityInputs(t *testing.T) []parityInput {
 	v2Title := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "V2 Title"))
 	// Bytes between a leading tag and the stream that no sniffer claims.
 	gap := []byte{1, 2, 3}
-	apeCover, err := ape.Render([]ape.Item{{Key: "Cover Art (front)", Data: []byte("\x89PNG binary"), Flags: 2}}, 2000, false) // item type 1: binary
+	apeCover, err := ape.Render([]ape.Item{{Key: "Cover Art (front)", Data: []byte("\x89PNG binary"), Flags: 2}}, 2000, false, 0) // item type 1: binary
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,14 +390,31 @@ func parityInputs(t *testing.T) []parityInput {
 	// Lyrics3 block and stacked ID3v1 tags.
 	pastEnd := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Cut"))
 	copy(pastEnd[6:10], testfile.Syncsafe(1<<20)) // declares more bytes than any input holds
-	dupTag, err := ape.Render([]ape.Item{{Key: "Composer", Value: "Only In The Duplicate"}}, 2000, true)
+	dupTag, err := ape.Render([]ape.Item{{Key: "Composer", Value: "Only In The Duplicate"}}, 2000, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sv7Tag, err := ape.Render([]ape.Item{{Key: "Title", Value: "SV7 Title"}}, 2000, true)
+	sv7Tag, err := ape.Render([]ape.Item{{Key: "Title", Value: "SV7 Title"}}, 2000, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cover := func(name string, n byte) ape.Item {
+		return ape.Item{Key: name, Data: slices.Concat([]byte("art.png\x00"), testfile.PNG(), []byte{n}), Flags: 2}
+	}
+	roleTag, err := ape.Render([]ape.Item{{Key: "Title", Value: "Roles"}, cover("Cover Art (Artist)", 1), cover("COVER ART (MEDIA)", 2),
+		cover("Cover Art (Front)", 3), cover("Artist Picture", 4), cover("Cover Art (Bogus)", 5), cover("Artist Picture", 1),
+		{Key: "Cover Art (Booklet)", Data: []byte("no file name ends here"), Flags: 2}}, 2000, true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oddTag, err := ape.Render([]ape.Item{{Key: "X", Value: "one"}, {Key: "Artist", Value: "A\x00\x00B\x00"},
+		{Key: "Link", Data: []byte("http://example.com/a"), Flags: 4}, {Key: "Title", Value: "Odd"}, {Key: "Album", Value: "Past The Count"}}, 2000, true, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The header and the footer count four of the five items.
+	binary.LittleEndian.PutUint32(oddTag[16:], 4)
+	binary.LittleEndian.PutUint32(oddTag[len(oddTag)-16:], 4)
 	tailJunk := bytes.Repeat([]byte{0xA5}, 300)
 	v1a, v1b := testfile.ID3v1("Legacy One", "", "Legacy Album", "", "", 255), testfile.ID3v1("Legacy Two", "", "", "", "", 255)
 	wv, mac := fixture["sample.wv"], fixture["sample.ape"]
@@ -408,14 +425,14 @@ func parityInputs(t *testing.T) []parityInput {
 	// window before the tags: the audio end is unknown, and the junk after the tag stays in the essence.
 	unended := slices.Concat(bytes.Repeat(append([]byte{0xFF, 0xFB, 0x90, 0x00}, make([]byte, 413)...), 40),
 		bytes.Repeat([]byte{0xA5}, 70000))
-	footerOnly, err := ape.Render([]ape.Item{{Key: "Album", Value: "Trailing Album"}}, 2000, false)
+	footerOnly, err := ape.Render([]ape.Item{{Key: "Album", Value: "Trailing Album"}}, 2000, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	strip := parityEdit{kind: "strip", edit: func(*Document, *Editor) {}, opts: []WriteOption{WithLegacyPolicy(LegacyStrip)}}
 	ffmpegTag := testfile.ID3v2(4, testfile.TextFrame(4, "TSSE", "Lavf61.7.100"))
 	// An APE tag longer than the MP3 resync window.
-	windowTag, err := ape.Render([]ape.Item{{Key: "Comment", Value: strings.Repeat("x", 100<<10)}}, 2000, true)
+	windowTag, err := ape.Render([]ape.Item{{Key: "Comment", Value: strings.Repeat("x", 100<<10)}}, 2000, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +443,7 @@ func parityInputs(t *testing.T) []parityInput {
 	binary.BigEndian.PutUint32(truncated[44:], 300)
 	binary.BigEndian.PutUint32(truncated[48:], 300*417)
 	// A tag longer than what a frame cut short before it lacks, so the frame's declared end lies inside it.
-	cutTag, err := ape.Render([]ape.Item{{Key: "Comment", Value: strings.Repeat("c", 600)}}, 2000, true)
+	cutTag, err := ape.Render([]ape.Item{{Key: "Comment", Value: strings.Repeat("c", 600)}}, 2000, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +454,7 @@ func parityInputs(t *testing.T) []parityInput {
 	}
 	// A tag behind junk whose last two bytes bring that frame's checksum to zero inside the tag, where
 	// the frame walk would end the audio: the tag ends it before, the junk ahead of the tag put back.
-	behind, err := ape.Render([]ape.Item{{Key: "Title", Value: "Behind Junk"}}, 2000, true)
+	behind, err := ape.Render([]ape.Item{{Key: "Title", Value: "Behind Junk"}}, 2000, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -719,6 +736,30 @@ func parityInputs(t *testing.T) []parityInput {
 			testfile.Lyrics3v2([2]string{"LYR", "words"}), v1a, v1b)},
 		parityInput{name: "legacy-tail-sv7.mpc", data: slices.Concat(sv7, sv7Tag, tailJunk, testfile.Lyrics3v1("la la"), v1a)},
 		parityInput{name: "id3v1-ahead-of-tag.ape", data: slices.Concat(mac[:macTag], v1a, mac[macTag:])},
+		// Cover items under the names of several taggers, one image under two names of a role and one
+		// item that does not decode among them; a picture edit keeps the items it does not change and
+		// names an added picture for its role, and a clear removes them all.
+		parityInput{name: "cover-roles.wv", data: slices.Concat(wv[:wvTag], roleTag),
+			edits: []parityEdit{
+				pics("add a conductor", addCover(PicConductor)),
+				pics("add an artist over the file's", addCover(PicArtist)),
+				pics("remove the front cover", func(_ *Document, e *Editor) {
+					e.RemovePictures(func(p Picture) bool { return p.Type == PicFrontCover })
+				}),
+				pics("described picture", func(_ *Document, e *Editor) {
+					e.AddPicture(Picture{Type: PicBand, Description: "on stage", Data: testfile.PNG()})
+				}),
+				pics("clear pictures", func(_ *Document, e *Editor) { e.ClearPictures() }),
+			}},
+		// Items an edit must leave as they are or cannot write whole: a name under two characters, an
+		// external locator, empty values between and behind others, and item bytes past the footer's
+		// count, in a tag marked read-only, which a legacy strip of the ID3v1 tag behind it copies.
+		parityInput{name: "odd-items.ape", data: slices.Concat(mac[:macTag], oddTag, v1a),
+			edits: []parityEdit{
+				tags("the short name", setTag("X", "two")),
+				strip,
+				tags("empty values", setTag(tag.Composer, "", "C", ""), tags("artist", setTag(tag.Artist, "Again"))),
+			}},
 		// A second WavPack stream after the first, which a rewrite moves up behind the first's blocks.
 		parityInput{name: "joined.wv", data: slices.Concat(wv, fixture["notags.wv"])},
 		parityInput{name: "leading-id3.wv", data: slices.Concat(v2Title, fixture["sample.wv"])},

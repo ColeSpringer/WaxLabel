@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"slices"
@@ -212,7 +213,7 @@ func TestStrictCatchesDroppedDuplicateAPETag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := ape.Render([]ape.Item{{Key: "Title", Value: "Kept"}}, 2000, true)
+	store, err := ape.Render([]ape.Item{{Key: "Title", Value: "Kept"}}, 2000, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +242,7 @@ func TestLintFixReportsADroppedDuplicateAPETag(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("sample.wv ends in no APE tag (err %v)", err)
 	}
-	dup, err := ape.Render([]ape.Item{{Key: "Composer", Value: "Only Here"}}, 2000, true)
+	dup, err := ape.Render([]ape.Item{{Key: "Composer", Value: "Only Here"}}, 2000, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,4 +406,153 @@ func TestEmptyGenreDroppedOnID3(t *testing.T) {
 			t.Errorf("TITLE = %v, want the present-empty value every other format keeps", v)
 		}
 	})
+}
+
+// An APEv2 item name is 2 to 255 characters: a shorter or longer key is dropped with a warning and
+// graded dropped by copy. Under --strict a set of one never reaches the writer, as no such key is in
+// the vocabulary.
+func TestStrictRefusesOutOfSpecAPEItemName(t *testing.T) {
+	t.Parallel()
+	sampleAPE := filepath.Join("..", "..", "testdata", "sample.ape")
+	notagsWV := filepath.Join("..", "..", "testdata", "notags.wv")
+
+	t.Run("set", func(t *testing.T) {
+		for _, key := range []string{"X", strings.Repeat("K", 256)} {
+			f := copyFixture(t, sampleAPE)
+			before, _ := os.ReadFile(f)
+			_, stderr, code := runCLI(t, "set", "--strict", "--set", key+"=1", f)
+			if code != 2 {
+				t.Errorf("%.8s: exit = %d, want 2; stderr: %s", key, code, stderr)
+			}
+			if after, _ := os.ReadFile(f); !bytes.Equal(before, after) {
+				t.Errorf("%.8s: the refused set changed the file", key)
+			}
+			stdout, stderr, code := runCLI(t, "set", "--set", key+"=1", "--set", "TITLE=Kept", f)
+			if code != 0 || !strings.Contains(stdout, "[value-dropped]") || !strings.Contains(stdout, "2 to 255") {
+				t.Errorf("%.8s: exit = %d, want 0 with a value-dropped warning naming the length rule; stdout: %s stderr: %s", key, code, stdout, stderr)
+			}
+			out, _, _ := runCLI(t, "dump", f)
+			if !strings.Contains(out, "Kept") || strings.Contains(out, key+" ") {
+				t.Errorf("%.8s: dump = %s, want the title written and the key absent", key, out)
+			}
+		}
+	})
+
+	t.Run("copy", func(t *testing.T) {
+		src := copyFixture(t, sampleFLAC)
+		if _, stderr, code := runCLI(t, "set", "--set", "X=one", src); code != 0 {
+			t.Fatalf("seed: exit %d: %s", code, stderr)
+		}
+		dst := copyFixture(t, notagsWV)
+		before, _ := os.ReadFile(dst)
+		out, stderr, code := runCLI(t, "copy", "--strict", src, dst)
+		if code != 2 {
+			t.Fatalf("exit = %d, want 2; stdout: %s stderr: %s", code, out, stderr)
+		}
+		if !strings.Contains(out+stderr, "X") || !strings.Contains(out+stderr, "2 to 255") {
+			t.Errorf("output must grade X dropped with the length rule: %s %s", out, stderr)
+		}
+		if after, _ := os.ReadFile(dst); !bytes.Equal(before, after) {
+			t.Error("the refused copy changed the destination")
+		}
+		if _, stderr, code := runCLI(t, "copy", src, dst); code != 0 {
+			t.Fatalf("copy without --strict: exit %d: %s", code, stderr)
+		}
+		dump, _, _ := runCLI(t, "dump", dst)
+		if strings.Contains(dump, "X  ") || !strings.Contains(dump, "TITLE") {
+			t.Errorf("dump = %s, want the rest copied and X left out", dump)
+		}
+	})
+}
+
+// An APE tag whose footer counts fewer items than the tag holds: dump shows the items counted and
+// reports the rest, --strict refuses the rewrite that would drop them, and without it the write
+// drops them with a warning.
+func TestStrictRefusesDroppingItemsPastTheFooterCount(t *testing.T) {
+	t.Parallel()
+	clean, err := os.ReadFile(td("notags.wv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, ok, err := ape.ParseAt(core.BytesSource(clean), int64(len(clean)), 1<<20, 0)
+	if err != nil || !ok {
+		t.Fatalf("notags.wv ends in no APE tag (err %v)", err)
+	}
+	tagBytes, err := ape.Render([]ape.Item{{Key: "Title", Value: "T"}, {Key: "Artist", Value: "A"}, {Key: "Album", Value: "B"}}, 2000, true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint32(tagBytes[16:], 1)
+	binary.LittleEndian.PutUint32(tagBytes[len(tagBytes)-16:], 1)
+	data := slices.Concat(clean[:store.Offset], tagBytes)
+	file := writeTempFile(t, "count.wv", data)
+
+	out, _, code := runCLI(t, "dump", "--native", file)
+	if code != 0 || !strings.Contains(out, "tags (1 key)") || !strings.Contains(out, "[malformed-tag-entry]") ||
+		!strings.Contains(out, "1 items, 31 unparsed byte(s)") {
+		t.Errorf("dump (exit %d) = %s, want one key, the warning and the unread bytes in the native view", code, out)
+	}
+	_, errb, code := runCLI(t, "set", "--strict", "--set", "GENRE=Rock", file)
+	if code != 2 || !strings.Contains(errb, "31 byte(s)") {
+		t.Errorf("exit = %d, want 2 naming the bytes the rewrite would drop: %s", code, errb)
+	}
+	if after, _ := os.ReadFile(file); !bytes.Equal(after, data) {
+		t.Error("the refused set changed the file")
+	}
+	out, errb, code = runCLI(t, "set", "--set", "GENRE=Rock", file)
+	if code != 0 || !strings.Contains(out, "[malformed-tag-entry-dropped]") {
+		t.Errorf("exit = %d, want 0 and the drop reported:\n%s%s", code, out, errb)
+	}
+	out, _, _ = runCLI(t, "dump", file)
+	if !strings.Contains(out, "GENRE") || strings.Contains(out, "malformed-tag-entry") {
+		t.Errorf("dump after the write = %s, want the genre and no warning left", out)
+	}
+}
+
+// copy --strict between two files that hold the same item under a name no edit can write loses
+// nothing and exits 0; with another value in the source it refuses.
+func TestStrictCopyOntoAnItemAlreadyHeld(t *testing.T) {
+	t.Parallel()
+	clean, err := os.ReadFile(td("notags.wv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, ok, err := ape.ParseAt(core.BytesSource(clean), int64(len(clean)), 1<<20, 0)
+	if err != nil || !ok {
+		t.Fatalf("notags.wv ends in no APE tag (err %v)", err)
+	}
+	file := func(name, value string) string {
+		tagBytes, err := ape.Render([]ape.Item{{Key: "X", Value: value}, {Key: "Title", Value: "T"}}, 2000, true, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return writeTempFile(t, name, slices.Concat(clean[:store.Offset], tagBytes))
+	}
+	src, same, other := file("src.wv", "one"), file("same.wv", "one"), file("other.wv", "two")
+	if out, errb, code := runCLI(t, "copy", "--strict", src, same); code != 0 {
+		t.Errorf("onto the same value: exit = %d, want 0:\n%s%s", code, out, errb)
+	}
+	if out, errb, code := runCLI(t, "copy", "--strict", src, other); code != 2 || !strings.Contains(out+errb, "2 to 255") {
+		t.Errorf("onto another value: exit = %d, want 2 naming the length rule:\n%s%s", code, out, errb)
+	}
+}
+
+// A tagging run repeated under --strict passes: adding again the pictures a WavPack file already
+// holds under their roles' names replaces nothing and writes nothing.
+func TestStrictReAddedPictureIsNoChange(t *testing.T) {
+	t.Parallel()
+	f := copyFixture(t, td("notags.wv"))
+	front, artist := writeTempImage(t, "front.png", testfile.PNG()), writeTempImage(t, "artist.gif", testfile.GIF())
+	args := []string{"set", "--strict", "--add-picture", "front-cover=" + front, "--add-picture", "artist=" + artist, f}
+	if _, errb, code := runCLI(t, args...); code != 0 {
+		t.Fatalf("first run: exit %d: %s", code, errb)
+	}
+	written, _ := os.ReadFile(f)
+	out, errb, code := runCLI(t, args...)
+	if code != 0 || strings.Contains(out, "warning") {
+		t.Errorf("second run: exit %d, want 0 with no warning:\n%s%s", code, out, errb)
+	}
+	if after, _ := os.ReadFile(f); !bytes.Equal(after, written) {
+		t.Error("the second run changed the file")
+	}
 }

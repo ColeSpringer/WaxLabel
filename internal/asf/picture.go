@@ -57,7 +57,8 @@ func decodePicture(b []byte) (core.Picture, error) {
 func cutUTF16(b []byte) (string, int, bool) {
 	for i := 0; i+1 < len(b); i += 2 {
 		if b[i] == 0 && b[i+1] == 0 {
-			return utf16String(b[:i]), i + 2, true
+			s, _ := utf16String(b[:i])
+			return s, i + 2, true
 		}
 	}
 	return "", 0, false

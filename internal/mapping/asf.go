@@ -49,6 +49,7 @@ var asfNames = map[string]tag.Key{
 	"wm/albumsortorder":       tag.AlbumSort,
 	"wm/albumartistsortorder": tag.AlbumArtistSort,
 	"wm/composersortorder":    tag.ComposerSort,
+	"wm/iscompilation":        tag.Compilation,
 	// WM/ContentDistributor and WM/Provider are not LABEL (distributor vs publisher).
 	"wm/mediaclassprimaryid":   "", // GUID, not a tag value
 	"wm/mediaclasssecondaryid": "",

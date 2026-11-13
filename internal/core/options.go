@@ -147,7 +147,8 @@ type WriteOptions struct {
 	// also removes CHAPTERxxx comments that were not read.
 	ChaptersCleared bool
 	// PicturesCleared: the edit cleared the pictures explicitly. FLAC and Ogg then also remove
-	// picture comments and PICTURE blocks that did not decode.
+	// picture comments and PICTURE blocks that did not decode, and the APE-tagged formats their
+	// cover items that did not.
 	PicturesCleared bool
 }
 

@@ -169,7 +169,7 @@ A corrupt file (exit 4) outranks a mistyped path (exit 6).
 | Matroska / WebM | read/write | Scoped SimpleTags, segment title, attachments, default-edition chapters. Tags of an attachment, chapter, edition or video track stay out of the file's tags. Beside a `TITLE` at level 40 or under, the album-level `TITLE` and `ARTIST` are `ALBUM` and `ALBUMARTIST`. Attachments an edit keeps are copied verbatim. WebM cannot write cover attachments or hidden/disabled chapter flags. |
 | AAC (ADTS) | read/write | Front ID3v2 (new tags ID3v2.4) plus ADTS frames. HE-AAC reports played rate, channels, and profile from frames when the header cannot. Trailing ID3v1, APEv2 and Lyrics3 as legacy. |
 | AIFF / AIFF-C | read/write | Native text chunks plus embedded `ID3 `; chunks preserved. |
-| WavPack | read/write | APEv2 and `Cover Art` convention; leading ID3v2, trailing ID3v1 and Lyrics3 as legacy. |
+| WavPack | read/write | APEv2. Pictures are `Cover Art (<role>)` items, one per role: taggers agree on the front and back names only, so the other roles follow the convention Mp3tag and Kid3 write, and the names TagLib# and foobar2000 write are read too. Leading ID3v2, trailing ID3v1 and Lyrics3 as legacy. |
 | Monkey's Audio | read/write | APEv2 and legacy tags as above; SV3.98+ and older inline header both read. |
 | Musepack | read/write | APEv2 for SV7 and SV8. SV8 chapter packets read and preserved, not written. Leading ID3v2, trailing ID3v1 and Lyrics3 as legacy. |
 | WMA / ASF | read-only | Content Description, `WM/*`, `WM/Picture`, Marker Object chapters. No ASF writes. |
@@ -202,7 +202,7 @@ Table below is generated from the same capability model as `waxlabel caps`.
 | WavPack | read full, write full · APEv2 Cover Art item | read none, write none | read none, write none | none |
 <!-- END caps -->
 
-Some limits are intentional: MP4 covers drop the picture description, ID3 chapters
+Some limits are intentional: MP4 and APEv2 covers drop the picture description, ID3 chapters
 store no per-chapter language, ID3 stores a comment or lyric written without a
 language as `eng`, and Matroska writes random UIDs, so chapter and
 attachment rewrites are not byte-reproducible. Package docs describe them and writes

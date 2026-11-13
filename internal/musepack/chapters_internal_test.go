@@ -112,7 +112,7 @@ func TestReadChaptersFailedRead(t *testing.T) {
 // packet cap it meets inside that tag's bytes, past the stream, gives no warning of chapters going
 // unread.
 func TestPacketCapPastTheStreamIsNoWarning(t *testing.T) {
-	tag, err := ape.Render([]ape.Item{{Key: "Title", Value: "x"}}, 2000, true)
+	tag, err := ape.Render([]ape.Item{{Key: "Title", Value: "x"}}, 2000, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

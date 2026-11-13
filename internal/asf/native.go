@@ -49,8 +49,6 @@ type doc struct {
 	losslessDepth int
 	// waveFormat: first 16 WAVEFORMATEX bytes as stored (essence-digest salt).
 	waveFormat [16]byte
-	// invalidKeys: descriptors the canonical vocabulary cannot represent.
-	invalidKeys []string
 }
 
 // marker is one Marker Object entry.

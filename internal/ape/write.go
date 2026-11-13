@@ -3,6 +3,7 @@ package ape
 import (
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
@@ -17,6 +18,9 @@ import (
 // Bit 30 (no footer) is never set; every written tag has a footer for end-scan.
 const (
 	flagIsHeader = 1 << 29
+	flagNoFooter = 1 << 30
+	// shapeFlags state the tag's shape; [Render] sets them from what it writes.
+	shapeFlags = flagHasHeader | flagNoFooter | flagIsHeader
 	// WriteVersion is the version a new tag is written in: APEv2.
 	WriteVersion = 2000
 	// headerPresentBit: both records of a headed tag (footer scan steps back).
@@ -36,8 +40,8 @@ var reservedItemNames = map[string]string{
 }
 
 // ReservedItemName: case-folded APEv2-reserved names (CLI uppercases keys).
-// Value rule, not charset (same split as vorbis reserved namespaces).
-// Spec length 2-255 is not enforced: reserved is a collision hazard; short names work.
+// Value rule, not charset (same split as vorbis reserved namespaces); [InvalidItemName] is the
+// length and charset rule.
 func ReservedItemName(name string) bool {
 	_, ok := reservedMagic(name)
 	return ok
@@ -53,11 +57,114 @@ func reservedMagic(name string) (string, bool) {
 	return "", false
 }
 
+// InvalidItemName reports a name the APEv2 specification does not allow for an item, and why: a name
+// is 2 to 255 bytes of printable ASCII (0x20 to 0x7E).
+func InvalidItemName(name string) (reason string, bad bool) {
+	const rule = "an APEv2 item name is 2 to 255 characters of printable ASCII"
+	if n := len(name); n < 2 || n > 255 {
+		return fmt.Sprintf("%s, and this one is %d long", rule, n), true
+	}
+	for i := range len(name) {
+		if c := name[i]; c < 0x20 || c > 0x7E {
+			return fmt.Sprintf("%s, and this one holds byte 0x%02x", rule, c), true
+		}
+	}
+	return "", false
+}
+
+// NameDrop is a key [Rebuild] did not write because its item name is outside the specification.
+type NameDrop struct {
+	Key    tag.Key
+	Reason string // [InvalidItemName]'s, for the name the item would have had
+}
+
+// nameRefusal is why a text value cannot be written under an item name.
+type nameRefusal uint8
+
+const (
+	nameWritable nameRefusal = iota
+	nameReserved             // the specification reserves it
+	nameInvalid              // outside the specification's length or characters
+	nameCover                // a cover item's, which taggers type binary
+)
+
+// refusal reports why a text item cannot have name, with [InvalidItemName]'s reason for a name
+// outside the specification.
+func refusal(name string) (nameRefusal, string) {
+	if ReservedItemName(name) {
+		return nameReserved, ""
+	}
+	if reason, bad := InvalidItemName(name); bad {
+		return nameInvalid, reason
+	}
+	if IsCoverKey(name) {
+		return nameCover, ""
+	}
+	return nameWritable, ""
+}
+
+// heldName is the item a rewrite of a key keeps the name and flags of.
+type heldName struct {
+	name  string
+	flags uint32
+}
+
+// heldNames maps each key the text items hold to the item a rewrite of the key keeps the name of:
+// the first that holds it under a name a text item may have, else the first that holds it.
+func heldNames(items []Item) map[tag.Key]heldName {
+	m := map[tag.Key]heldName{}
+	settled := map[tag.Key]bool{}
+	for _, it := range items {
+		if it.NonText() {
+			continue
+		}
+		key, ok := mapping.CanonicalAPE(it.Key)
+		if !ok || settled[key] {
+			continue
+		}
+		w, _ := refusal(it.Key)
+		if _, seen := m[key]; !seen || w == nameWritable {
+			m[key] = heldName{it.Key, it.Flags}
+		}
+		settled[key] = w == nameWritable
+	}
+	return m
+}
+
+// textName returns the item name a text value of key k is written under: held, the name the file
+// holds the key by ([heldNames], "" for none), where a text item may have it, else the key's own
+// name ([mapping.APEName]). When neither will do, why and reason say what is wrong with the key's
+// own. Shared by the writer and the transfer classifier.
+func textName(k tag.Key, held string) (name string, why nameRefusal, reason string) {
+	if held != "" {
+		if w, _ := refusal(held); w == nameWritable {
+			return held, nameWritable, ""
+		}
+	}
+	name = mapping.APEName(k)
+	why, reason = refusal(name)
+	return name, why, reason
+}
+
+// DropsTrailingEmpty reports values an item cannot hold whole: a NUL joins the values of an item,
+// and one at the end reads as the terminator some taggers write, so an empty value after another
+// value is lost. An empty value ahead of or between others is stored.
+func DropsTrailingEmpty(vals []string) bool {
+	return len(vals) > 1 && vals[len(vals)-1] == ""
+}
+
+// TrailingEmptyReason: shared by the transfer grade and the write warning.
+const TrailingEmptyReason = "an empty value at the end of an APEv2 item reads as a terminator, so the empty values after the last value are dropped"
+
 // RebuildInfo: what [Rebuild] could not write (caller surfaces warnings).
 type RebuildInfo struct {
 	// ReservedKeys: reserved item names, rebuild order; not written.
 	ReservedKeys []tag.Key
-	// SlotDroppedCovers: roles with no free Cover Art name ([PartitionCoverSlots]).
+	// InvalidNames: names outside the specification, rebuild order; not written.
+	InvalidNames []NameDrop
+	// TrailingEmptyKeys: keys whose empty values at the end were not written ([DropsTrailingEmpty]).
+	TrailingEmptyKeys []tag.Key
+	// SlotDroppedCovers: roles of the pictures left without an item name ([PartitionCovers]).
 	SlotDroppedCovers []core.PictureType
 	// MalformedCoversReplaced: undecodable covers displaced by a written cover same name.
 	MalformedCoversReplaced []string
@@ -78,9 +185,17 @@ func RebuildWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
 		prior = core.WarnKeyed(prior, core.WarnValueDropped,
 			fmt.Sprintf("%s is an item name the APEv2 specification reserves (it is %s magic) and cannot be written", k, magic), k)
 	}
+	for _, d := range info.InvalidNames {
+		prior = core.WarnKeyed(prior, core.WarnValueDropped,
+			fmt.Sprintf("%s cannot be written: %s", core.WarnSnippet(string(d.Key)), d.Reason), d.Key)
+	}
+	for _, k := range info.TrailingEmptyKeys {
+		prior = core.WarnKeyed(prior, core.WarnValueDropped,
+			fmt.Sprintf("%s: %s", core.WarnSnippet(string(k)), TrailingEmptyReason), k)
+	}
 	for _, k := range info.CoverNameKeys {
 		prior = core.WarnKeyed(prior, core.WarnValueDropped,
-			fmt.Sprintf("%s is a Cover Art item name, which the convention types binary; a text value cannot be written (cover art is edited as a picture)", k), k)
+			fmt.Sprintf("%s is a cover art item name, which taggers type binary; a text value cannot be written (cover art is edited as a picture)", k), k)
 	}
 	for _, t := range info.SlotDroppedCovers {
 		prior = core.Warn(prior, core.WarnPictureUnsupported,
@@ -105,9 +220,9 @@ func RebuildWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
 }
 
 // Rebuild: minimal change (order, flags, byte-identical untouched items; NUL-join
-// multi). Pictures applied only when picturesChanged. Reserved/[IsCoverKey] text not
-// written (recorded); pre-existing such names preserved. Unique names: authored text
-// displaces same-name non-text; written cover displaces squatting text. Source
+// multi). Pictures applied only when picturesChanged ([emitPictures]). Reserved/[IsCoverKey]
+// text not written (recorded); pre-existing such names preserved. Unique names: authored text
+// displaces same-name non-text; a cover written anew displaces squatting text. Source
 // collisions preserved as found.
 func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, picturesChanged bool) ([]Item, RebuildInfo) {
 	changed := DiffKeys(base, edited)
@@ -116,74 +231,55 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 	nameRefused := map[tag.Key]bool{}
 	// origTextFold: source text names. Hit => re-render; miss => authoredText claims name.
 	// authoredCovers: cover-name analogue from emitPictures.
+	held := heldNames(orig)
 	origTextFold := map[string]bool{}
 	authoredText := map[string]tag.Key{}
-	authoredCovers := map[string]bool{}
+	var authoredCovers map[string]bool
 	out := make([]Item, 0, len(orig)+len(pictures))
 	picturesEmitted := false
 	var info RebuildInfo
 
 	emitPictures := func() {
-		// Slot assign (two names); no slot means drop. blocked = undecodable slots.
-		malformed := malformedCovers(orig)
-		blocked := map[string]bool{}
-		for _, it := range malformed {
-			blocked[coverKey(coverPictureType(it.Key))] = true
-		}
-		keptIdx, names := assignCoverSlots(pictures, nil, blocked)
-		kept := make([]bool, len(pictures))
-		for j, i := range keptIdx {
-			kept[i] = true
-			authoredCovers[strings.ToLower(names[j])] = true
-			out = append(out, encodeCoverAs(pictures[i], names[j]))
-		}
-		for i, p := range pictures {
-			if !kept[i] {
-				info.SlotDroppedCovers = append(info.SlotDroppedCovers, p.Type)
-			}
-		}
-		for _, it := range malformed {
-			// Preserve undecodable unless this edit writes under the same name.
-			if authoredCovers[strings.ToLower(coverKey(coverPictureType(it.Key)))] {
-				info.MalformedCoversReplaced = append(info.MalformedCoversReplaced, it.Key)
-				continue
-			}
-			out = append(out, it)
-		}
+		var written []Item
+		written, authoredCovers = emitPictures(orig, pictures, &info)
+		out = append(out, written...)
 		picturesEmitted = true
 	}
-	// emit: one item under name; empty set => --clear. Keep source flags.
-	// Lone [""] stored; empty within multi dropped (inverse of splitItemValues).
-	emit := func(k tag.Key, name string, flags uint32) {
+	// emit: one item for k, under the name the file holds it by where a text item may have that
+	// name, else under the key's own ([heldNames], [textName]); empty set => --clear. Keep source
+	// flags. The values are joined with NULs, empty ones too, but for those at the end (inverse of
+	// splitItemValues).
+	emit := func(k tag.Key) {
 		emitted[k] = true
 		vals, ok := edited.Get(k)
 		if !ok || len(vals) == 0 {
 			return
 		}
-		if ReservedItemName(name) {
+		name, why, reason := textName(k, held[k].name)
+		flags := held[k].flags
+		switch why {
+		case nameReserved:
 			info.ReservedKeys = append(info.ReservedKeys, k)
-			nameRefused[k] = true
-			return
-		}
-		if IsCoverKey(name) {
-			// Cover Art names are binary; refuse text.
+		case nameInvalid:
+			info.InvalidNames = append(info.InvalidNames, NameDrop{k, reason})
+		case nameCover:
 			info.CoverNameKeys = append(info.CoverNameKeys, k)
+		}
+		if why != nameWritable {
 			nameRefused[k] = true
 			return
 		}
-		boolean := tag.IsBooleanKey(k)
-		kept := make([]string, 0, len(vals))
-		for _, v := range vals {
-			if boolean {
-				v = tag.CanonicalBoolValue(v)
+		kept := slices.Clone(vals)
+		if tag.IsBooleanKey(k) {
+			for i, v := range kept {
+				kept[i] = tag.CanonicalBoolValue(v)
 			}
-			if v == "" && len(vals) > 1 {
-				continue
-			}
-			kept = append(kept, v)
 		}
-		if len(kept) == 0 {
-			return
+		if DropsTrailingEmpty(kept) {
+			info.TrailingEmptyKeys = append(info.TrailingEmptyKeys, k)
+			for len(kept) > 1 && kept[len(kept)-1] == "" {
+				kept = kept[:len(kept)-1]
+			}
 		}
 		if fold := strings.ToLower(name); !origTextFold[fold] {
 			authoredText[fold] = k // a fresh name: it displaces a non-text holder below
@@ -191,15 +287,9 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 		out = append(out, Item{Key: name, Value: strings.Join(kept, "\x00"), Flags: flags})
 	}
 
-	// hasNative: slash-pair total only when no own total item.
-	hasNative := map[tag.Key]bool{}
 	for _, it := range orig {
-		if it.NonText() {
-			continue
-		}
-		origTextFold[strings.ToLower(it.Key)] = true
-		if k, ok := mapping.CanonicalAPE(it.Key); ok {
-			hasNative[k] = true
+		if !it.NonText() {
+			origTextFold[strings.ToLower(it.Key)] = true
 		}
 	}
 
@@ -224,14 +314,15 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 		// Slash holds number+total; on either change rewrite number without slash and
 		// mark both emitted (else unrelated edit appends stray total). Same as vorbis.
 		if key == tag.TrackNumber || key == tag.DiscNumber {
-			if _, _, split := tag.NumberTotalSplit(key, it.Value); split {
+			// The value as it reads: a terminator some tagger wrote hides no slash.
+			if vals := splitItemValues(it.Value); len(vals) == 1 && slashed(key, vals[0]) {
 				totKey := tag.TotalKey(key)
 				if changed[key] || changed[totKey] {
 					if !emitted[key] {
-						emit(key, it.Key, it.Flags) // number only, keeping the file's spelling
+						emit(key) // number only, keeping the file's spelling
 					}
-					if !hasNative[totKey] && !emitted[totKey] {
-						emit(totKey, mapping.APEName(totKey), 0) // derived total with no item of its own
+					if _, own := held[totKey]; !own && !emitted[totKey] {
+						emit(totKey) // derived total with no item of its own
 					}
 					continue
 				}
@@ -243,21 +334,18 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 			emitted[key] = true
 			continue
 		}
-		if emitted[key] {
-			continue // a duplicate item for an edited key collapses into the first
+		if !emitted[key] {
+			emit(key) // a later item of the key collapses into this one
 		}
-		// Keep source spelling.
-		emit(key, it.Key, it.Flags)
 		if nameRefused[key] {
-			// Refused write: keep prior bytes.
-			out = append(out, it)
+			out = append(out, it) // refused write: every item of the key keeps its bytes
 		}
 	}
 
 	// New keys in tag-set order under conventional APE spelling.
 	for _, k := range edited.Keys() {
 		if !emitted[k] {
-			emit(k, mapping.APEName(k), 0)
+			emit(k)
 		}
 	}
 	if picturesChanged && !picturesEmitted {
@@ -288,17 +376,63 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 	return out, info
 }
 
+// slashed reports a number that holds its total behind a slash.
+func slashed(key tag.Key, value string) bool {
+	_, _, split := tag.NumberTotalSplit(key, value)
+	return split
+}
+
+// emitPictures renders the cover items of a picture edit, in picture order ([assignCovers]): a
+// picture the file already holds is the item that holds it, as it is, and any other is written
+// anew. The undecodable cover items of orig follow, but for one whose name a picture written anew
+// took. It returns the items and the names written anew, lower case, and records in info the
+// pictures left without a name and the undecodable items replaced.
+func emitPictures(orig []Item, pictures []core.Picture, info *RebuildInfo) (items []Item, anew map[string]bool) {
+	anew = map[string]bool{}
+	stored := make([]bool, len(pictures))
+	for _, s := range assignCovers(pictures, nil, orig) {
+		stored[s.pic] = true
+		if s.from >= 0 {
+			items = append(items, orig[s.from])
+			continue
+		}
+		anew[strings.ToLower(s.name)] = true
+		items = append(items, encodeCoverAs(pictures[s.pic], s.name))
+	}
+	for i, p := range pictures {
+		if !stored[i] {
+			info.SlotDroppedCovers = append(info.SlotDroppedCovers, p.Type)
+		}
+	}
+	for _, it := range malformedCovers(orig) {
+		if anew[strings.ToLower(it.Key)] {
+			info.MalformedCoversReplaced = append(info.MalformedCoversReplaced, it.Key)
+			continue
+		}
+		items = append(items, it)
+	}
+	return items, anew
+}
+
 // malformedCovers: undecodable covers to preserve on picture edit (like FLAC).
 func malformedCovers(orig []Item) []Item {
 	var out []Item
 	for _, it := range orig {
-		if it.NonText() && IsCoverKey(it.Key) {
-			if _, err := DecodeCover(it.Key, it.Payload()); err != nil {
-				out = append(out, it)
-			}
+		if UndecodableCover(it) {
+			out = append(out, it)
 		}
 	}
 	return out
+}
+
+// UndecodableCover reports a cover item no picture can be read from: one with no file name
+// terminator or no image bytes. A picture edit keeps it; a clear of the pictures removes it.
+func UndecodableCover(it Item) bool {
+	if !it.NonText() || !IsCoverKey(it.Key) {
+		return false
+	}
+	_, _, ok := coverImage(it)
+	return !ok
 }
 
 // Render limits: ffmpeg APE reader caps; maxItemBytes is the 32-bit length field.
@@ -309,8 +443,9 @@ const (
 )
 
 // Render: optional header, items, footer. Size = items+footer. Keep source
-// version/hasHeader; new tags are APEv2+header.
-func Render(items []Item, version int, hasHeader bool) ([]byte, error) {
+// version/hasHeader; new tags are APEv2+header. extraFlags are the flags the source tag carried
+// ([Tag.Flags]), written into both records but for the bits that state the shape.
+func Render(items []Item, version int, hasHeader bool, extraFlags uint32) ([]byte, error) {
 	if err := checkRenderLimits(items); err != nil {
 		return nil, err
 	}
@@ -329,9 +464,10 @@ func Render(items []Item, version int, hasHeader bool) ([]byte, error) {
 		total += footerLen
 	}
 
+	extraFlags &^= shapeFlags
 	out := make([]byte, 0, total)
 	if hasHeader {
-		out = append(out, record{version: version, size: int64(tagSize), count: uint32(len(items)), flags: headerFlagsBits}.encode()...)
+		out = append(out, record{version: version, size: int64(tagSize), count: uint32(len(items)), flags: headerFlagsBits | extraFlags}.encode()...)
 	}
 	for _, it := range items {
 		payload := it.Payload()
@@ -343,9 +479,9 @@ func Render(items []Item, version int, hasHeader bool) ([]byte, error) {
 		out = append(out, 0)
 		out = append(out, payload...)
 	}
-	footerFlags := uint32(0)
+	footerFlags := extraFlags
 	if hasHeader {
-		footerFlags = headerPresentBit
+		footerFlags |= headerPresentBit
 	}
 	return append(out, record{version: version, size: int64(tagSize), count: uint32(len(items)), flags: footerFlags}.encode()...), nil
 }

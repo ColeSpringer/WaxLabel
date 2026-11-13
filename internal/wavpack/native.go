@@ -34,6 +34,14 @@ type doc struct {
 	track  core.AudioTrack
 }
 
+// StoreTrailer returns the trailer whose APE tag is the tag store ([tail.Capabilities]).
+func (d *doc) StoreTrailer() tail.Trailer {
+	if d == nil {
+		return tail.Trailer{}
+	}
+	return d.trailer
+}
+
 func (d *doc) Format() core.Format { return core.FormatWavPack }
 
 // Clone deep-copies so Document accessors stay detached.

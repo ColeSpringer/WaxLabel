@@ -109,8 +109,9 @@ const (
 	PictureLossRoleOnly
 	// PictureLossRoleAndDescription: bytes only (MP4 covr).
 	PictureLossRoleAndDescription
-	// PictureLossNonCoverRoleAndDescription: front/back exact; other roles remapped (APE).
-	PictureLossNonCoverRoleAndDescription
+	// PictureLossDescriptionOnly: every named role preserved; a description is lost, and a role
+	// the ID3 table does not name (APE).
+	PictureLossDescriptionOnly
 )
 
 // pictureLosesMetadata is per-picture; [PicturesLoseMetadata] folds it.
@@ -121,9 +122,8 @@ func pictureLosesMetadata(p Picture, loss PictureLoss) bool {
 	case PictureLossRoleOnly:
 		// PicOther round-trips; only non-front, non-Other roles are loss.
 		return p.Type != PicFrontCover && p.Type != PicOther
-	case PictureLossNonCoverRoleAndDescription:
-		// Front/back exact; other roles or any description are loss.
-		return (p.Type != PicFrontCover && p.Type != PicBackCover) || p.Description != ""
+	case PictureLossDescriptionOnly:
+		return p.Description != "" || p.Type > PicPublisherLogo
 	}
 	return false
 }

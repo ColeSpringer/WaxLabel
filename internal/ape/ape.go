@@ -44,7 +44,17 @@ type Tag struct {
 	HasHeader bool
 	// Truncated: Items is incomplete (element cap). Rebuild must refuse.
 	Truncated bool
+	// Flags is the footer's flag word, with the bits the header record sets beside its own. A
+	// rewrite carries it into both records but for the bits that state the tag's shape, so a tag
+	// marked read-only in either stays marked; the mark does not stop an edit.
+	Flags uint32
+	// UnreadTail counts the item bytes no item was read from: those past the items the footer
+	// counts, and everything from an item that does not parse. A rewrite drops them.
+	UnreadTail int
 }
+
+// ReadOnly reports the tag's read-only flag (preserved, not enforced).
+func (t *Tag) ReadOnly() bool { return t.Flags&flagReadOnly != 0 }
 
 // Item is one APE key/value pair.
 //
@@ -59,14 +69,16 @@ type Item struct {
 	Flags uint32
 }
 
-// Item flag bits. Bits 1-2: type (0 = text; else not projected).
+// Item flag bits. Bits 1-2: type (0 = text; else not projected). Bit 0 means the same in a tag's
+// header and footer flags.
 const (
 	flagReadOnly  = 1 << 0
 	itemTypeShift = 1
 	itemTypeMask  = 3
 
-	itemTypeText   = 0
-	itemTypeBinary = 1
+	itemTypeText    = 0
+	itemTypeBinary  = 1
+	itemTypeLocator = 2
 )
 
 // NonText: preserved, not projected as a tag value.
@@ -75,12 +87,39 @@ func (i Item) NonText() bool { return (i.Flags>>itemTypeShift)&itemTypeMask != i
 // ReadOnly reports the read-only bit (preserved, not enforced).
 func (i Item) ReadOnly() bool { return i.Flags&flagReadOnly != 0 }
 
+// TypeNote says what the item's flags make of it, for the native view: nothing for text, "binary",
+// "external locator" or "reserved type 3", and "read-only" where the bit is set.
+func (i Item) TypeNote() string {
+	var notes []string
+	switch (i.Flags >> itemTypeShift) & itemTypeMask {
+	case itemTypeText:
+	case itemTypeBinary:
+		notes = append(notes, "binary")
+	case itemTypeLocator:
+		notes = append(notes, "external locator")
+	default:
+		notes = append(notes, "reserved type 3")
+	}
+	if i.ReadOnly() {
+		notes = append(notes, "read-only")
+	}
+	return strings.Join(notes, ", ")
+}
+
 // Payload: on-disk Data if present, else Value bytes.
 func (i Item) Payload() []byte {
 	if i.Data != nil {
 		return i.Data
 	}
 	return []byte(i.Value)
+}
+
+// SameItems reports whether a and b hold the same items in the same order: name, flags and
+// payload bytes.
+func SameItems(a, b []Item) bool {
+	return slices.EqualFunc(a, b, func(x, y Item) bool {
+		return x.Key == y.Key && x.Flags == y.Flags && bytes.Equal(x.Payload(), y.Payload())
+	})
 }
 
 // Clone deep-copies so Document accessors stay detached.
@@ -105,7 +144,7 @@ func ParseAt(src core.ReaderAtSized, endOff, limit int64, maxElements int) (*Tag
 	if err != nil || !ok {
 		return nil, false, err
 	}
-	headed, err := headerPresent(src, foot, endOff, limit)
+	head, headed, err := headerRecord(src, foot, endOff, limit)
 	if err != nil {
 		return nil, false, err
 	}
@@ -113,7 +152,7 @@ func ParseAt(src core.ReaderAtSized, endOff, limit int64, maxElements int) (*Tag
 	if err != nil || !ok {
 		return nil, false, err
 	}
-	return tagFrom(foot, endOff, raw, headed, maxElements), true, nil
+	return tagFrom(foot, head, endOff, raw, headed, maxElements), true, nil
 }
 
 // DeclaredStart reads the footer ending at endOff, and the header record it announces, and returns
@@ -123,7 +162,7 @@ func DeclaredStart(src core.ReaderAtSized, endOff, limit int64) (int64, bool, er
 	if err != nil || !ok {
 		return 0, false, err
 	}
-	headed, err := headerPresent(src, foot, endOff, limit)
+	_, headed, err := headerRecord(src, foot, endOff, limit)
 	if err != nil {
 		return 0, false, err
 	}
@@ -155,19 +194,18 @@ func ParseHeadAt(src core.ReaderAtSized, off, maxEnd, limit int64, maxElements i
 	if err != nil || !ok {
 		return nil, false, err
 	}
-	return tagFrom(foot, end, raw, true, maxElements), true, nil
+	return tagFrom(foot, head, end, raw, true, maxElements), true, nil
 }
 
-// headerPresent reports whether the header record the footer foot, ending at endOff, announces is
-// there. Has-header moves the audio/tag boundary, so APETAGEX must open the 32 bytes before the
-// items before the bit is trusted (a lying flag would overwrite audio and pass --verify).
-func headerPresent(src core.ReaderAtSized, foot record, endOff, limit int64) (bool, error) {
+// headerRecord returns the header record the footer foot, ending at endOff, announces, and whether
+// it is there. Has-header moves the audio/tag boundary, so APETAGEX must open the 32 bytes before
+// the items before the bit is trusted (a lying flag would overwrite audio and pass --verify).
+func headerRecord(src core.ReaderAtSized, foot record, endOff, limit int64) (record, bool, error) {
 	itemsStart := endOff - foot.size
 	if !foot.headed() || itemsStart < footerLen {
-		return false, nil
+		return record{}, false, nil
 	}
-	_, ok, err := readRecord(src, itemsStart-footerLen, limit)
-	return ok, err
+	return readRecord(src, itemsStart-footerLen, limit)
 }
 
 // readItems reads the item bytes of the tag whose footer foot ends at endOff, as [bits.ReadWithin]
@@ -250,12 +288,17 @@ func footerAt(src core.ReaderAtSized, endOff, limit int64) (record, bool, error)
 	return foot, true, nil
 }
 
-// tagFrom builds the tag whose footer foot ends at endOff from its item bytes; headed says a
-// header record opens it.
-func tagFrom(foot record, endOff int64, raw []byte, headed bool, maxElements int) *Tag {
-	t := &Tag{Version: foot.version, Items: []Item{}, Offset: endOff - foot.size, Size: foot.size, HasHeader: headed}
+// tagFrom builds the tag whose footer foot ends at endOff from its item bytes; headed says the
+// header record head opens it.
+func tagFrom(foot, head record, endOff int64, raw []byte, headed bool, maxElements int) *Tag {
+	t := &Tag{Version: foot.version, Items: []Item{}, Offset: endOff - foot.size, Size: foot.size, HasHeader: headed, Flags: foot.flags}
+	if headed {
+		t.Flags |= head.flags &^ shapeFlags
+	}
 	if len(raw) > 0 {
-		t.Items, t.Truncated = parseItems(raw, foot.count, maxElements)
+		var consumed int
+		t.Items, t.Truncated, consumed = parseItems(raw, foot.count, maxElements)
+		t.UnreadTail = len(raw) - consumed
 	}
 	if headed {
 		t.Offset -= footerLen
@@ -264,40 +307,43 @@ func tagFrom(foot record, endOff int64, raw []byte, headed bool, maxElements int
 	return t
 }
 
-// walkItems walks the count items raw declares, handing each to visit when it is not nil, and
-// reports whether every declared item was well formed and together they took every byte of raw.
-func walkItems(raw []byte, count uint32, visit func(key, value []byte, flags uint32)) bool {
+// walkItems walks the count items raw declares, handing each to visit when it is not nil. It
+// returns how many bytes the well-formed items it walked take, and whether every declared item was
+// well formed and together they took every byte of raw.
+func walkItems(raw []byte, count uint32, visit func(key, value []byte, flags uint32)) (consumed int, whole bool) {
 	pos := 0
 	for range count {
-		if len(raw)-pos < 8 {
-			return false
+		at := pos
+		if len(raw)-at < 8 {
+			return pos, false
 		}
-		size := binary.LittleEndian.Uint32(raw[pos : pos+4])
-		flags := binary.LittleEndian.Uint32(raw[pos+4 : pos+8])
-		pos += 8
-		n := bytes.IndexByte(raw[pos:], 0)
+		size := binary.LittleEndian.Uint32(raw[at : at+4])
+		flags := binary.LittleEndian.Uint32(raw[at+4 : at+8])
+		at += 8
+		n := bytes.IndexByte(raw[at:], 0)
 		if n < 0 {
-			return false
+			return pos, false
 		}
-		key := raw[pos : pos+n]
-		pos += n + 1
+		key := raw[at : at+n]
+		at += n + 1
 		// Compared as uint64: a 32-bit int cannot hold every declared size.
-		if uint64(size) > uint64(len(raw)-pos) {
-			return false
+		if uint64(size) > uint64(len(raw)-at) {
+			return pos, false
 		}
 		if visit != nil {
-			visit(key, raw[pos:pos+int(size)], flags)
+			visit(key, raw[at:at+int(size)], flags)
 		}
-		pos += int(size)
+		pos = at + int(size)
 	}
-	return pos == len(raw)
+	return pos, pos == len(raw)
 }
 
-// parseItems decodes the items raw declares up to the first malformed one. An item past
-// maxElements is walked but not decoded, and truncated reports it. The cap is not fatal here
-// (MP3 keeps raw bytes); codecs that rebuild from Items refuse [Tag.Truncated].
-func parseItems(raw []byte, count uint32, maxElements int) (items []Item, truncated bool) {
-	walkItems(raw, count, func(key, value []byte, flags uint32) {
+// parseItems decodes the items raw declares up to the first malformed one, and returns how many
+// bytes of raw they take. An item past maxElements is walked but not decoded, and truncated
+// reports it. The cap is not fatal here (MP3 keeps raw bytes); codecs that rebuild from Items
+// refuse [Tag.Truncated].
+func parseItems(raw []byte, count uint32, maxElements int) (items []Item, truncated bool, consumed int) {
+	consumed, _ = walkItems(raw, count, func(key, value []byte, flags uint32) {
 		if maxElements > 0 && len(items) >= maxElements {
 			truncated = true
 			return
@@ -308,13 +354,14 @@ func parseItems(raw []byte, count uint32, maxElements int) (items []Item, trunca
 		}
 		items = append(items, it)
 	})
-	return items, truncated
+	return items, truncated, consumed
 }
 
 // ParseItemRun decodes a bare item run (Musepack SV8 chapter tag after preamble-less
 // header). Same as parseItems; reports element-cap truncation.
 func ParseItemRun(raw []byte, count uint32, maxElements int) ([]Item, bool) {
-	return parseItems(raw, count, maxElements)
+	items, truncated, _ := parseItems(raw, count, maxElements)
+	return items, truncated
 }
 
 // decodeText: UTF-8 when valid, else Latin-1 (APEv1 / out-of-spec APEv2).
@@ -360,18 +407,9 @@ func (t *Tag) Pairs() []struct {
 	return out
 }
 
-// splitItemValues: NUL-separated multi-value decode.
-// Wholly empty item => one ""; empty runs inside multi are dropped (writer cannot
-// express them via NUL join; trailing NULs are terminators).
+// splitItemValues decodes the NUL-separated values of an item. NULs at the end are terminators, as
+// some taggers write one; an empty value ahead of or between others is a value, and an item that is
+// empty or holds only NULs is one empty value.
 func splitItemValues(value string) []string {
-	if value == "" {
-		return []string{""}
-	}
-	var out []string
-	for v := range strings.SplitSeq(value, "\x00") {
-		if v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
+	return strings.Split(strings.TrimRight(value, "\x00"), "\x00")
 }

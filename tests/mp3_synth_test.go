@@ -733,7 +733,7 @@ func TestMP3FramesNotLookedForInsideTrailingTags(t *testing.T) {
 	lead := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Gap"))
 	gap := []byte{1, 2, 3}
 	cover := coverWithFrameHeader()
-	headed, err := ape.Render([]ape.Item{{Key: "Title", Value: "APE title"}, {Key: "Cover Art (Front)", Data: cover, Flags: 2}}, 2000, true)
+	headed, err := ape.Render([]ape.Item{{Key: "Title", Value: "APE title"}, {Key: "Cover Art (Front)", Data: cover, Flags: 2}}, 2000, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

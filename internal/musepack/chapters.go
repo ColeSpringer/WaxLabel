@@ -217,6 +217,7 @@ func readChapters(src core.ReaderAtSized, at, end int64, rate int, limit int64, 
 		payload, err := bits.ReadWithin(src, payloadAt, p.size-int64(p.hdrLen), limit)
 		switch {
 		case errors.Is(err, waxerr.ErrSizeTooLarge):
+			// Skipped, not refused: a rewrite copies the packet with the stream and never writes chapters.
 			fault = faultOversized
 		case err != nil:
 			return nil, 0, nil, err

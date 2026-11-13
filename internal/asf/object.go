@@ -1,6 +1,7 @@
 package asf
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -63,19 +64,19 @@ func parseHeaderObject(b []byte) ([]object, error) {
 	return walkObjects(b[30:size], int(min(count, math.MaxInt32))), nil
 }
 
-// utf16String decodes UTF-16LE, dropping a trailing NUL (ASF includes it in length).
-func utf16String(b []byte) string {
-	if len(b) < 2 {
-		return ""
-	}
+// utf16String decodes UTF-16LE up to the first NUL, as Windows reads a string: ASF counts the
+// terminator in the length. cut reports that more than NUL padding follows it.
+func utf16String(b []byte) (s string, cut bool) {
 	u := make([]uint16, 0, len(b)/2)
 	for i := 0; i+1 < len(b); i += 2 {
-		u = append(u, binary.LittleEndian.Uint16(b[i:i+2]))
+		c := binary.LittleEndian.Uint16(b[i : i+2])
+		if c == 0 {
+			rest := b[i:]
+			return string(utf16.Decode(u)), len(bytes.TrimRight(rest[:len(rest)&^1], "\x00")) > 0
+		}
+		u = append(u, c)
 	}
-	for len(u) > 0 && u[len(u)-1] == 0 {
-		u = u[:len(u)-1]
-	}
-	return string(utf16.Decode(u))
+	return string(utf16.Decode(u)), false
 }
 
 // Descriptor value types shared by Extended Content Description, Metadata, Library.
@@ -89,11 +90,13 @@ const (
 )
 
 // descriptorText renders a descriptor for the canonical model. Numerics as decimal;
-// byte arrays have no text form (caller routes cover art or skips).
-func descriptorText(valueType uint16, v []byte) (string, bool) {
+// byte arrays have no text form (caller routes cover art or skips). cut reports a string read
+// up to a NUL that more than padding follows ([utf16String]).
+func descriptorText(valueType uint16, v []byte) (text string, cut, ok bool) {
 	switch valueType {
 	case valUnicode:
-		return utf16String(v), true
+		text, cut = utf16String(v)
+		return text, cut, true
 	case valBool:
 		// Spec says 32-bit; some writers emit 16. Accept either.
 		var n uint64
@@ -103,27 +106,27 @@ func descriptorText(valueType uint16, v []byte) (string, bool) {
 		case 4:
 			n = uint64(binary.LittleEndian.Uint32(v))
 		default:
-			return "", false
+			return "", false, false
 		}
 		if n != 0 {
-			return "1", true
+			return "1", false, true
 		}
-		return "0", true
+		return "0", false, true
 	case valDWord:
 		if len(v) < 4 {
-			return "", false
+			return "", false, false
 		}
-		return fmt.Sprint(binary.LittleEndian.Uint32(v)), true
+		return fmt.Sprint(binary.LittleEndian.Uint32(v)), false, true
 	case valQWord:
 		if len(v) < 8 {
-			return "", false
+			return "", false, false
 		}
-		return fmt.Sprint(binary.LittleEndian.Uint64(v)), true
+		return fmt.Sprint(binary.LittleEndian.Uint64(v)), false, true
 	case valWord:
 		if len(v) < 2 {
-			return "", false
+			return "", false, false
 		}
-		return fmt.Sprint(binary.LittleEndian.Uint16(v)), true
+		return fmt.Sprint(binary.LittleEndian.Uint16(v)), false, true
 	}
-	return "", false // valBytes and unrecognized
+	return "", false, false // valBytes and unrecognized
 }

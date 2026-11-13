@@ -1155,11 +1155,13 @@ func cutWarnings(d *doc) []core.Warning {
 	}
 	var tags, files int
 	var keys []tag.Key
+	listed := map[tag.Key]bool{}
 	convention := titleConvention(d.groups)
 	for _, g := range d.groups {
 		for _, st := range g.tags {
 			tags += st.cuts()
-			if k, ok := tagKey(st, g, convention); ok && g.fileLevel() && st.cut > 0 && !slices.Contains(keys, k) {
+			if k, ok := tagKey(st, g, convention); ok && g.fileLevel() && st.cut > 0 && !listed[k] {
+				listed[k] = true
 				keys = append(keys, k)
 			}
 		}

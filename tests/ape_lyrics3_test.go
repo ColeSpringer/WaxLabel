@@ -37,7 +37,7 @@ func headedAPETag(t *testing.T, kv ...string) []byte {
 	for i := 0; i+1 < len(kv); i += 2 {
 		items = append(items, ape.Item{Key: kv[i], Value: kv[i+1]})
 	}
-	b, err := ape.Render(items, 2000, true)
+	b, err := ape.Render(items, 2000, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ func TestDuplicateAPETagCoverAndBinaryItems(t *testing.T) {
 	title := ape.Item{Key: "Title", Value: "Doubled"}
 	extra := ape.Item{Key: "Extra Data", Data: []byte{1, 2, 3}, Flags: 2} // binary, no picture
 	render := func(items ...ape.Item) []byte {
-		b, err := ape.Render(items, 2000, true)
+		b, err := ape.Render(items, 2000, true, 0)
 		if err != nil {
 			t.Fatal(err)
 		}

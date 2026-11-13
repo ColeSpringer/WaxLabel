@@ -442,6 +442,48 @@ All notable changes to this project are documented here.
 - A Matroska key cut to a value that several SimpleTags of one narrower scope hold reads back
   that value once. With the album-scope value gone those copies led the reading, the value read
   twice, and the same edit wrote again; such a key is now written whole at album scope.
+- A key whose APEv2 item name would fall outside the 2 to 255 printable ASCII characters the
+  format allows (`X`, a 256-character key) is not written to WavPack, Monkey's Audio or
+  Musepack: the write warns (`value-dropped`) and keeps the items the file holds, and `copy`
+  grades the key dropped unless the destination holds the very values. Such a name already in
+  a file is reported (`malformed-tag-entry`), and an edit of a key held under one writes a name
+  inside the rule where the file or the key has one (`Artist` for an item named with a stray
+  tab).
+- A refused set of a key that several APEv2 items hold (a reserved name, a cover item's, one
+  outside the format's rule) keeps every one of them; the items after the first were dropped.
+- Every binary `Cover Art (<role>)` item is read as a picture of its role, not only the front
+  and back covers: the names Mp3tag, Kid3 and TagLib# write, foobar2000's `Artist Picture` and
+  `Cover Art (Disc)`, and an unknown role as Other. A picture of any role is written under a
+  name of its own, `Cover Art (<role>)` as Mp3tag and Kid3 spell it; a third picture was
+  dropped and an artist picture stored as a cover. Only a second new picture of a role, in an
+  edit or a copy, has no name left (`picture-unsupported`). Adding again the picture a file
+  holds under its role's name changes nothing; it warned of a replaced picture, which
+  `--strict` refused.
+- A picture edit leaves the APEv2 cover items it does not change as they are: item name, stored
+  file name and flags. Every cover was written again under a made-up file name.
+- `--remove-pictures` (`ClearPictures`) also removes the APEv2 cover items that did not decode,
+  as it removes such pictures from FLAC and Ogg.
+- The read-only flag of an APEv2 tag, set in its header or its footer, survives a rewrite in
+  both, and `dump --native` shows it; it does not stop an edit.
+- APEv2 item bytes past the items the footer counts, or behind an item that does not parse, are
+  reported (`malformed-tag-entry`), and the rewrite that drops them says so
+  (`malformed-tag-entry-dropped`, refused under `--strict`). In a legacy tag `--legacy strip`
+  removes, or a duplicate tag a rewrite drops, they count as content only that tag holds
+  (`legacy-strip-dropped`, `duplicate-tag-block-dropped`). They went silently. A write that
+  leaves the items of a WavPack, Monkey's Audio or Musepack tag as they are, a legacy strip or
+  an edit it refuses, copies the tag as it is, even one the element limit cut short.
+- `dump --native` names an APEv2 item's type, `external locator` and `reserved type 3` beside
+  `binary`, and marks a read-only item.
+- An empty value ahead of or between the values of an APEv2 item is stored and read back. One
+  at the end reads as a terminator, so it is dropped with a warning (`value-dropped`) and
+  graded lossy by `copy`. Empty values were dropped silently, and a key set to nothing but
+  empty values was cleared; it now holds one empty value.
+- A slashed APEv2 track or disc number behind a NUL terminator is a number and a total like
+  any other: an unrelated edit added a second, stray total item.
+- A WMA string is read up to its first NUL, as Windows reads it: a value, a descriptor name, a
+  marker description. Text behind the NUL is reported (`malformed-tag-entry`); it was read into
+  the value, NUL and all, or kept the descriptor from being read.
+- `WM/IsCompilation` in a WMA file reads as `COMPILATION`.
 
 ### Changed
 

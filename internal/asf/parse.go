@@ -59,20 +59,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if d.dataStart, d.dataEnd, err = locateData(src, headerLen, size, limit); err != nil {
 		return nil, err
 	}
-	var contribs []core.Contribution
-	var warnings []core.Warning
-	// ffmpeg often writes Content Description and repeats as Extended Content
-	// Description. Fold exact (key, value) duplicates; different values still contribute.
-	seen := map[[2]string]bool{}
-	emit := func(key tag.Key, value, source string) {
-		if key == "" || value == "" {
-			return
-		}
-		if pair := [2]string{string(key), value}; !seen[pair] {
-			seen[pair] = true
-			contribs = append(contribs, core.Contribution{Key: key, Value: value, Source: source})
-		}
-	}
+	r := &reading{seen: map[[2]string]bool{}, maxElements: opts.Limits.MaxElements}
 
 	for _, o := range children {
 		if err := ctx.Err(); err != nil {
@@ -84,18 +71,18 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		case guidStreamProps:
 			d.readStreamProperties(o.body)
 		case guidContentDesc:
-			readContentDescription(o.body, emit)
+			d.readContentDescription(o.body, r)
 		case guidExtContentDesc:
-			d.readExtendedContentDescription(o.body, emit, &warnings, opts.Limits.MaxElements)
+			d.readExtendedContentDescription(o.body, r)
 		case guidHeaderExt:
-			d.readHeaderExtension(o.body, emit, &warnings, opts.Limits.MaxElements)
+			d.readHeaderExtension(o.body, r)
 		case guidMarker:
-			d.readMarkers(o.body, &warnings, opts.Limits.MaxElements)
+			d.readMarkers(o.body, r)
 		}
 		d.objects = append(d.objects, objectSummary{id: o.id, size: len(o.body) + objectHeaderLen})
 	}
 
-	ts := core.BuildTagSet(contribs)
+	ts := core.BuildTagSet(r.contribs)
 	// WM/TrackNumber may be "3/12"; shared split for consistent pairs.
 	tag.NormalizeNumberPairs(&ts)
 
@@ -103,13 +90,14 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		Format:     core.FormatWMA,
 		Native:     d,
 		Tags:       ts,
-		Families:   core.BuildFamilies(contribs, core.FamilyASF),
+		Families:   core.BuildFamilies(r.contribs, core.FamilyASF),
 		Pictures:   d.pictures,
 		Chapters:   d.chapters(),
 		AudioStart: d.dataStart,
 		AudioEnd:   d.dataEnd,
 		Properties: core.Properties{Container: "ASF", Tracks: d.tracks()},
 	}
+	warnings := r.warnings
 	for _, k := range []tag.Key{tag.Encoder, tag.EncodedBy} {
 		if vals, ok := ts.Get(k); ok {
 			for _, v := range vals {
@@ -120,15 +108,77 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 	}
 
-	for _, name := range d.invalidKeys {
+	for _, name := range r.invalidKeys {
 		warnings = core.WarnInvalidKey(warnings, name)
 	}
-	media.Warnings = warnings
+	media.Warnings = r.cuts.warnings(warnings)
 	if err := core.SetIdentity(src, media); err != nil {
 		return nil, err
 	}
 	core.SyncTextItems(media)
 	return media, nil
+}
+
+// reading is what one parse gathers beside the document it fills: the tag values, the warnings, and
+// what it keeps only to word them.
+type reading struct {
+	contribs    []core.Contribution
+	seen        map[[2]string]bool // the values gathered, by key
+	warnings    []core.Warning
+	invalidKeys []string  // descriptors the canonical vocabulary cannot represent
+	cuts        cutCounts // texts read up to a NUL that more than padding follows
+	maxElements int
+}
+
+// emit gathers value for key, once: ffmpeg often writes the Content Description and repeats it as
+// Extended Content Description, and an exact (key, value) duplicate folds. Different values still
+// contribute.
+func (r *reading) emit(key tag.Key, value, source string) {
+	if key == "" || value == "" {
+		return
+	}
+	if pair := [2]string{string(key), value}; !r.seen[pair] {
+		r.seen[pair] = true
+		r.contribs = append(r.contribs, core.Contribution{Key: key, Value: value, Source: source})
+	}
+}
+
+// cutCounts is the texts cut at a NUL: descriptor names and values, with the keys that read them,
+// and marker descriptions.
+type cutCounts struct {
+	descriptors int
+	keys        []tag.Key // in the order met
+	listed      map[tag.Key]bool
+	markers     int
+}
+
+// note counts the cut texts of one descriptor, which key reads when it is not "".
+func (c *cutCounts) note(key tag.Key, cut ...bool) {
+	n := 0
+	for _, b := range cut {
+		if b {
+			n++
+		}
+	}
+	if c.descriptors += n; n == 0 || key == "" || c.listed[key] {
+		return
+	}
+	if c.listed == nil {
+		c.listed = map[tag.Key]bool{}
+	}
+	c.listed[key] = true
+	c.keys = append(c.keys, key)
+}
+
+// warnings reports the cut texts ([core.WarnBehindNUL]).
+func (c cutCounts) warnings(ws []core.Warning) []core.Warning {
+	if c.descriptors > 0 {
+		ws = core.WarnBehindNUL(ws, fmt.Sprintf("%d descriptor name(s) or value(s)", c.descriptors), c.keys...)
+	}
+	if c.markers > 0 {
+		ws = core.WarnBehindNUL(ws, fmt.Sprintf("%d marker description(s)", c.markers))
+	}
+	return ws
 }
 
 // locateData finds the Data Object after the Header and returns its packet extent.
@@ -191,7 +241,8 @@ const markerEntryLen = 30
 // readMarkers decodes the Marker Object. Steps by description length (ignores
 // entry length field, like ffmpeg). Times stored as-is; preroll applied in
 // chapters(). Short lists and out-of-range times are warned.
-func (d *doc) readMarkers(b []byte, warnings *[]core.Warning, maxElements int) {
+func (d *doc) readMarkers(b []byte, r *reading) {
+	warnings, maxElements := &r.warnings, r.maxElements
 	if len(b) < 24 {
 		return
 	}
@@ -221,7 +272,12 @@ func (d *doc) readMarkers(b []byte, warnings *[]core.Warning, maxElements int) {
 		}
 		pos += len(desc)
 		if ok {
-			d.markers = append(d.markers, marker{at: at, desc: markerDescription(desc)})
+			// The string up to its NUL, or all of it where the terminator is left out.
+			text, behindNUL := utf16String(desc)
+			if behindNUL {
+				r.cuts.markers++
+			}
+			d.markers = append(d.markers, marker{at: at, desc: text})
 		} else {
 			*warnings = core.Warn(*warnings, core.WarnMalformedTagEntry,
 				fmt.Sprintf("marker %d has a presentation time past any duration; skipped", i+1))
@@ -233,14 +289,6 @@ func (d *doc) readMarkers(b []byte, warnings *[]core.Warning, maxElements int) {
 			return
 		}
 	}
-}
-
-// markerDescription: string up to NUL, or all bytes if terminator omitted.
-func markerDescription(b []byte) string {
-	if s, _, ok := cutUTF16(b); ok {
-		return s
-	}
-	return utf16String(b)
 }
 
 // waveFormatWMALossless: depth lives in codec extra bytes, not fixed WAVEFORMATEX.
@@ -283,7 +331,7 @@ var contentDescriptionFields = [5]string{"Title", "Author", "Copyright", "Descri
 
 // readContentDescription: five fixed fields. Rating is suppressed by the name
 // table but still walked (length needed for later fields).
-func readContentDescription(b []byte, emit func(tag.Key, string, string)) {
+func (d *doc) readContentDescription(b []byte, r *reading) {
 	if len(b) < 10 {
 		return
 	}
@@ -293,22 +341,23 @@ func readContentDescription(b []byte, emit func(tag.Key, string, string)) {
 		if n < 0 || pos+n > len(b) {
 			return
 		}
-		if key, ok := mapping.CanonicalASF(name); ok {
-			emit(key, utf16String(b[pos:pos+n]), name)
-		}
+		text, cut := utf16String(b[pos : pos+n])
+		key, _ := mapping.CanonicalASF(name)
+		r.emit(key, text, name)
+		r.cuts.note(key, cut)
 		pos += n
 	}
 }
 
 // readExtendedContentDescription: open-ended "WM/*" descriptors (cover art included).
-func (d *doc) readExtendedContentDescription(b []byte, emit func(tag.Key, string, string), warnings *[]core.Warning, maxElements int) {
+func (d *doc) readExtendedContentDescription(b []byte, r *reading) {
 	if len(b) < 2 {
 		return
 	}
 	count := int(binary.LittleEndian.Uint16(b[0:2]))
 	pos := 2
 	for i := range count {
-		if bits.CheckElementCap(i, maxElements, "ASF descriptors") != nil {
+		if bits.CheckElementCap(i, r.maxElements, "ASF descriptors") != nil {
 			return
 		}
 		if pos+2 > len(b) {
@@ -319,7 +368,7 @@ func (d *doc) readExtendedContentDescription(b []byte, emit func(tag.Key, string
 		if nameLen < 0 || pos+nameLen+4 > len(b) {
 			return
 		}
-		name := utf16String(b[pos : pos+nameLen])
+		name, nameCut := utf16String(b[pos : pos+nameLen])
 		pos += nameLen
 		valueType := binary.LittleEndian.Uint16(b[pos : pos+2])
 		valueLen := int(binary.LittleEndian.Uint16(b[pos+2 : pos+4]))
@@ -327,13 +376,14 @@ func (d *doc) readExtendedContentDescription(b []byte, emit func(tag.Key, string
 		if valueLen < 0 || pos+valueLen > len(b) {
 			return
 		}
-		d.descriptor(name, valueType, b[pos:pos+valueLen], emit, warnings)
+		key, valueCut := d.descriptor(name, valueType, b[pos:pos+valueLen], r)
+		r.cuts.note(key, nameCut, valueCut)
 		pos += valueLen
 	}
 }
 
 // readHeaderExtension walks nested Metadata / Metadata Library objects.
-func (d *doc) readHeaderExtension(b []byte, emit func(tag.Key, string, string), warnings *[]core.Warning, maxElements int) {
+func (d *doc) readHeaderExtension(b []byte, r *reading) {
 	// GUID(16) + reserved(2) + data size(4) precede nested objects.
 	if len(b) < 22 {
 		return
@@ -345,20 +395,20 @@ func (d *doc) readHeaderExtension(b []byte, emit func(tag.Key, string, string), 
 	for _, o := range walkObjects(b[22:22+dataLen], 0) {
 		switch o.id {
 		case guidMetadata, guidMetadataLibrary:
-			d.readMetadataRecords(o.body, emit, warnings, maxElements)
+			d.readMetadataRecords(o.body, r)
 		}
 	}
 }
 
 // readMetadataRecords: per-stream descriptors; scoping not modeled (file-level set).
-func (d *doc) readMetadataRecords(b []byte, emit func(tag.Key, string, string), warnings *[]core.Warning, maxElements int) {
+func (d *doc) readMetadataRecords(b []byte, r *reading) {
 	if len(b) < 2 {
 		return
 	}
 	count := int(binary.LittleEndian.Uint16(b[0:2]))
 	pos := 2
 	for i := range count {
-		if bits.CheckElementCap(i, maxElements, "ASF metadata records") != nil {
+		if bits.CheckElementCap(i, r.maxElements, "ASF metadata records") != nil {
 			return
 		}
 		if pos+12 > len(b) {
@@ -372,40 +422,43 @@ func (d *doc) readMetadataRecords(b []byte, emit func(tag.Key, string, string), 
 		if valueLen < 0 || nameLen > len(b)-pos || valueLen > len(b)-pos-nameLen {
 			return
 		}
-		name := utf16String(b[pos : pos+nameLen])
+		name, nameCut := utf16String(b[pos : pos+nameLen])
 		pos += nameLen
-		d.descriptor(name, valueType, b[pos:pos+valueLen], emit, warnings)
+		key, valueCut := d.descriptor(name, valueType, b[pos:pos+valueLen], r)
+		r.cuts.note(key, nameCut, valueCut)
 		pos += valueLen
 	}
 }
 
 // descriptor: pictures into the picture set; else name mapping. Non-picture
-// byte arrays omitted (no hex blob).
-func (d *doc) descriptor(name string, valueType uint16, value []byte, emit func(tag.Key, string, string), warnings *[]core.Warning) {
+// byte arrays omitted (no hex blob). It returns the key the descriptor reads as, "" for none, and
+// whether its text was cut at a NUL ([utf16String]).
+func (d *doc) descriptor(name string, valueType uint16, value []byte, r *reading) (key tag.Key, cut bool) {
 	if isPictureName(name) {
 		p, err := decodePicture(value)
 		if err != nil {
-			*warnings = core.Warn(*warnings, core.WarnInvalidPicture, err.Error())
-			return
+			r.warnings = core.Warn(r.warnings, core.WarnInvalidPicture, err.Error())
+			return "", false
 		}
 		d.pictures = append(d.pictures, p)
-		return
+		return "", false
 	}
 	if valueType == valBytes {
-		return
+		return "", false
 	}
-	text, ok := descriptorText(valueType, value)
+	text, cut, ok := descriptorText(valueType, value)
 	if !ok {
-		return
+		return "", false
 	}
-	key, ok := mapping.CanonicalASF(name)
+	key, ok = mapping.CanonicalASF(name)
 	if !ok {
 		if mapping.ASFUnrepresentable(name) {
-			d.invalidKeys = append(d.invalidKeys, name)
+			r.invalidKeys = append(r.invalidKeys, name)
 		}
-		return
+		return "", cut
 	}
-	emit(key, text, name)
+	r.emit(key, text, name)
+	return key, cut
 }
 
 // tracks builds the audio track list from stream and file properties.

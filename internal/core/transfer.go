@@ -164,7 +164,7 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 	if len(src.Pictures) > 0 {
 		// Split by representable MIME (same as write filter).
 		rep, _, unrepMIMEs := PartitionRepresentable(dst.Pictures, src.Pictures)
-		// Then partition fixed slots (APE). Skipped when pictures cannot be written.
+		// Then the pictures a store of uniquely named items holds (APE). Skipped when pictures cannot be written.
 		var slotDropped int
 		var slotReason string
 		if !dst.ReadOnly && dst.Pictures.Write != AccessNone {

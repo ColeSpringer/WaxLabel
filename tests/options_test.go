@@ -119,7 +119,7 @@ func TestLimitRefusesOversizedStructure(t *testing.T) {
 		t.Fatal(err)
 	}
 	mp3Cover := applyToBytes(t, mp3, plan)
-	apeTag, err := ape.Render([]ape.Item{{Key: "Comment", Value: strings.Repeat("x", 100<<10)}}, 2000, true)
+	apeTag, err := ape.Render([]ape.Item{{Key: "Comment", Value: strings.Repeat("x", 100<<10)}}, 2000, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +374,7 @@ func TestWriteFromCappedParseCommits(t *testing.T) {
 	viaSeekTable := testfile.MPCStream(44100, 0, 2, mpcSeekOffset(len(audio)), audio, mpcSeekTable(),
 		testfile.MPCTitled(0, "a"), testfile.MPCTitled(1152, "b"), testfile.MPCTitled(2304, "c"), testfile.MPCEnd())
 	apeTag, err := ape.Render([]ape.Item{{Key: "Title", Value: "T"}, {Key: "Artist", Value: "A"}, {Key: "Album", Value: "B"},
-		{Key: "Cover Art (Front)", Data: append([]byte("cover.png\x00"), testfile.PNG()...), Flags: 2}}, 2000, true)
+		{Key: "Cover Art (Front)", Data: append([]byte("cover.png\x00"), testfile.PNG()...), Flags: 2}}, 2000, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

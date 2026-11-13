@@ -70,8 +70,11 @@ func (s *Search) candidate(i int, hi, minStart int64) (*Tag, bool, error) {
 		foot.size < footerLen || foot.size > end || foot.start(end) < minStart {
 		return nil, false, nil
 	}
+	var head record
 	if foot.headed() {
-		head, ok, err := s.record(end - foot.size - footerLen)
+		var ok bool
+		var err error
+		head, ok, err = s.record(end - foot.size - footerLen)
 		if err != nil || !ok || !head.isHeader() || head.size != foot.size || head.count != foot.count {
 			return nil, false, err
 		}
@@ -84,13 +87,16 @@ func (s *Search) candidate(i int, hi, minStart int64) (*Tag, bool, error) {
 		return nil, false, fmt.Errorf("%w: APE tag candidates declare more item bytes than limit %d", waxerr.ErrSizeTooLarge, s.limit)
 	}
 	raw, shared, ok, err := s.items(foot, end)
-	if err != nil || !ok || !walkItems(raw, foot.count, nil) {
+	if err != nil || !ok {
 		return nil, false, err
+	}
+	if _, whole := walkItems(raw, foot.count, nil); !whole {
+		return nil, false, nil
 	}
 	if shared {
 		raw = slices.Clone(raw)
 	}
-	return tagFrom(foot, end, raw, foot.headed(), s.maxElements), true, nil
+	return tagFrom(foot, head, end, raw, foot.headed(), s.maxElements), true, nil
 }
 
 // items returns the items of the tag whose footer ends at end: the window's own bytes when it holds

@@ -211,6 +211,62 @@ func TestParseAPEItemHugeSizeRejected(t *testing.T) {
 	}
 }
 
+// TestParseAPEUnreadTail: the item bytes the walk does not take are counted: items past the
+// footer's count, and everything from an item that does not parse. A count past the items the bytes
+// hold leaves nothing unread.
+func TestParseAPEUnreadTail(t *testing.T) {
+	const itemLen = 8 + len("K0") + 1 + len("v")
+	parse := func(data []byte) *Tag {
+		t.Helper()
+		tg, ok, err := ParseAt(core.BytesSource(data), int64(len(data)), 1<<20, 100)
+		if err != nil || !ok {
+			t.Fatalf("ParseAt: ok=%v err=%v", ok, err)
+		}
+		return tg
+	}
+	if tg := parse(buildAPEN(3, 1)); len(tg.Items) != 1 || tg.UnreadTail != 2*itemLen {
+		t.Errorf("count 1 of 3: items = %d unread = %d, want 1 and %d", len(tg.Items), tg.UnreadTail, 2*itemLen)
+	}
+	if tg := parse(buildAPEN(3, 3)); len(tg.Items) != 3 || tg.UnreadTail != 0 {
+		t.Errorf("exact count: items = %d unread = %d, want 3 and 0", len(tg.Items), tg.UnreadTail)
+	}
+	if tg := parse(buildAPEN(3, 1_000_000)); len(tg.Items) != 3 || tg.UnreadTail != 0 {
+		t.Errorf("overstated count: items = %d unread = %d, want 3 and 0", len(tg.Items), tg.UnreadTail)
+	}
+	if tg := parse(apeWithFooter(nil, 0)); len(tg.Items) != 0 || tg.UnreadTail != 0 {
+		t.Errorf("empty tag: items = %d unread = %d, want 0 and 0", len(tg.Items), tg.UnreadTail)
+	}
+
+	// The second item declares more value bytes than the tag holds.
+	broken := buildAPEN(3, 3)
+	binary.LittleEndian.PutUint32(broken[itemLen:], 1<<20)
+	if tg := parse(broken); len(tg.Items) != 1 || tg.UnreadTail != 2*itemLen {
+		t.Errorf("broken second item: items = %d unread = %d, want 1 and %d", len(tg.Items), tg.UnreadTail, 2*itemLen)
+	}
+	// The element limit cuts the list short, but the items past it are walked.
+	tg, _, _ := ParseAt(core.BytesSource(buildAPEN(3, 3)), int64(len(buildAPEN(3, 3))), 1<<20, 2)
+	if !tg.Truncated || tg.UnreadTail != 0 {
+		t.Errorf("element limit: truncated = %v unread = %d, want true and 0", tg.Truncated, tg.UnreadTail)
+	}
+}
+
+// TestItemTypeNote: what the native view says of an item's flags.
+func TestItemTypeNote(t *testing.T) {
+	for flags, want := range map[uint32]string{
+		0:                "",
+		flagReadOnly:     "read-only",
+		1 << 1:           "binary",
+		2 << 1:           "external locator",
+		3 << 1:           "reserved type 3",
+		2<<1 | 1:         "external locator, read-only",
+		1<<1 | 1 | 1<<20: "binary, read-only",
+	} {
+		if got := (Item{Key: "K", Flags: flags}).TypeNote(); got != want {
+			t.Errorf("flags %#x: note = %q, want %q", flags, got, want)
+		}
+	}
+}
+
 // TestParseAPEMatroskaNativeSpellings: Matroska spellings project via apeKeys/ParseKey.
 func TestParseAPEMatroskaNativeSpellings(t *testing.T) {
 	data := buildAPE(map[string]string{

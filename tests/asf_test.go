@@ -657,3 +657,125 @@ func TestWMADigestSaltCarriesByteRateAndBlockAlign(t *testing.T) {
 		t.Error("block aligns one apart hashed alike: the salt left the field out")
 	}
 }
+
+// asfUTF16Raw encodes s as UTF-16LE with no terminator, for a string whose own NULs are the test.
+func asfUTF16Raw(s string) []byte {
+	b := asfUTF16(s)
+	return b[:len(b)-2]
+}
+
+// asfContentDescriptionRaw builds a Content Description from five fields already encoded.
+func asfContentDescriptionRaw(fields ...[]byte) []byte {
+	var b []byte
+	for _, f := range fields {
+		b = binary.LittleEndian.AppendUint16(b, uint16(len(f)))
+	}
+	return asfObject(guidContentDescHex, append(b, slices.Concat(fields...)...))
+}
+
+// A string is read up to its first NUL, as Windows reads it: a value, a descriptor name, a marker
+// description. Text behind the NUL is reported; NUL padding is not.
+func TestWMATextStopsAtTheFirstNUL(t *testing.T) {
+	data := asfFile(
+		asfFileProperties(3*time.Second, 0),
+		asfStreamProperties(0x0161, 2, 44100, 16),
+		asfContentDescriptionRaw(asfUTF16Raw("Ti\x00tle"), asfUTF16("Padded\x00\x00"), asfUTF16(""), asfUTF16(""), asfUTF16("5\x00stars")),
+		asfExtContentDescription(
+			asfDescriptor{"WM/Genre", 0, asfUTF16("Rock\x00Pop")},
+			asfDescriptor{"WM/Composer\x00junk", 0, asfUTF16("The Composer")},
+			asfDescriptor{"WM/AlbumTitle", 0, asfUTF16("The Album")},
+			asfDescriptor{"WM/EncodingTime", 0, asfUTF16("1\x002")}, // a name no key reads
+		),
+		asfHeaderExtension(asfDescriptor{"WM/Mood\x00x", 0, asfUTF16("Calm\x00er")}),
+		asfMarkers("", asfMarker{at: time.Second, desc: "Intro\x00hidden"}),
+	)
+	doc := mustParseBytes(t, data)
+	for key, want := range map[tag.Key]string{
+		tag.Title: "Ti", tag.Artist: "Padded", tag.Genre: "Rock", tag.Composer: "The Composer",
+		tag.Album: "The Album", "MOOD": "Calm",
+	} {
+		if got, _ := doc.Get(key); !slices.Equal(got, []string{want}) {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+	tags := doc.Tags()
+	for _, k := range tags.Keys() {
+		vals, _ := tags.Get(k)
+		for _, v := range vals {
+			if strings.ContainsRune(v, 0) {
+				t.Errorf("%s = %q holds a NUL", k, v)
+			}
+		}
+	}
+	if chs := doc.Chapters(); len(chs) != 1 || chs[0].Title != "Intro" {
+		t.Errorf("chapters = %+v, want one titled Intro", chs)
+	}
+
+	var cut []wl.Warning
+	for _, w := range doc.Warnings() {
+		if w.Code == wl.WarnMalformedTagEntry {
+			cut = append(cut, w)
+		}
+	}
+	if len(cut) != 2 {
+		t.Fatalf("warnings = %+v, want one for the descriptors and one for the marker", doc.Warnings())
+	}
+	// Title, Rating, WM/Genre's value, WM/Composer's name, WM/EncodingTime's value, and WM/Mood's
+	// name and value.
+	if !strings.Contains(cut[0].Message, "7 descriptor name(s) or value(s)") {
+		t.Errorf("message = %q, want the seven cut texts counted", cut[0].Message)
+	}
+	if want := []tag.Key{tag.Title, tag.Genre, tag.Composer, "MOOD"}; !slices.Equal(cut[0].Keys, want) {
+		t.Errorf("keys = %v, want %v", cut[0].Keys, want)
+	}
+	if !strings.Contains(cut[1].Message, "1 marker description(s)") {
+		t.Errorf("message = %q, want the marker description counted", cut[1].Message)
+	}
+}
+
+// A file whose strings end in their terminators, as every writer leaves them, raises no warning.
+func TestWMATerminatedTextIsNotCut(t *testing.T) {
+	for _, path := range []string{sampleWMA, notagsWMA, lossless24WMA} {
+		if hasWarning(mustParseFile(t, path), wl.WarnMalformedTagEntry) {
+			t.Errorf("%s: malformed-tag-entry on a well-formed file", path)
+		}
+	}
+	if hasWarning(mustParseBytes(t, asfMarked()), wl.WarnMalformedTagEntry) {
+		t.Error("malformed-tag-entry on markers whose descriptions end in their terminators")
+	}
+}
+
+// WM/IsCompilation reads as COMPILATION, a BOOL or the text taggers write.
+func TestWMAIsCompilation(t *testing.T) {
+	for name, c := range map[string]struct {
+		d    asfDescriptor
+		want string
+	}{
+		"bool true":  {asfDescriptor{"WM/IsCompilation", 2, binary.LittleEndian.AppendUint32(nil, 1)}, "1"},
+		"bool false": {asfDescriptor{"WM/IsCompilation", 2, binary.LittleEndian.AppendUint32(nil, 0)}, "0"},
+		"text":       {asfDescriptor{"wm/iscompilation", 0, asfUTF16("1")}, "1"},
+	} {
+		data := asfFile(asfFileProperties(time.Second, 0), asfStreamProperties(0x0161, 2, 44100, 16), asfExtContentDescription(c.d))
+		if got, _ := mustParseBytes(t, data).Get(tag.Compilation); !slices.Equal(got, []string{c.want}) {
+			t.Errorf("%s: COMPILATION = %q, want %q", name, got, c.want)
+		}
+	}
+}
+
+// A Header Object larger than the allocation limit is refused, never read in part.
+func TestWMAHeaderOverTheLimitRefused(t *testing.T) {
+	data := asfFile(
+		asfFileProperties(time.Second, 0),
+		asfStreamProperties(0x0161, 2, 44100, 16),
+		asfExtContentDescription(asfDescriptor{"WM/Lyrics", 0, asfUTF16(strings.Repeat("la ", 5000))}),
+		asfContentDescription("Behind The Limit", "", "", "", ""),
+	)
+	headerLen := int64(binary.LittleEndian.Uint64(data[16:24]))
+	_, err := wl.Parse(context.Background(), wl.BytesSource(data), wl.WithLimits(wl.Limits{MaxAllocBytes: headerLen - 1}))
+	if !errors.Is(err, waxerr.ErrSizeTooLarge) {
+		t.Errorf("limit one under the header: err = %v, want ErrSizeTooLarge", err)
+	}
+	if got := mustParseLimited(t, data, wl.Limits{MaxAllocBytes: headerLen}).Fields().Title; got != "Behind The Limit" {
+		t.Errorf("limit at the header: title = %q, want the whole header read", got)
+	}
+}

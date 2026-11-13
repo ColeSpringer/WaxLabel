@@ -180,7 +180,8 @@ func (e *Editor) ReplacePictures(match func(Picture) bool, p Picture) *Editor {
 }
 
 // ClearPictures removes all pictures. In FLAC and Ogg it also removes picture comments and
-// PICTURE blocks that did not decode, which an edit of the pictures otherwise keeps.
+// PICTURE blocks that did not decode, and in WavPack, Monkey's Audio and Musepack the cover
+// items that did not, which an edit of the pictures otherwise keeps.
 func (e *Editor) ClearPictures() *Editor {
 	e.dropPictures()
 	e.picsCleared = true
@@ -535,15 +536,17 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 			droppedPictureMIMEs = dropped
 		}
 	}
-	// Picture slots: a store of uniquely-named slots (APE's two Cover Art items)
-	// holds one picture per slot. The added-aware partition resolves the set here,
-	// where the authored pictures are known: an added picture claims the slot of a
-	// pre-existing same-role one (adding a front cover replaces the file's front),
-	// and an added picture with no slot is refused, or dropped with a warning under
-	// the drop option. A displaced pre-existing picture is dropped with its own
-	// warning. A transfer never conflicts here: PrepareTransfer filters the source
-	// set through the same partition. Resolving before the plan keeps the picture
-	// sanity warnings below accurate about the set written.
+	// Picture slots: a store of uniquely-named slots (APE's Cover Art items: a picture the
+	// file holds keeps its item's name, any other takes its role's) holds one picture per
+	// slot. The added-aware partition resolves the set here, where the authored pictures
+	// are known: an added picture claims the slot of a pre-existing one under its role's
+	// name (adding a front cover replaces the file's front), and an added picture with no
+	// slot is refused, or dropped with a warning under the drop option. A displaced
+	// pre-existing picture is dropped with its own warning, unless the picture added in
+	// its place equals it, which changes nothing. A transfer never conflicts here:
+	// PrepareTransfer filters the source set through the same partition, which keeps what
+	// it kept when asked again. Resolving before the plan keeps the picture sanity warnings
+	// below accurate about the set written.
 	var slotDroppedRoles, slotReplacedRoles []core.PictureType
 	var slotReason string
 	if structuralGates && e.picsTouched && !picturesDropped && len(keptPics) > 0 &&
@@ -554,13 +557,27 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 			for _, i := range keptIdx {
 				keptFlag[i] = true
 			}
+			added := func(i int) bool { return i < len(keptMask) && keptMask[i] }
+			// An added picture equal to the pre-existing one it displaces is that picture: the
+			// file's stays where it stands and the added one goes unremarked.
+			same := make([]bool, len(keptPics))
 			for i, p := range keptPics {
-				if keptFlag[i] {
+				if keptFlag[i] || added(i) {
 					continue
 				}
-				if i < len(keptMask) && keptMask[i] {
+				for j, q := range keptPics {
+					if keptFlag[j] && added(j) && core.EqualPictures([]core.Picture{p}, []core.Picture{q}) {
+						keptFlag[i], keptFlag[j], same[j] = true, false, true
+						break
+					}
+				}
+			}
+			for i, p := range keptPics {
+				switch {
+				case keptFlag[i] || same[i]:
+				case added(i):
 					slotDroppedRoles = append(slotDroppedRoles, p.Type)
-				} else {
+				default:
 					slotReplacedRoles = append(slotReplacedRoles, p.Type)
 				}
 			}
@@ -571,9 +588,11 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 			}
 			kept := make([]core.Picture, 0, len(keptIdx))
 			mask := make([]bool, 0, len(keptIdx))
-			for _, i := range keptIdx {
-				kept = append(kept, keptPics[i])
-				mask = append(mask, i < len(keptMask) && keptMask[i])
+			for i, p := range keptPics {
+				if keptFlag[i] {
+					kept = append(kept, p)
+					mask = append(mask, added(i))
+				}
 			}
 			edited.Pictures = kept
 			keptPics, keptMask = kept, mask

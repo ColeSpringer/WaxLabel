@@ -16,8 +16,8 @@ import (
 	"context"
 	"encoding/binary"
 
-	"github.com/colespringer/waxlabel/internal/ape"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/tail"
 )
 
 // Codec implements core.Codec for Musepack.
@@ -75,7 +75,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 
 // Capabilities: shared APEv2 fields/pictures, plus this container's chapter store.
 func (Codec) Capabilities(m *core.Media, _ core.WriteOptions) core.Capabilities {
-	caps := ape.Capabilities(core.FormatMusepack, false)
+	caps := tail.Capabilities(core.FormatMusepack, m)
 	caps.Chapters = chapterCapability(m)
 	return caps
 }

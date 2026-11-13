@@ -15,8 +15,8 @@ import (
 	"context"
 	"encoding/binary"
 
-	"github.com/colespringer/waxlabel/internal/ape"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/tail"
 )
 
 // Codec implements core.Codec for Monkey's Audio.
@@ -58,8 +58,8 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 }
 
 // Capabilities is APEv2's shared definition in internal/ape.
-func (Codec) Capabilities(_ *core.Media, _ core.WriteOptions) core.Capabilities {
-	return ape.Capabilities(core.FormatMonkeysAudio, false)
+func (Codec) Capabilities(m *core.Media, _ core.WriteOptions) core.Capabilities {
+	return tail.Capabilities(core.FormatMonkeysAudio, m)
 }
 
 // EssenceExtent returns monkeys-audio-v2 and decoder-critical header fields

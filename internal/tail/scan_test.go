@@ -32,7 +32,7 @@ func v1(title string) []byte { return testfile.ID3v1(title, "Artist", "", "2001"
 
 func apeTag(tb testing.TB, header bool, items ...ape.Item) []byte {
 	tb.Helper()
-	raw, err := ape.Render(items, 2000, header)
+	raw, err := ape.Render(items, 2000, header, 0)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -630,6 +630,7 @@ func TestOpaque(t *testing.T) {
 		{"Lyrics3", [][]byte{titled(t, true, "A"), testfile.Lyrics3v2([2]string{"LYR", "la"}), v1("A")}, 0, true, true},
 		{"binary APE item", [][]byte{cover, v1("A")}, 0, true, false},
 		{"APE items past the element cap", [][]byte{pair}, 1, true, false},
+		{"APE items past the footer's count", [][]byte{put32(put32(pair, 16, 1), -16, 1)}, 0, true, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

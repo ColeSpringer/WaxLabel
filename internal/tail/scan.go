@@ -324,15 +324,16 @@ func (l Layout) HasTags() bool {
 }
 
 // Opaque reports whether l holds legacy content [Families] cannot carry, which a legacy strip
-// would destroy unproven: a Lyrics3 block, or an APE tag with a non-text item or more items than
-// the element limit let it read. As there, every region counts as legacy.
+// would destroy unproven: a Lyrics3 block, or an APE tag with a non-text item, more items than
+// the element limit let it read, or item bytes no item was read from. As there, every region
+// counts as legacy.
 func (l Layout) Opaque() bool {
 	for _, r := range l.Regions {
 		switch r.Kind {
 		case KindLyrics3v1, KindLyrics3v2:
 			return true
 		case KindAPEv2:
-			if r.Tag.Truncated || slices.ContainsFunc(r.Tag.Items, ape.Item.NonText) {
+			if r.Tag.Truncated || r.Tag.UnreadTail > 0 || slices.ContainsFunc(r.Tag.Items, ape.Item.NonText) {
 				return true
 			}
 		}
