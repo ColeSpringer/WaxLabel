@@ -301,24 +301,60 @@ func TestCheckPreservable(t *testing.T) {
 		t.Errorf("a fully-emptied re-rendered group should pass: %v", err)
 	}
 
-	// A managed TITLE with no Info element must be preserved verbatim. If its raw bytes
-	// could not be captured, refuse the edit instead of dropping the SimpleTag.
-	noInfoTitle := &doc{wb: &writeBase{}, groups: []tagGroup{
-		{scope: core.ScopeAlbum, raw: []byte{1}, tags: []simpleTag{
-			{name: "TITLE", raw: nil}, // managed title, bytes uncapturable
-		}},
-	}}
-	if err := checkPreservable(noInfoTitle, changes{simple: true}, preserveDecisions(noInfoTitle)); err == nil {
-		t.Error("an uncapturable managed title with no Info should be refused")
+	// An artist written into the track-level group of a file tagged by level renders that group
+	// from its parts though the edit drops no SimpleTag of it: one it keeps needs its bytes, and
+	// the group its Targets.
+	title := simpleTag{name: "TITLE", value: "Track", hasValue: true, raw: []byte{1}}
+	byLevel := func(track tagGroup, key tag.Key) (*doc, *editDecisions) {
+		album := tagGroup{scope: core.ScopeAlbum, targetTypeValue: 50, raw: []byte{1}, tags: []simpleTag{
+			{name: "TITLE", value: "Album", hasValue: true, raw: []byte{1}}}}
+		d := &doc{groups: []tagGroup{album, track}}
+		base := tagSet(keyVals{tag.Album, []string{"Album"}}, keyVals{tag.Title, []string{"Track"}})
+		edited := base.Clone()
+		edited.Set(key, "New")
+		ed := computeEditDecisions(d.groups, 0, tagsOnly(base), tagsOnly(edited))
+		if !ed.writesTo(1) || ed.dropped(1, 0) != (key == tag.Title) {
+			t.Fatalf("setup: an edit of %s writes to the track-level group %v, drops %v", key, ed.writesTo(1), ed.drop)
+		}
+		return d, ed
 	}
-	// With an Info element the same title migrates to Info.Title, so its raw is not needed.
-	withInfo := &doc{wb: &writeBase{info: &infoBlock{}}, groups: []tagGroup{
-		{scope: core.ScopeAlbum, raw: []byte{1}, tags: []simpleTag{
-			{name: "TITLE", raw: nil},
-		}},
-	}}
-	if err := checkPreservable(withInfo, changes{simple: true}, preserveDecisions(withInfo)); err != nil {
-		t.Errorf("a migratable managed title (Info present) needs no raw: %v", err)
+	genre := simpleTag{name: "GENRE", value: "g", hasValue: true, raw: []byte{1}}
+	uncaptured := genre
+	uncaptured.raw = nil
+	for _, c := range []struct {
+		name  string
+		track tagGroup
+		key   tag.Key
+		ok    bool
+	}{
+		{"every part captured", tagGroup{scope: core.ScopeTrack, targetTypeValue: 30, raw: []byte{1}, targetsRaw: []byte{1}, tags: []simpleTag{title, genre}}, tag.Artist, true},
+		{"a SimpleTag with no bytes", tagGroup{scope: core.ScopeTrack, targetTypeValue: 30, raw: []byte{1}, targetsRaw: []byte{1}, tags: []simpleTag{title, uncaptured}}, tag.Artist, false},
+		{"no Targets bytes", tagGroup{scope: core.ScopeTrack, targetTypeValue: 30, raw: []byte{1}, tags: []simpleTag{title, genre}}, tag.Artist, false},
+		// A title edit drops the one SimpleTag of the group and writes the new title into it.
+		{"nothing kept, every part captured", tagGroup{scope: core.ScopeTrack, targetTypeValue: 30, raw: []byte{1}, targetsRaw: []byte{1}, tags: []simpleTag{title}}, tag.Title, true},
+		{"nothing kept, no Targets bytes", tagGroup{scope: core.ScopeTrack, targetTypeValue: 30, raw: []byte{1}, tags: []simpleTag{title}}, tag.Title, false},
+	} {
+		d, ed := byLevel(c.track, c.key)
+		if err := checkPreservable(d, changes{simple: true}, ed); (err == nil) != c.ok {
+			t.Errorf("a track-level group written into, %s: err %v, want refused %v", c.name, err, !c.ok)
+		}
+	}
+
+	// An edit of another key keeps a TITLE SimpleTag verbatim, with or without an Info element to
+	// hold a title. If its raw bytes could not be captured, refuse the edit instead of dropping it.
+	for _, wb := range []*writeBase{{}, {info: &infoBlock{}}} {
+		keptTitle := &doc{wb: wb, groups: []tagGroup{
+			{scope: core.ScopeAlbum, raw: []byte{1}, tags: []simpleTag{
+				{name: "TITLE", raw: nil}, // managed title, bytes uncapturable
+			}},
+		}}
+		if err := checkPreservable(keptTitle, changes{simple: true}, preserveDecisions(keptTitle)); err == nil {
+			t.Errorf("Info present %v: an uncapturable title the edit keeps should be refused", wb.info != nil)
+		}
+		// An edit of the title drops the SimpleTag for the Info.Title, so its raw is not needed.
+		if err := checkPreservable(keptTitle, changes{simple: true, title: true}, preserveDecisions(keptTitle, tag.Title)); err != nil {
+			t.Errorf("Info present %v: a title the edit moves to Info.Title needs no raw: %v", wb.info != nil, err)
+		}
 	}
 }
 
@@ -360,14 +396,14 @@ func TestMatroskaNameRoundTrip(t *testing.T) {
 	}
 }
 
-// TestBuildAlbumGroupEmitsTargets: a created album-scope Tag carries the mandatory
+// TestBuildSyncGroupEmitsTargets: a created album-scope Tag carries the mandatory
 // Targets child (strict validators reject a Tag without one).
-func TestBuildAlbumGroupEmitsTargets(t *testing.T) {
+func TestBuildSyncGroupEmitsTargets(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()
 	edited.Set(tag.Artist, "X")
 
-	out, rendered := buildAlbumGroup(nil, -1, base, edited, nil, nil, nil, computeEditDecisions(nil, -1, tagsOnly(base), tagsOnly(edited)), false)
+	out, rendered := buildSyncGroup(nil, -1, true, false, base, edited, nil, nil, nil, computeEditDecisions(nil, -1, tagsOnly(base), tagsOnly(edited)))
 
 	// White-box: the synthesized album group records an empty, album-scope Targets.
 	if out.targetsRaw == nil {
@@ -411,5 +447,29 @@ func TestKeepInPlaceGroupWithoutRaw(t *testing.T) {
 	}
 	if _, raw, keep := renderNonAlbumGroup(d.groups[1], 1, ed); !keep || raw == nil {
 		t.Errorf("renderNonAlbumGroup dropped the kept-in-place group (keep=%v raw=%v), want a re-render from parts", keep, raw != nil)
+	}
+}
+
+// A cover is named with the extension of its type: the sniffer's own for a type it knows, the
+// subtype for an image type it does not (an SVG is no .jpg), and .jpg for anything else.
+func TestImageExt(t *testing.T) {
+	for mime, want := range map[string]string{
+		"image/png":                ".png",
+		"image/jpeg":               ".jpg",
+		"image/svg+xml":            ".svg",
+		"IMAGE/SVG+XML":            ".svg",
+		"image/x-icon":             ".ico",
+		"image/vnd.microsoft.icon": ".ico",
+		"image/x-portable-pixmap":  ".jpg", // no short name to make of it
+		"image/photoshop":          ".jpg", // too long for one
+		"image/x":                  ".jpg", // too short
+		"image/apng":               ".apng",
+		"image/../../etc":          ".jpg",
+		"image/":                   ".jpg",
+		core.UnrecognizedMIME:      ".jpg",
+	} {
+		if got := imageExt(mime); got != want {
+			t.Errorf("imageExt(%q) = %q, want %q", mime, got, want)
+		}
 	}
 }

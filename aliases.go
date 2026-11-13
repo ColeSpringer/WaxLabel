@@ -186,12 +186,13 @@ const (
 )
 
 // Scope values. Most formats are track-scoped; Matroska also uses album,
-// edition, and chapter targets.
+// edition, chapter, and attachment targets.
 const (
-	ScopeTrack   = core.ScopeTrack
-	ScopeAlbum   = core.ScopeAlbum
-	ScopeEdition = core.ScopeEdition
-	ScopeChapter = core.ScopeChapter
+	ScopeTrack      = core.ScopeTrack
+	ScopeAlbum      = core.ScopeAlbum
+	ScopeEdition    = core.ScopeEdition
+	ScopeChapter    = core.ScopeChapter
+	ScopeAttachment = core.ScopeAttachment
 )
 
 // WarningCode values.

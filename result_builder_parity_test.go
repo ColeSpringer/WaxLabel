@@ -841,12 +841,135 @@ func parityInputs(t *testing.T) []parityInput {
 			testfile.El(testfile.IDInfo, testfile.El(testfile.IDDuration, make([]byte, 8))), testfile.AudioCluster(0),
 			testfile.El(testfile.IDTags, testfile.TagGroup(0, testfile.SimpleTag("TITLE", "MyTitle"), testfile.SimpleTag("ARTIST", "AA"))))),
 			edits: []parityEdit{tags("artist", setTag(tag.Artist, "BB"))}},
+		// Tagged by level: the album's TITLE and ARTIST at level 50, the track's at level 30.
+		parityInput{name: "level-tagged.mka", data: mkaNoTitle(testfile.El(testfile.IDTags, mkaAlbumTag(), mkaLevelTag(30,
+			testfile.SimpleTag("TITLE", "Track Title"), testfile.SimpleTag("ARTIST", "Track Artist"), testfile.SimpleTag("PART_NUMBER", "3/12")))),
+			edits: []parityEdit{
+				tags("title", setTag(tag.Title, "New Title")),
+				tags("album", setTag(tag.Album, "New Album"), tags("album kept and added", setTag(tag.Album, "New Album", "Second"))),
+				tags("album artist", setTag(tag.AlbumArtist, "New Album Artist")),
+				tags("artist", setTag(tag.Artist, "One", "Track Artist")),
+				tags("track number", setTag(tag.TrackNumber, "4")),
+				tags("clear title", func(_ *Document, e *Editor) { e.Clear(tag.Title) }, tags("title again", setTag(tag.Title, "Back"))),
+				tags("clear album", func(_ *Document, e *Editor) { e.Clear(tag.Album) }),
+				tags("clear title, set artist", func(_ *Document, e *Editor) { e.Clear(tag.Title).Set(tag.Artist, "One") }),
+			}},
+		// The same with an Info.Title too: a title edit writes both.
+		parityInput{name: "level-tagged-info.mka", data: testfile.Matroska("matroska", "Track Title", testfile.El(testfile.IDTags, mkaAlbumTag(),
+			mkaLevelTag(30, testfile.SimpleTag("TITLE", "Track Title")))),
+			edits: []parityEdit{
+				tags("title", setTag(tag.Title, "New Title")),
+				tags("artist", setTag(tag.Artist, "Track Artist"), tags("artist again", setTag(tag.Artist, "Other"))),
+				tags("clear title", func(_ *Document, e *Editor) { e.Clear(tag.Title) }),
+			}},
+		// An Info.Title beside album-level tags alone: not tagged by level, so the TITLE and ARTIST
+		// are the file's own.
+		parityInput{name: "info-title-album-level.mka", data: testfile.Matroska("matroska", "Track Title", testfile.El(testfile.IDTags, mkaAlbumTag())),
+			edits: []parityEdit{
+				tags("title", setTag(tag.Title, "New Title")),
+				tags("artist", setTag(tag.Artist, "Track Artist"), tags("artist again", setTag(tag.Artist, "Other"))),
+				tags("album", setTag(tag.Album, "Record")),
+				tags("clear title", func(_ *Document, e *Editor) { e.Clear(tag.Title) }),
+			}},
+		// The same with the album named outright.
+		parityInput{name: "named-album.mka", data: testfile.Matroska("matroska", "Band - Song", testfile.El(testfile.IDTags, mkaLevelTag(50,
+			testfile.SimpleTag("TITLE", "Song"), testfile.SimpleTag("ARTIST", "Band"), testfile.SimpleTag("ALBUM", "Record")))),
+			edits: []parityEdit{
+				tags("clear album", func(_ *Document, e *Editor) { e.Clear(tag.Album) }),
+				tags("artist", setTag(tag.Artist, "Other Band")),
+			}},
+		// Tags of an attachment, a chapter, an edition and a video track beside the file's own,
+		// and attachments a picture edit keeps.
+		parityInput{name: "targeted.mka", data: testfile.Matroska("matroska", "Song",
+			testfile.El(testfile.IDTracks, mkaTrack(1, 1, "V_MPEG4/ISO/AVC"), mkaTrack(2, 2, "A_FLAC")),
+			testfile.El(mkaAttachments,
+				mkaAttached("Booklet page 1.jpg", "image/jpeg", testfile.JPEG(), 0x99),
+				mkaAttached("notes.txt", "text/plain", []byte("liner notes"), 7),
+				mkaAttached("logo.svg", "image/svg+xml", []byte("<svg/>"), 8)),
+			testfile.El(testfile.IDTags,
+				mkaTargeted(mkaTagAttachUID, 0x99, testfile.SimpleTag("TITLE", "Booklet"), testfile.SimpleTag("ARTIST", "Scanner")),
+				testfile.TagGroup(0, testfile.SimpleTag("ARTIST", "File Artist"), testfile.SimpleTag("COMMENT", "File note")),
+				mkaTargeted(mkaTagChapUID, 11, testfile.SimpleTag("ARTIST", "Chapter Artist"), testfile.SimpleTag("TITLE", "Chapter One")),
+				mkaTargeted(mkaTagEditUID, 5, testfile.SimpleTag("TITLE", "Edition")),
+				mkaTargeted(testfile.IDTagTrackUID, 1, testfile.SimpleTag("ENCODER", "Lavc61 libx264")),
+				mkaTargeted(testfile.IDTagTrackUID, 2, testfile.SimpleTag("ENCODER", "flac 1.4")))),
+			edits: []parityEdit{
+				tags("artist", setTag(tag.Artist, "New Artist")),
+				tags("clear encoder", func(_ *Document, e *Editor) { e.Clear(tag.Encoder) }),
+				{kind: kindPictures, name: "remove a picture", edit: func(_ *Document, e *Editor) {
+					e.RemovePictures(func(p Picture) bool { return p.MIME == "image/jpeg" })
+				}},
+				{kind: kindPictures, name: "replace a picture", edit: func(_ *Document, e *Editor) {
+					e.ReplacePictures(func(p Picture) bool { return p.MIME == "image/jpeg" }, Picture{Type: PicFrontCover, Data: testfile.PNG()})
+				}},
+			}},
+		// A title in two languages as TITLE SimpleTags, and an artist with what a flat SimpleTag
+		// cannot hold.
+		parityInput{name: "titles-and-qualifiers.mka", data: mkaNoTitle(testfile.El(testfile.IDTags, mkaLevelTag(50,
+			testfile.El(testfile.IDSimpleTag, testfile.El(testfile.IDTagName, []byte("TITLE")), testfile.El(mkaTagLang, []byte("eng")), testfile.El(testfile.IDTagString, []byte("Song"))),
+			testfile.El(testfile.IDSimpleTag, testfile.El(testfile.IDTagName, []byte("TITLE")), testfile.El(mkaTagLang, []byte("ger")), testfile.El(testfile.IDTagString, []byte("Lied"))),
+			testfile.El(testfile.IDSimpleTag, testfile.El(testfile.IDTagName, []byte("ARTIST")), testfile.El(mkaTagLangBCP47, []byte("de-DE")),
+				testfile.Uint(mkaTagDefault, 0), testfile.El(testfile.IDTagString, []byte("Sterk")))))),
+			edits: []parityEdit{
+				tags("genre", setTag(tag.Genre, "Rock")),
+				tags("artist added", func(_ *Document, e *Editor) { e.Add(tag.Artist, "Second") }),
+				tags("titles", setTag(tag.Title, "Song", "Third")),
+			}},
 		parityInput{name: "plain.mka", data: testfile.Matroska("matroska", "force-cover"),
 			edits: []parityEdit{{kind: kindPictures, name: "unrecognized cover", opts: []WriteOption{WithUnrecognizedPictures()},
 				edit: func(_ *Document, e *Editor) {
 					e.AddPicture(Picture{Type: PicFrontCover, MIME: "application/octet-stream", Data: []byte("plain file, not an image")})
 				}}}},
 	)
+}
+
+// Matroska element IDs the synthesized inputs use beyond testfile's.
+const (
+	mkaAttachments  = 0x1941A469
+	mkaAttachedFile = 0x61A7
+	mkaFileName     = 0x466E
+	mkaFileMime     = 0x4660
+	mkaFileData     = 0x465C
+	mkaFileUID      = 0x46AE
+	mkaTagAttachUID = 0x63C6
+	mkaTagChapUID   = 0x63C4
+	mkaTagEditUID   = 0x63C9
+	mkaTrackUID     = 0x73C5
+	mkaTagLang      = 0x447A
+	mkaTagLangBCP47 = 0x447B
+	mkaTagDefault   = 0x4484
+)
+
+// mkaNoTitle is a Matroska file whose Info holds no Title, with elements behind the cluster.
+func mkaNoTitle(elements ...[]byte) []byte {
+	return slices.Concat(testfile.EBMLHeader("matroska"), testfile.El(testfile.IDSegment,
+		testfile.El(testfile.IDInfo, testfile.El(testfile.IDDuration, make([]byte, 8))), testfile.AudioCluster(0), slices.Concat(elements...)))
+}
+
+// mkaLevelTag is a Tag at a target level.
+func mkaLevelTag(level uint64, simples ...[]byte) []byte {
+	return testfile.El(testfile.IDTag, testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, level)), slices.Concat(simples...))
+}
+
+// mkaAlbumTag is the album-level Tag of a file tagged by level.
+func mkaAlbumTag() []byte {
+	return mkaLevelTag(50, testfile.SimpleTag("TITLE", "The Album"), testfile.SimpleTag("ARTIST", "Album Artist"), testfile.SimpleTag("GENRE", "Jazz"))
+}
+
+// mkaTargeted is a Tag whose Targets holds one UID element.
+func mkaTargeted(uidElement, uid uint64, simples ...[]byte) []byte {
+	return testfile.El(testfile.IDTag, testfile.El(testfile.IDTargets, testfile.Uint(uidElement, uid)), slices.Concat(simples...))
+}
+
+// mkaTrack is a TrackEntry of the given type (1 video, 2 audio), numbered and identified by uid.
+func mkaTrack(uid, trackType uint64, codec string) []byte {
+	return testfile.El(testfile.IDTrackEntry, testfile.Uint(0xD7, uid), testfile.Uint(mkaTrackUID, uid),
+		testfile.Uint(testfile.IDTrackType, trackType), testfile.El(testfile.IDCodecID, []byte(codec)))
+}
+
+func mkaAttached(name, mime string, data []byte, uid uint64) []byte {
+	return testfile.El(mkaAttachedFile, testfile.El(mkaFileName, []byte(name)), testfile.El(mkaFileMime, []byte(mime)),
+		testfile.El(mkaFileData, data), testfile.Uint(mkaFileUID, uid))
 }
 
 // apeTagOffset is where the APE tag that ends data starts.

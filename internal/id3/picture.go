@@ -38,7 +38,7 @@ func apicHeader(body []byte) (enc byte, mime string, ptype byte, desc string, re
 // puts the image's own bytes where the description should end, so a split at the first
 // terminator lands inside the image: a PNG carries a NUL at offset 8, in the IHDR length.
 // declared is the type the frame claims (an APIC MIME, a PIC format's MIME), read through
-// canonicalPictureMIME so the spellings real taggers write still count. A terminated frame
+// core.CanonicalImageMIME so the spellings real taggers write still count. A terminated frame
 // keeps its split unless the bytes after it are not an image while the whole remainder is
 // an image of exactly the declared type; requiring the match keeps a description that
 // begins with a weak signature (a bare "BM") from being eaten. An unterminated frame has
@@ -50,7 +50,7 @@ func cutDescription(enc byte, declared string, rest []byte) (desc string, data [
 		if _, isImage := bits.SniffImage(data); isImage {
 			return desc, data, true
 		}
-		if info, isImage := bits.SniffImage(rest); isImage && info.MIME == canonicalPictureMIME(declared) {
+		if info, isImage := bits.SniffImage(rest); isImage && info.MIME == core.CanonicalImageMIME(declared) {
 			return "", rest, true
 		}
 		return desc, data, true
@@ -63,10 +63,11 @@ func cutDescription(enc byte, declared string, rest []byte) (desc string, data [
 
 // decodeAPIC decodes an APIC frame body into a Picture. A malformed frame yields ok=false
 // and is preserved opaque. The trimmed declared MIME passes straight through, including
-// the "-->" URL-link sentinel that core.LinkMIME keeps out of the sniff. SniffAuthoritative
+// the "-->" URL-link sentinel that core.LinkMIME keeps out of the sniff. core.SniffStored
 // then lets recognizable bytes win over a mislabeled or blank declaration (a JPEG under a
-// bogus MIME reads as image/jpeg) and degrades any other declaration over unrecognizable
-// bytes to UnrecognizedMIME. encodeAPIC re-adds "image/" for an empty MIME at write.
+// bogus MIME reads as image/jpeg) and degrades a declaration over unrecognizable bytes to
+// UnrecognizedMIME, but an image type the sniffer has no signature for (SVG), which stands.
+// encodeAPIC re-adds "image/" for an empty MIME at write.
 func decodeAPIC(body []byte) (core.Picture, bool) {
 	_, mime, ptype, desc, rest, ok := apicHeader(body)
 	if !ok {
@@ -78,7 +79,7 @@ func decodeAPIC(body []byte) (core.Picture, bool) {
 		Description: desc,
 		Data:        slices.Clone(rest),
 	}
-	p.SniffAuthoritative()
+	core.SniffStored(&p)
 	return p, true
 }
 
@@ -134,35 +135,6 @@ func convertPICtoAPIC(body []byte) []byte {
 	out = append(out, term(enc)...)
 	out = append(out, data...)
 	return out
-}
-
-// canonicalPictureMIME folds a declared picture type onto the MIME the sniffer reports for
-// those bytes, so a comparison against a sniff survives the spellings real taggers write:
-// "image/jpg", "JPEG", a bare "PNG", an upper-cased type, a parameter after a semicolon.
-// An unrecognized declaration returns "", which matches no sniff.
-func canonicalPictureMIME(declared string) string {
-	s := strings.ToLower(strings.TrimSpace(declared))
-	if i := strings.IndexByte(s, ';'); i >= 0 {
-		s = strings.TrimSpace(s[:i])
-	}
-	switch strings.TrimPrefix(s, "image/") {
-	case "jpg", "jpeg":
-		return "image/jpeg"
-	case "png":
-		return "image/png"
-	case "gif":
-		return "image/gif"
-	case "bmp":
-		return "image/bmp"
-	case "webp":
-		return "image/webp"
-	case "tif", "tiff":
-		return "image/tiff"
-	case "heic", "heif", "avif", "jxl":
-		return "image/" + strings.TrimPrefix(s, "image/")
-	default:
-		return ""
-	}
 }
 
 // mimeForFormat maps a v2.2 three-letter image format to a MIME type; the "-->" format of a URL

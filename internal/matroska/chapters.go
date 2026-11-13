@@ -369,6 +369,7 @@ func renderChapters(d *doc, chs []core.Chapter) []byte {
 		return nil
 	}
 	old := d.chapters
+	webm := isWebM(d.docType)
 	hasCRC := false
 	wroteDefault := false
 	var content []byte
@@ -377,7 +378,7 @@ func renderChapters(d *doc, chs []core.Chapter) []byte {
 		hasCRC = old.hasCRC
 		for i, ed := range old.editions {
 			if i == old.defIdx {
-				if eb := renderDefaultEdition(ed, chs); eb != nil {
+				if eb := renderDefaultEdition(ed, chs, webm); eb != nil {
 					content = append(content, eb...)
 					wroteDefault = true
 				}
@@ -390,7 +391,7 @@ func renderChapters(d *doc, chs []core.Chapter) []byte {
 	}
 	// Creating chapters on a file with none: synthesize a fresh default edition.
 	if !wroteDefault {
-		content = append(content, renderDefaultEdition(chapterEdition{}, chs)...)
+		content = append(content, renderDefaultEdition(chapterEdition{}, chs, webm)...)
 	}
 	if len(content) == 0 {
 		return nil
@@ -400,8 +401,9 @@ func renderChapters(d *doc, chs []core.Chapter) []byte {
 
 // renderDefaultEdition rebuilds the default EditionEntry from the edited chapters,
 // keeping its preserved prefix (EditionUID/flags) and reassigning each surviving
-// chapter its original ChapterUID by start time.
-func renderDefaultEdition(ed chapterEdition, chs []core.Chapter) []byte {
+// chapter its original ChapterUID by start time. webm leaves out what the WebM subset lacks:
+// the EditionFlagDefault of a new edition and the chapters' flags.
+func renderDefaultEdition(ed chapterEdition, chs []core.Chapter, webm bool) []byte {
 	if len(chs) == 0 {
 		return nil
 	}
@@ -414,7 +416,7 @@ func renderDefaultEdition(ed chapterEdition, chs []core.Chapter) []byte {
 	content := make([]byte, 0, size)
 	if len(ed.prefix) > 0 {
 		content = append(content, ed.prefix...)
-	} else {
+	} else if !webm {
 		content = append(content, uintElement(idEditionFlagDf, 1)...) // mark default, as ffmpeg does
 	}
 	queue := chapterUIDQueue(ed.startUIDs)
@@ -425,7 +427,7 @@ func renderDefaultEdition(ed chapterEdition, chs []core.Chapter) []byte {
 		} else {
 			uid = mintUID()
 		}
-		content = append(content, renderChapterAtom(uid, ch)...)
+		content = append(content, renderChapterAtom(uid, ch, webm)...)
 	}
 	return masterElement(idEditionEntry, content, ed.hasCRC)
 }
@@ -454,7 +456,8 @@ func popChapterUID(q map[time.Duration][]uint64, start time.Duration) uint64 {
 // renderChapterAtom encodes one ChapterAtom: its UID (the value's bytes), the
 // absolute-nanosecond start (and end when the chapter is closed), the non-default
 // ChapterFlagHidden/ChapterFlagEnabled flags, and a ChapterDisplay (title + language) when titled.
-func renderChapterAtom(uid []byte, ch core.Chapter) []byte {
+// webm writes no flags: the WebM subset has neither, so the chapter reads back visible and enabled.
+func renderChapterAtom(uid []byte, ch core.Chapter, webm bool) []byte {
 	content := make([]byte, 0, 48+len(ch.Title))
 	content = append(content, encElement(idChapterUID, uid)...)
 	content = append(content, uintElement(idChapTimeStart, uint64(chapNanos(ch.Start)))...)
@@ -464,10 +467,10 @@ func renderChapterAtom(uid []byte, ch core.Chapter) []byte {
 	}
 	// Emit a flag only for its non-default state: ChapterFlagHidden defaults to 0 (emit 1
 	// only when Hidden), ChapterFlagEnabled defaults to 1 (emit 0 only when Disabled).
-	if ch.Hidden {
+	if ch.Hidden && !webm {
 		content = append(content, uintElement(idChapFlagHidden, 1)...)
 	}
-	if ch.Disabled {
+	if ch.Disabled && !webm {
 		content = append(content, uintElement(idChapFlagEnabled, 0)...)
 	}
 	// Emit a ChapterDisplay when the chapter has a title OR a modeled language to carry.

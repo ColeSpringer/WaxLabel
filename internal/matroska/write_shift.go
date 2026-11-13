@@ -208,7 +208,7 @@ func buildShiftItems(wb *writeBase, ch changes, r *rendered) (items []outItem, s
 		case c.id == idCRC32 && wb.segVoidFromCRC != nil:
 			// Substitute the stale Segment-level CRC with the captured length-identical Void.
 			items = append(items, litItem(idVoid, wb.segVoidFromCRC, c.start))
-		case c.id == idInfo && ch.title:
+		case c.id == idInfo && ch.info:
 			items = append(items, litItem(idInfo, r.info, c.start))
 		case c.id == idTags && ch.simple:
 			if tagsPlaced || r.tags == nil {
@@ -458,7 +458,7 @@ func shiftOps(ch changes, pics int, delta int64) []string {
 	if ch.simple {
 		ops = append(ops, "Tags rewrite (clusters shifted)")
 	}
-	if ch.title {
+	if ch.info {
 		ops = append(ops, "Info.Title rewrite")
 	}
 	if ch.pictures {

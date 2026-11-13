@@ -178,6 +178,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		wb.clusterStart = wb.segDataEnd
 	}
 	d.wb = wb
+	d.markOffAudio() // once the Tracks are read, wherever they stand
 
 	// Matroska has no per-track duration element; the segment Duration is the
 	// container's playable length, so it is the best value for every audio track.
@@ -321,7 +322,7 @@ func parseTracks(src core.ReaderAtSized, tracks element, depth *bits.Depth, limi
 // skipped for the properties view. The first audio track also supplies the
 // essence-digest config. Only a fatal error ([bits.Fatal]) fails the parse.
 func parseTrackEntry(src core.ReaderAtSized, entry element, depth *bits.Depth, limit int64, d *doc) error {
-	var tt uint64
+	var tt, uid uint64
 	var codecID string
 	var outputRate int
 	var private element
@@ -332,6 +333,8 @@ func parseTrackEntry(src core.ReaderAtSized, entry element, depth *bits.Depth, l
 		switch el.id {
 		case idTrackType:
 			tt, err = readUint(src, el, limit)
+		case idTrackUID:
+			uid, err = readUint(src, el, limit)
 		case idCodecID:
 			codecID, err = readLabel(src, el, limit) // technical/display string
 		case idTrackNumber:
@@ -352,6 +355,12 @@ func parseTrackEntry(src core.ReaderAtSized, entry element, depth *bits.Depth, l
 	})
 	if err := bits.Fatal(err); err != nil {
 		return err
+	}
+	if uid != 0 {
+		if d.trackAudio == nil {
+			d.trackAudio = map[uint64]bool{}
+		}
+		d.trackAudio[uid] = tt == trackTypeAudio
 	}
 	if tt != trackTypeAudio {
 		d.sawNonAudio = true
@@ -651,7 +660,8 @@ func parseTag(src core.ReaderAtSized, tagEl element, depth *bits.Depth, limit in
 }
 
 // parseTargets reads a Targets element: the logical level (TargetTypeValue /
-// TargetType) and whether the tag is narrowed to a track, edition, or chapter. whole is false
+// TargetType) and whether the tag is narrowed to a track, edition, chapter, or attachment by a
+// UID that is not 0. whole is false
 // when part of it is no element or was not reached. Only a fatal error ([bits.Fatal]) fails the
 // parse.
 func parseTargets(src core.ReaderAtSized, targets element, depth *bits.Depth, limit int64, g *tagGroup) (whole bool, err error) {
@@ -667,12 +677,21 @@ func parseTargets(src core.ReaderAtSized, targets element, depth *bits.Depth, li
 			g.targetTypeValue, err = readUint(src, el, limit)
 		case idTgtType:
 			g.targetType, err = readLabel(src, el, limit) // scope keyword; numeric value is primary
-		case idTagTrackUID:
-			g.trackUID = true
-		case idTagEditUID:
-			g.editionUID = true
-		case idTagChapUID:
-			g.chapterUID = true
+		case idTagTrackUID, idTagEditUID, idTagChapUID, idTagAttachUID:
+			// A UID of 0 names every track, edition, chapter or attachment: it narrows nothing.
+			var uid uint64
+			uid, err = readUint(src, el, limit)
+			switch el.id {
+			case idTagTrackUID:
+				g.trackUID = g.trackUID || uid != 0
+				g.trackUIDs = append(g.trackUIDs, uid)
+			case idTagEditUID:
+				g.editionUID = g.editionUID || uid != 0
+			case idTagChapUID:
+				g.chapterUID = g.chapterUID || uid != 0
+			case idTagAttachUID:
+				g.attachUID = g.attachUID || uid != 0
+			}
 		}
 		return err
 	})
@@ -716,7 +735,17 @@ func parseSimpleTag(src core.ReaderAtSized, st element, depth *bits.Depth, limit
 			}
 			s.lang = lang
 		case idTagLangBCP47:
-			s.bcp47 = true
+			lang, err := readLabel(src, el, limit)
+			if err != nil {
+				return err
+			}
+			s.langBCP47 = lang
+		case idTagDefault:
+			v, err := readUint(src, el, limit)
+			if err != nil {
+				return err
+			}
+			s.nonDefault = v == 0 && el.dataLen() > 0 // an empty element holds the default, 1
 		case idTagBinary:
 			s.binary = int(min(el.dataLen(), maxElement))
 		case idSimpleTag:
@@ -753,10 +782,12 @@ func parseAttachments(src core.ReaderAtSized, att element, depth *bits.Depth, li
 			d.attachDamage.unread += el.dataEnd - el.start
 			return nil
 		}
-		d.attachments = append(d.attachments, a)
 		if pic != nil {
+			a.pic = d.pictures
+			d.pictures++
 			pics = append(pics, *pic)
 		}
+		d.attachments = append(d.attachments, a)
 		return nil
 	})
 	d.attachDamage.unread += att.dataEnd - stop
@@ -802,14 +833,14 @@ func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit 
 	// A cover is an image MIME, or a --force octet-stream stored under the cover-art
 	// file name. The latter reprojects as an Unrecognized() picture (removable, rebuilt
 	// on write) rather than accumulating a new cover_<n> attachment on every re-add.
-	a.image = isCoverAttachment(a.mime, a.name)
-	if !a.image || !haveData {
+	if !isCoverAttachment(a.mime, a.name) || !haveData {
 		return a, nil, true, nil
 	}
 	data, err := readBytes(src, dataEl, limit)
 	if err != nil {
 		return attachment{}, nil, false, err
 	}
+	a.image = true
 	p := core.Picture{
 		Type: pictureType(a.name),
 		MIME: a.mime,
@@ -820,14 +851,17 @@ func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit 
 		Data:        data,
 	}
 	// Recognizable bytes win over the declared MIME, as in the ID3/MP4 read paths, so a
-	// mislabeled cover reads as its true type.
-	p.SniffAuthoritative()
+	// mislabeled cover reads as its true type; an image type nothing here can verify stands.
+	core.SniffStored(&p)
 	return a, &p, true, nil
 }
 
-// resolveScope maps a tag group's targets to a canonical scope.
+// resolveScope maps a tag group's targets to a canonical scope. Where a Targets names more than
+// one kind of UID an attachment comes ahead of a chapter, as in ffmpeg, then an edition.
 func resolveScope(g tagGroup) core.Scope {
 	switch {
+	case g.attachUID:
+		return core.ScopeAttachment
 	case g.chapterUID:
 		return core.ScopeChapter
 	case g.editionUID:
@@ -844,6 +878,76 @@ func resolveScope(g tagGroup) core.Scope {
 	default:
 		return core.ScopeTrack
 	}
+}
+
+// fileLevel reports whether the group's tags are the file's own: not those of one attachment,
+// chapter or edition, nor of tracks that hold no audio. Only a file-level group reaches the
+// canonical tags and is touched by an edit of them; the rest are listed in the family view and
+// carried as they are.
+func (g tagGroup) fileLevel() bool {
+	return !g.attachUID && !g.chapterUID && !g.editionUID && !g.offAudio
+}
+
+// markOffAudio flags the groups whose every TagTrackUID names a track of the file that is not
+// audio. A UID of 0 names every track, and one no track carries is left read as before.
+func (d *doc) markOffAudio() {
+	for i := range d.groups {
+		g := &d.groups[i]
+		g.offAudio = len(g.trackUIDs) > 0 && !slices.ContainsFunc(g.trackUIDs, func(uid uint64) bool {
+			audio, known := d.trackAudio[uid]
+			return audio || !known
+		})
+	}
+}
+
+// titleLevels reports where the file-level TITLE SimpleTags that keep admits stand: at album
+// level (upper) and at level 40 or under (lower).
+func titleLevels(groups []tagGroup, keep func(gi, ti int) bool) (upper, lower bool) {
+	for gi, g := range groups {
+		if !g.fileLevel() {
+			continue
+		}
+		for ti, st := range g.tags {
+			if st.titled() && keep(gi, ti) {
+				upper, lower = upper || g.albumTier(), lower || g.lowerLevel()
+			}
+		}
+	}
+	return upper, lower
+}
+
+// titleConvention reports whether a file is tagged by level, as the Matroska tagging guide has
+// it: a file-level TITLE at album level beside one at level 40 or under. The album-level TITLE
+// and ARTIST of such a file are the album's title and artist ([mapping.MatroskaLevelKey]). In
+// any other file they are the file's own, as ffmpeg writes them. An Info.Title is no sign of
+// levels: writers put a title there whatever their Tags mean. Nor is a TITLE above album level
+// (a collection's), which is no album title.
+func titleConvention(groups []tagGroup) bool {
+	upper, lower := titleLevels(groups, func(int, int) bool { return true })
+	return upper && lower
+}
+
+// albumTier reports the group whose TITLE and ARTIST are the album's in a file tagged by level:
+// one at album scope and album level. lowerLevel reports one at level 40 or under.
+func (g tagGroup) albumTier() bool {
+	return g.scope == core.ScopeAlbum && mapping.MatroskaAlbumLevel(int(min(g.level(), 100)))
+}
+func (g tagGroup) lowerLevel() bool { return g.level() <= 40 }
+
+// titled reports a SimpleTag named as a title that holds a value.
+func (st simpleTag) titled() bool {
+	k, ok := mapping.MatroskaTagKey(st.name)
+	return ok && k == tag.Title && st.hasValue
+}
+
+// tagKey returns the canonical key a SimpleTag of group g reads as, where convention is the
+// file's [titleConvention]: the album's title and artist for a TITLE and ARTIST of the album tier.
+func tagKey(st simpleTag, g tagGroup, convention bool) (tag.Key, bool) {
+	key, ok := mapping.MatroskaTagKey(st.name)
+	if ok && g.albumTier() {
+		key = mapping.MatroskaLevelKey(key, int(g.level()), convention)
+	}
+	return key, ok
 }
 
 // level resolves a tag group's TargetTypeValue: the explicit numeric value, else the
@@ -884,18 +988,20 @@ func targetTypeLevel(s string) uint64 {
 }
 
 // scopedContribution is one canonical value with the scope it was tagged at and the modeled
-// language of its SimpleTag ([tagLanguage]).
+// language of its SimpleTag ([tagLanguage]). targeted marks one of a group that is not the
+// file's own ([tagGroup.fileLevel]): listed in the family view, never among the tags.
 type scopedContribution struct {
-	key   tag.Key
-	value string
-	scope core.Scope
-	lang  string
+	key      tag.Key
+	value    string
+	scope    core.Scope
+	lang     string
+	targeted bool
 }
 
 // language is the modeled language of a SimpleTag: its TagLanguage, which a TagLanguageBCP47
 // beside it supersedes, leaving none the model holds.
 func (st simpleTag) language() string {
-	if st.bcp47 {
+	if st.langBCP47 != "" {
 		return ""
 	}
 	return tagLanguage(st.lang)
@@ -913,8 +1019,8 @@ func tagLanguage(lang string) string {
 
 // project fills m's tags and its comment and lyrics items, and returns the tags with the
 // scope-aware family view, from the parsed groups and the segment title. Only top-level
-// SimpleTags project to the canonical set; nested sub-tags and unmapped names stay in the
-// native tree.
+// SimpleTags of file-level groups project to the canonical set; nested sub-tags and unmapped
+// names stay in the native tree, and a targeted group's values in the family view.
 func project(d *doc, m *core.Media) (tag.TagSet, []core.FamilyValue) {
 	// Matroska text is stored as raw bytes; a non-conformant file can hold invalid UTF-8
 	// in a TagString or the Info.Title.
@@ -922,12 +1028,13 @@ func project(d *doc, m *core.Media) (tag.TagSet, []core.FamilyValue) {
 	if d.hasSegTitle {
 		contribs = append(contribs, scopedContribution{key: tag.Title, value: core.SanitizeUTF8(d.segTitle), scope: core.ScopeAlbum})
 	}
+	convention := titleConvention(d.groups)
 	for _, g := range d.groups {
 		for _, st := range g.tags {
 			if !st.hasValue {
 				continue // a binary- or nested-only SimpleTag has no string value to project
 			}
-			contribs = append(contribs, projectTag(st, g.scope)...)
+			contribs = append(contribs, projectTag(st, g, convention)...)
 		}
 	}
 	m.Tags, m.Comments, m.Lyrics = projectFlat(contribs)
@@ -943,6 +1050,9 @@ func projectFlat(contribs []scopedContribution) (ts tag.TagSet, comments, lyrics
 	byKey := map[tag.Key][]scopedContribution{}
 	var keyOrder []tag.Key
 	for _, c := range contribs {
+		if c.targeted {
+			continue
+		}
 		if len(byKey[c.key]) == 0 {
 			keyOrder = append(keyOrder, c.key)
 		}
@@ -1045,10 +1155,11 @@ func cutWarnings(d *doc) []core.Warning {
 	}
 	var tags, files int
 	var keys []tag.Key
+	convention := titleConvention(d.groups)
 	for _, g := range d.groups {
 		for _, st := range g.tags {
 			tags += st.cuts()
-			if k, ok := mapping.MatroskaTagKey(st.name); ok && st.cut > 0 && !slices.Contains(keys, k) {
+			if k, ok := tagKey(st, g, convention); ok && g.fileLevel() && st.cut > 0 && !slices.Contains(keys, k) {
 				keys = append(keys, k)
 			}
 		}
@@ -1068,12 +1179,15 @@ func cutWarnings(d *doc) []core.Warning {
 	return ws
 }
 
-// invalidKeyWarnings reports the SimpleTag names the canonical vocabulary cannot
-// represent: the native tree preserves their values but the tag set never sees them.
+// invalidKeyWarnings reports the SimpleTag names of file-level groups the canonical vocabulary
+// cannot represent: the native tree preserves their values but the tag set never sees them.
 func invalidKeyWarnings(d *doc) []core.Warning {
 	var ws []core.Warning
 	seen := map[string]bool{}
 	for _, g := range d.groups {
+		if !g.fileLevel() {
+			continue
+		}
 		for _, st := range g.tags {
 			if !st.hasValue || seen[st.name] || !unprojectableTagName(st.name) {
 				continue
@@ -1095,50 +1209,57 @@ func unprojectableTagName(name string) bool {
 	return strings.TrimSpace(name) != "" && !mapping.MatroskaTechnicalName(name)
 }
 
-// projectTag maps one SimpleTag to canonical contributions, splitting a "n/total" track or disc
-// number into its two canonical keys.
-func projectTag(st simpleTag, scope core.Scope) []scopedContribution {
-	key, ok := mapping.MatroskaTagKey(st.name)
+// projectTag maps one SimpleTag of group g to canonical contributions, splitting a "n/total"
+// track or disc number into its two canonical keys. convention is the file's [titleConvention].
+func projectTag(st simpleTag, g tagGroup, convention bool) []scopedContribution {
+	key, ok := tagKey(st, g, convention)
 	if !ok {
 		return nil
 	}
 	// Sanitized as the canonical TagSet holds it.
-	value, lang := core.SanitizeUTF8(st.value), st.language()
+	c := scopedContribution{key: key, value: core.SanitizeUTF8(st.value), scope: g.scope, lang: st.language(), targeted: !g.fileLevel()}
 	// The shared helper keeps the exact substrings ("04/09" -> "04"/"09", "0/12" ->
 	// "0"/"12") and leaves a malformed pair verbatim, so Matroska agrees with every
 	// other read path.
-	num, total, split := tag.NumberTotalSplit(key, value)
+	num, total, split := tag.NumberTotalSplit(key, c.value)
 	if !split {
-		return []scopedContribution{{key, value, scope, lang}}
+		return []scopedContribution{c}
 	}
 	var out []scopedContribution
 	if num != "" {
-		out = append(out, scopedContribution{key, num, scope, lang})
+		c.value = num
+		out = append(out, c)
 	}
 	if total != "" {
-		out = append(out, scopedContribution{tag.TotalKey(key), total, scope, lang})
+		c.key, c.value = tag.TotalKey(key), total
+		out = append(out, c)
 	}
 	return out
 }
 
 // buildFamilies groups contributions into one entry per (key, scope), preserving
-// first-seen order. An entry is unselected when the same key carries conflicting
-// values across more than one scope.
+// first-seen order, the file's own apart from a targeted group's. An entry is unselected when
+// the same key carries conflicting values across more than one scope of the file's own; a
+// targeted value is its target's and conflicts with nothing.
 func buildFamilies(contribs []scopedContribution) []core.FamilyValue {
 	type fkey struct {
-		key   tag.Key
-		scope core.Scope
+		key      tag.Key
+		scope    core.Scope
+		targeted bool
 	}
 	var order []fkey
 	vals := map[fkey][]string{}
 	scopesByKey := map[tag.Key]map[core.Scope]bool{}
 	valsByKey := map[tag.Key]map[string]bool{}
 	for _, c := range contribs {
-		fk := fkey{c.key, c.scope}
+		fk := fkey{c.key, c.scope, c.targeted}
 		if _, ok := vals[fk]; !ok {
 			order = append(order, fk)
 		}
 		vals[fk] = append(vals[fk], c.value)
+		if c.targeted {
+			continue
+		}
 		if scopesByKey[c.key] == nil {
 			scopesByKey[c.key] = map[core.Scope]bool{}
 			valsByKey[c.key] = map[string]bool{}
@@ -1148,10 +1269,10 @@ func buildFamilies(contribs []scopedContribution) []core.FamilyValue {
 	}
 	var fams []core.FamilyValue
 	for _, fk := range order {
-		conflict := len(scopesByKey[fk.key]) > 1 && len(valsByKey[fk.key]) > 1
+		conflict := !fk.targeted && len(scopesByKey[fk.key]) > 1 && len(valsByKey[fk.key]) > 1
 		fams = append(fams, core.FamilyValue{
 			Key: fk.key, Family: core.FamilyMatroska, Scope: fk.scope,
-			Values: vals[fk], Selected: !conflict,
+			Values: vals[fk], Selected: !conflict, Targeted: fk.targeted,
 		})
 	}
 	return fams

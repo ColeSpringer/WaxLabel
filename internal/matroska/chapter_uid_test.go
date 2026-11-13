@@ -62,9 +62,9 @@ func chapAtom(uid, startNs uint64) []byte {
 func TestRenderedChapterUIDWidth(t *testing.T) {
 	ed := chapterEdition{startUIDs: []chapterStartUID{{0, 5}}}
 	chs := []core.Chapter{{Start: 0}, {Start: time.Second}, {Start: 2 * time.Second}}
-	first := renderDefaultEdition(ed, chs)
+	first := renderDefaultEdition(ed, chs, false)
 	for range 2000 {
-		if b := renderDefaultEdition(ed, chs); len(b) != len(first) {
+		if b := renderDefaultEdition(ed, chs, false); len(b) != len(first) {
 			t.Fatalf("an edition of %d bytes, then one of %d", len(first), len(b))
 		}
 	}

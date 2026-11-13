@@ -15,10 +15,13 @@ type simpleTag struct {
 	hasValue bool // a TagString child was present (an empty TagString is distinct from none)
 	cut      int  // how many of name and value were read up to a NUL that other bytes follow
 	lang     string
-	bcp47    bool // a TagLanguageBCP47 child is present; kept in raw, not modeled
-	binary   int  // >0 when the value was a TagBinary of this many bytes (not decoded)
-	sub      []simpleTag
-	raw      []byte
+	// langBCP47 is the TagLanguageBCP47, which supersedes lang, and nonDefault a TagDefault of 0.
+	// Both are kept in raw, not modeled: a SimpleTag written anew holds neither.
+	langBCP47  string
+	nonDefault bool
+	binary     int // >0 when the value was a TagBinary of this many bytes (not decoded)
+	sub        []simpleTag
+	raw        []byte
 }
 
 func cloneSimpleTags(in []simpleTag) []simpleTag {
@@ -42,24 +45,29 @@ type tagGroup struct {
 	trackUID        bool
 	editionUID      bool
 	chapterUID      bool
-	tags            []simpleTag
-	targetsRaw      []byte
-	raw             []byte // whole Tag element bytes, for verbatim preservation
-	hasCRC          bool
+	attachUID       bool
+	trackUIDs       []uint64 // the TagTrackUID values
+	// offAudio: every track the Tag names is one the file holds that is not audio.
+	offAudio   bool
+	tags       []simpleTag
+	targetsRaw []byte
+	raw        []byte // whole Tag element bytes, for verbatim preservation
+	hasCRC     bool
 	// malformed: the Tag overruns the Tags element or holds bytes that are no whole element.
 	// raw is nil, and a rewrite of the Tags renders it again from the SimpleTags that were read.
 	malformed bool
 }
 
 // attachment summarizes one AttachedFile (cover art and any other embedded file).
-// raw holds the AttachedFile element's original bytes so a non-image attachment
-// is preserved verbatim when the cover set is rewritten.
+// raw holds the AttachedFile element's original bytes: a rewrite of the Attachments copies them
+// for every attachment but one whose picture the edit removes or changes.
 type attachment struct {
 	name        string
 	mime        string
 	description string
 	size        int
-	image       bool
+	image       bool // it reads as a picture: the one at index pic of the parsed pictures
+	pic         int
 	cut         int // how many of its texts were read up to a NUL that other bytes follow
 	raw         []byte
 }
@@ -72,6 +80,7 @@ type doc struct {
 	hasSegTitle bool // an Info.Title element was present (distinguishes a "" title from none)
 	groups      []tagGroup
 	attachments []attachment
+	pictures    int         // how many of the attachments read as pictures
 	chapters    *chapterDoc // parsed Chapters tree, nil when the file has none
 	dupChapters int         // Chapters elements behind the first: not read, dropped by a chapter edit
 	// What of each element no parsed structure holds; a rewrite of the element drops it.
@@ -83,6 +92,9 @@ type doc struct {
 	}
 	tracks      []core.AudioTrack
 	sawNonAudio bool // a video/subtitle/button track was present; gates the audio-only bitrate
+	// trackAudio maps each TrackUID to whether its track is audio. Write-once at parse, so
+	// Clone shares it.
+	trackAudio map[uint64]bool
 
 	// essence-digest config, captured from the first audio track. sampleRate is the
 	// SamplingFrequency element, not the played rate an SBR track reports; changing

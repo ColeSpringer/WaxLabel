@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"slices"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
@@ -290,5 +291,48 @@ func TestMatroskaAttachmentSniffedAuthoritatively(t *testing.T) {
 	pics := mustParseBytes(t, file).Pictures()
 	if len(pics) != 1 || pics[0].MIME != "image/jpeg" {
 		t.Fatalf("pictures = %v, want one image/jpeg (bytes win over declared image/png)", pics)
+	}
+}
+
+// An image type declared for bytes of no format the sniffer knows stands in every container: the
+// picture reads under it, lint does not call it invalid, and a copy of the file onto itself
+// changes nothing. A type the sniffer knows, or a spelling of one, declared for other bytes still
+// reads as unrecognized.
+func TestUnverifiableImageTypeStandsInEveryContainer(t *testing.T) {
+	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)
+	// The size a FLAC block declares for such a picture stands with its type.
+	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/svg+xml", Width: 512, Height: 512, Depth: 24, Data: svg}
+	files := map[string][]byte{
+		"MP3":  append(testfile.ID3v2(3, testfile.ID3Frame(3, "APIC", apicBody("image/svg+xml", 3, svg))), mp3Audio(t)...),
+		"FLAC": flacWithCommentBlock([]vorbis.Comment{{Name: "TITLE", Value: "x"}}, pic),
+	}
+	for name, data := range files {
+		doc := mustParseBytes(t, data)
+		if got := pictureMIMEs(doc.Pictures()); !slices.Equal(got, []string{"image/svg+xml"}) {
+			t.Errorf("%s: picture types = %q, want image/svg+xml", name, got)
+		}
+		if p := doc.Pictures()[0]; name == "FLAC" && (p.Width != 512 || p.Height != 512 || p.Depth != 24) {
+			t.Errorf("%s: picture size = %dx%dx%d, want the 512x512x24 the block declares", name, p.Width, p.Height, p.Depth)
+		}
+		for _, f := range doc.Lint() {
+			if f.Code == "invalid-picture" {
+				t.Errorf("%s: lint calls the picture invalid: %s", name, f.Message)
+			}
+		}
+		plan, _, err := doc.Transfer().Prepare(mustParseBytes(t, data))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !plan.IsNoOp() {
+			t.Errorf("%s: a copy of the file onto itself plans a write: %v", name, plan.Report().Operations)
+		}
+	}
+
+	for _, declared := range []string{"image/jpeg", "image/jpg", "image/x-png", "image/pjpeg", "image/x-ms-bmp", "image/tif", "IMAGE/PNG; charset=binary"} {
+		frame := testfile.ID3Frame(3, "APIC", apicBody(declared, 3, []byte("not an image")))
+		pics := mustParseBytes(t, append(testfile.ID3v2(3, frame), mp3Audio(t)...)).Pictures()
+		if len(pics) != 1 || pics[0].MIME != unrecognizedMIME {
+			t.Errorf("%s over bytes that are no image: pictures = %q, want one unrecognized", declared, pictureMIMEs(pics))
+		}
 	}
 }

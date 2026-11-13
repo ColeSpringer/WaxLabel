@@ -67,3 +67,69 @@ func TestMatroskaTechnicalNamesSharedPredicate(t *testing.T) {
 		}
 	}
 }
+
+// A name spelled as an alias reads under the key the alias names: no SimpleTag reaches the tags
+// under a key the editor resolves away.
+func TestMatroskaAliasNamesFold(t *testing.T) {
+	for name, want := range map[string]tag.Key{
+		"YEAR": tag.RecordingDate, "uslt": tag.Lyrics, "UNSYNCEDLYRICS": tag.Lyrics, "TOTALTRACKS": tag.TrackTotal,
+		"ORGANIZATION": tag.Label, "ALBUM ARTIST": tag.AlbumArtist, "TRACK": tag.TrackNumber,
+		// The spec's and ffmpeg's spellings, once copied here by hand.
+		"ALBUM_ARTIST": tag.AlbumArtist, "LEAD_PERFORMER": tag.Artist, "DATE": tag.RecordingDate,
+		"DATE_RELEASED": tag.ReleaseDate, "PART_NUMBER": tag.TrackNumber, "TOTAL_PARTS": tag.TrackTotal,
+		"DISC": tag.DiscNumber, "PUBLISHER": tag.Label, "ENCODER": tag.Encoder, "ENCODED_BY": tag.EncodedBy,
+	} {
+		if k, ok := MatroskaTagKey(name); !ok || k != want {
+			t.Errorf("MatroskaTagKey(%q) = %q, %v; want %s, true", name, k, ok, want)
+		}
+	}
+}
+
+// In a file tagged by level the album-level TITLE and ARTIST are the album's, read and written;
+// below album level, and in any other file, a name stands for its own key.
+func TestMatroskaLevelNames(t *testing.T) {
+	for _, c := range []struct {
+		key        tag.Key
+		level      int
+		convention bool
+		name       string
+	}{
+		{tag.Album, 50, true, "TITLE"},
+		{tag.AlbumArtist, 50, true, "ARTIST"},
+		{tag.Album, 30, true, "ALBUM"},
+		{tag.AlbumArtist, 40, true, "ALBUM_ARTIST"},
+		{tag.Album, 50, false, "ALBUM"},
+		{tag.AlbumArtist, 50, false, "ALBUM_ARTIST"},
+		{tag.Genre, 50, true, "GENRE"},
+		{tag.Title, 30, true, "TITLE"},
+		{tag.Artist, 30, true, "ARTIST"},
+	} {
+		if got := MatroskaTagNameForLevel(c.key, c.level, c.convention); got != c.name {
+			t.Errorf("MatroskaTagNameForLevel(%s, %d, %v) = %q, want %q", c.key, c.level, c.convention, got, c.name)
+		}
+		read, _ := MatroskaTagKey(c.name)
+		if got := MatroskaLevelKey(read, c.level, c.convention); got != c.key {
+			t.Errorf("a %s at level %d (convention %v) reads as %s, want %s", c.name, c.level, c.convention, got, c.key)
+		}
+	}
+	if got := MatroskaLevelKey(tag.Title, 50, false); got != tag.Title {
+		t.Errorf("an album-level TITLE outside the convention reads as %s, want TITLE", got)
+	}
+	if got := MatroskaLevelKey(tag.Title, 40, true); got != tag.Title {
+		t.Errorf("a TITLE below album level reads as %s, want TITLE", got)
+	}
+	for level, want := range map[int]bool{49: false, 50: true, 59: true, 60: false} {
+		if got := MatroskaAlbumLevel(level); got != want {
+			t.Errorf("MatroskaAlbumLevel(%d) = %v, want %v", level, got, want)
+		}
+	}
+	// Above album level a name stands for its own key again.
+	for _, level := range []int{60, 70} {
+		if got := MatroskaLevelKey(tag.Artist, level, true); got != tag.Artist {
+			t.Errorf("an ARTIST at level %d reads as %s, want ARTIST", level, got)
+		}
+		if got := MatroskaTagNameForLevel(tag.Album, level, true); got != "ALBUM" {
+			t.Errorf("the album at level %d is written as %s, want ALBUM", level, got)
+		}
+	}
+}

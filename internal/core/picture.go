@@ -171,6 +171,51 @@ func (p *Picture) SniffInto() bool { return p.sniff(false) }
 // [LinkMIME] is unchanged.
 func (p *Picture) SniffAuthoritative() bool { return p.sniff(true) }
 
+// SniffStored is [Picture.SniffAuthoritative] for a picture as a file holds it: an image type
+// declared for bytes the sniffer has no signature for (SVG) stands, with the size declared
+// beside it, since nothing here can verify either. A type the sniffer knows, declared for other
+// bytes, is still unrecognized.
+func SniffStored(p *Picture) bool {
+	declared := *p
+	ok := p.SniffAuthoritative()
+	if !ok && unverifiableImageType(declared.MIME) {
+		p.MIME, p.Width, p.Height, p.Depth, p.Colors = declared.MIME, declared.Width, declared.Height, declared.Depth, declared.Colors
+	}
+	return ok
+}
+
+// CanonicalImageMIME folds a declared picture type onto the MIME [bits.SniffImage] reports for
+// such bytes, so a comparison against a sniff survives the spellings real taggers write:
+// "image/jpg", "image/x-png", "JPEG", a bare "PNG", an upper-cased type, a parameter after a
+// semicolon. A declaration that names no type the sniffer identifies returns "", which matches
+// no sniff.
+func CanonicalImageMIME(declared string) string {
+	s, _, _ := strings.Cut(strings.ToLower(declared), ";")
+	sub := strings.TrimPrefix(strings.TrimSpace(s), "image/")
+	switch sub {
+	case "jpg", "pjpeg":
+		sub = "jpeg"
+	case "x-png":
+		sub = "png"
+	case "x-bmp", "x-ms-bmp":
+		sub = "bmp"
+	case "tif", "x-tiff":
+		sub = "tiff"
+	}
+	if bits.ImageExtension("image/"+sub) == "" {
+		return ""
+	}
+	return "image/" + sub
+}
+
+// unverifiableImageType reports an image MIME naming a type [bits.SniffImage] does not identify,
+// under any spelling of it.
+func unverifiableImageType(mime string) bool {
+	s, _, _ := strings.Cut(strings.ToLower(mime), ";")
+	sub, ok := strings.CutPrefix(strings.TrimSpace(s), "image/")
+	return ok && sub != "" && CanonicalImageMIME(mime) == ""
+}
+
 // EffectiveMIME is sniffed MIME, [LinkMIME], or [UnrecognizedMIME] without mutating p.
 func (p Picture) EffectiveMIME() string {
 	if info, ok := bits.SniffImage(p.Data); ok {
@@ -221,12 +266,12 @@ func pickDim(authoritative bool, cur, sniffed int) int {
 	return cur
 }
 
-// ProjectPictures clones ps and SniffAuthoritative each picture for display/lint.
+// ProjectPictures clones ps and settles each picture's type for display/lint ([SniffStored]).
 // Originals unchanged so writers keep on-disk labels.
 func ProjectPictures(ps []Picture) []Picture {
 	out := ClonePictures(ps)
 	for i := range out {
-		out[i].SniffAuthoritative()
+		SniffStored(&out[i])
 	}
 	return out
 }

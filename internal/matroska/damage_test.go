@@ -233,8 +233,8 @@ func chapterStarts(chs []core.Chapter) []time.Duration {
 // element like any other: what it holds is not looked into.
 func TestParseEditionReadsOnlyWholeElements(t *testing.T) {
 	uid, flag := uintElement(idEditionUID, 77), uintElement(idEditionFlagDf, 1)
-	one := renderChapterAtom([]byte{1}, core.Chapter{Start: time.Second, Title: "One"})
-	two := renderChapterAtom([]byte{2}, core.Chapter{Start: 2 * time.Second, Title: "Two"})
+	one := renderChapterAtom([]byte{1}, core.Chapter{Start: time.Second, Title: "One"}, false)
+	two := renderChapterAtom([]byte{2}, core.Chapter{Start: 2 * time.Second, Title: "Two"}, false)
 	display := encElement(idChapDisplay, stringElement(idChapString, "x"))
 	longDisplay := encElement(idChapDisplay, overrun(t, stringElement(idChapString, "long"), 1))
 	atom := func(children ...[]byte) []byte {
@@ -295,8 +295,8 @@ func TestParseEditionReadsOnlyWholeElements(t *testing.T) {
 // Every edition of a Chapters element counts toward its damage, and so do the bytes behind the
 // last. A damaged edition that is not the default one is written back as its whole children.
 func TestParseChaptersCountsDamage(t *testing.T) {
-	one := renderChapterAtom([]byte{1}, core.Chapter{Start: time.Second, Title: "One"})
-	two := renderChapterAtom([]byte{2}, core.Chapter{Start: 2 * time.Second, Title: "Two"})
+	one := renderChapterAtom([]byte{1}, core.Chapter{Start: time.Second, Title: "One"}, false)
+	two := renderChapterAtom([]byte{2}, core.Chapter{Start: 2 * time.Second, Title: "Two"}, false)
 	def := encElement(idEditionEntry, slices.Concat(uintElement(idEditionFlagDf, 1), one))
 	other := encElement(idEditionEntry, slices.Concat(uintElement(idEditionUID, 5), two, overrun(t, one, 1)))
 	long := slices.Clone(def)
@@ -536,11 +536,11 @@ func TestChapterTitleCutsCountListedChaptersOnly(t *testing.T) {
 // that runs past the Chapters element with no ChapterAtom in it too. One of which nothing was
 // read goes, without a refusal.
 func TestDamagedEditionKeepsItsWholeChildren(t *testing.T) {
-	def := encElement(idEditionEntry, slices.Concat(uintElement(idEditionFlagDf, 1), renderChapterAtom([]byte{1}, core.Chapter{Start: time.Second})))
+	def := encElement(idEditionEntry, slices.Concat(uintElement(idEditionFlagDf, 1), renderChapterAtom([]byte{1}, core.Chapter{Start: time.Second}, false)))
 	bare := encElement(idEditionEntry, uintElement(idEditionUID, 6))
 	long := slices.Clone(bare)
 	long[2]++
-	cutAtom := encElement(idEditionEntry, slices.Concat(uintElement(idEditionUID, 6), overrun(t, renderChapterAtom([]byte{2}, core.Chapter{Start: time.Second, Title: "Two"}), 1)))
+	cutAtom := encElement(idEditionEntry, slices.Concat(uintElement(idEditionUID, 6), overrun(t, renderChapterAtom([]byte{2}, core.Chapter{Start: time.Second, Title: "Two"}, false), 1)))
 	unread := encElement(idEditionEntry, overrun(t, uintElement(idEditionUID, 0x010203), 2))
 	for _, tc := range []struct {
 		name    string
@@ -615,8 +615,8 @@ func (s lyingSource) Size() int64 { return s.size }
 // An edition whose bytes could not be read to their end is not taken for one of which nothing
 // is whole: a chapter edit is refused, as it has nothing to copy.
 func TestEditionCutByAShortReadIsNotDropped(t *testing.T) {
-	def := encElement(idEditionEntry, slices.Concat(uintElement(idEditionFlagDf, 1), renderChapterAtom([]byte{1}, core.Chapter{Start: time.Second})))
-	other := encElement(idEditionEntry, slices.Concat(uintElement(idEditionUID, 6), overrun(t, renderChapterAtom([]byte{2}, core.Chapter{Start: time.Second, Title: "Two"}), 1)))
+	def := encElement(idEditionEntry, slices.Concat(uintElement(idEditionFlagDf, 1), renderChapterAtom([]byte{1}, core.Chapter{Start: time.Second}, false)))
+	other := encElement(idEditionEntry, slices.Concat(uintElement(idEditionUID, 6), overrun(t, renderChapterAtom([]byte{2}, core.Chapter{Start: time.Second, Title: "Two"}, false), 1)))
 	raw := encElement(idChapters, slices.Concat(def, other))
 	src := lyingSource{core.BytesSource(raw[:len(raw)-1]), int64(len(raw))}
 	el, ok, err := readElement(src, 0, src.Size(), testLimit)

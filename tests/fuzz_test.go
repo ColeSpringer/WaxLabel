@@ -193,6 +193,9 @@ func FuzzParse(f *testing.F) {
 	for _, damaged := range damagedMatroska() {
 		f.Add(damaged)
 	}
+	for _, scoped := range scopedMatroska() {
+		f.Add(scoped)
+	}
 	f.Add([]byte("\x1a\x45\xdf\xa3\x84\x42\x82\x81m"))                                                                                    // EBML magic + truncated DocType
 	f.Add([]byte("\x1a\x45\xdf\xa3\xff"))                                                                                                 // EBML magic, unknown-size header
 	f.Add([]byte("\x1a\x45\xdf\xa3\x80\x18\x53\x80\x67\xff"))                                                                             // empty EBML header + unknown-size Segment

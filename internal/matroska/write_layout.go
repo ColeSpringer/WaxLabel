@@ -50,7 +50,7 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ed *editDecisions,
 			if c.start >= wb.clusterStart || r.tags == nil {
 				return nil, errFallback
 			}
-		case c.id == idInfo && ch.title:
+		case c.id == idInfo && ch.info:
 			if c.start >= wb.clusterStart {
 				return nil, errFallback
 			}
@@ -95,7 +95,7 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ed *editDecisions,
 			}
 			tagsPlaced = true
 			items = append(items, litItem(idTags, r.tags, c.start))
-		case c.id == idInfo && ch.title:
+		case c.id == idInfo && ch.info:
 			items = append(items, litItem(idInfo, r.info, c.start))
 		case c.id == idAttachments && ch.pictures:
 			if attachPlaced {
@@ -203,7 +203,7 @@ func renderChanged(d *doc, base, edited *core.Media, ch changes, ed *editDecisio
 	if ch.simple {
 		r.tags, r.groups = renderTags(d, base.Tags, edited.Tags, ed)
 	}
-	if ch.title {
+	if ch.info {
 		et, ok := edited.Tags.First(tag.Title)
 		r.titlePresent = ok
 		r.info, r.title = renderInfo(d.wb.info, et, ok)
@@ -212,7 +212,7 @@ func renderChanged(d *doc, base, edited *core.Media, ch changes, ed *editDecisio
 		}
 	}
 	if ch.pictures {
-		r.attach = renderAttachments(d, edited.Pictures)
+		r.attach = renderAttachments(d, base.Pictures, edited.Pictures)
 	}
 	if ch.chapters {
 		r.chapters = renderChapters(d, edited.Chapters)
@@ -328,7 +328,7 @@ func absorbOps(ch changes, pics int) []string {
 	if ch.simple {
 		ops = append(ops, "Tags rewrite (clusters not moved)")
 	}
-	if ch.title {
+	if ch.info {
 		ops = append(ops, "Info.Title rewrite")
 	}
 	if ch.pictures {
@@ -408,18 +408,26 @@ func resultPictures(pics []core.Picture) []core.Picture {
 func reprojectPictures(pics []core.Picture) []core.Picture {
 	var out []core.Picture
 	for _, p := range pics {
-		name := coverFileName(p)
-		if !isCoverAttachment(p.MIME, name) {
-			continue // reads back as a plain attachment, not a cover
+		if np, ok := reprojectPicture(p); ok {
+			out = append(out, np)
 		}
-		np := core.Picture{
-			Type:        pictureType(name),
-			MIME:        p.MIME,
-			Description: core.SanitizeUTF8(p.Description),
-			Data:        p.Data,
-		}
-		np.SniffAuthoritative()
-		out = append(out, np)
 	}
 	return out
+}
+
+// reprojectPicture is p as an attachment written for it reads back; ok is false for one that
+// reads back as a plain attachment, not a cover.
+func reprojectPicture(p core.Picture) (np core.Picture, ok bool) {
+	name := coverFileName(p)
+	if !isCoverAttachment(p.MIME, name) {
+		return np, false
+	}
+	np = core.Picture{
+		Type:        pictureType(name),
+		MIME:        p.MIME,
+		Description: core.SanitizeUTF8(p.Description),
+		Data:        p.Data,
+	}
+	core.SniffStored(&np)
+	return np, true
 }

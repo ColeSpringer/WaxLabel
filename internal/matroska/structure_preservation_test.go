@@ -3,6 +3,7 @@ package matroska
 import (
 	"bytes"
 	"context"
+	"slices"
 	"testing"
 	"unicode/utf8"
 
@@ -112,6 +113,81 @@ func TestPreservesAlbumTagStructureThroughUnrelatedEdit(t *testing.T) {
 	for _, w := range plan.Report.Warnings {
 		if w.Code == core.WarnTagStructureDropped {
 			t.Errorf("unrelated edit wrongly warned tag-structure-dropped: %v", w)
+		}
+	}
+}
+
+// qualifiedArtistMKA holds an album ARTIST SimpleTag with the given children between its name and
+// its value, beside a GENRE, and returns the SimpleTag's bytes.
+func qualifiedArtistMKA(children ...[]byte) (src, artist []byte) {
+	targets := encElement(idTargets, uintElement(idTgtTypeVal, 50))
+	artist = encElement(idSimpleTag, cat(stringElement(idTagName, "ARTIST"), cat(children...), stringElement(idTagString, "Sterk")))
+	genre := encElement(idSimpleTag, cat(stringElement(idTagName, "GENRE"), stringElement(idTagString, "Jazz")))
+	tags := encElement(idTags, encElement(idTag, cat(targets, artist, genre)))
+	return segBytes(cat(mkInfo("Title"), tags, emptyCluster())), artist
+}
+
+// planArtists plans an edit that sets the ARTIST values of src.
+func planArtists(t *testing.T, src []byte, artists ...string) (plan *core.WritePlan, out []byte, warned bool) {
+	t.Helper()
+	base := parseMKA(t, src)
+	edited := base.Clone()
+	edited.Tags.Set(tag.Artist, artists...)
+	plan, err := Codec{}.Plan(context.Background(), base, edited, core.DefaultWriteOptions())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	for _, w := range plan.Report.Warnings {
+		warned = warned || w.Code == core.WarnTagStructureDropped
+	}
+	return plan, renderPlan(t, src, plan), warned
+}
+
+// TestEditKeepsTheSimpleTagOfAnUnchangedValue: an edit that adds a value beside one the file
+// holds writes that one's SimpleTag again as it is, so its TagLanguageBCP47 and TagDefault
+// survive and nothing is reported lost. Changing the value reports what goes with it.
+func TestEditKeepsTheSimpleTagOfAnUnchangedValue(t *testing.T) {
+	src, artist := qualifiedArtistMKA(stringElement(idTagLangBCP47, "de-DE"), encElement(idTagDefault, uintData(0)))
+
+	_, out, warned := planArtists(t, src, "Sterk", "Second")
+	if !bytes.Contains(out, artist) {
+		t.Error("the SimpleTag of the unchanged value is not carried byte for byte")
+	}
+	if warned {
+		t.Error("tag-structure-dropped warned for a value the edit does not change")
+	}
+	if got, _ := parseMKA(t, out).Tags.Get(tag.Artist); !slices.Equal(got, []string{"Sterk", "Second"}) {
+		t.Errorf("reparsed ARTIST = %q, want Sterk, Second", got)
+	}
+
+	_, out, warned = planArtists(t, src, "Changed")
+	if !warned {
+		t.Error("changing the value of a SimpleTag with a TagLanguageBCP47 and a TagDefault of 0 reports nothing")
+	}
+	if bytes.Contains(out, []byte("de-DE")) {
+		t.Error("the changed value kept the old SimpleTag's language")
+	}
+}
+
+// TestTagDefaultAndUndeterminedLanguageAreNoStructure: a TagDefault of 0 says the value is not
+// the default one, which a flat SimpleTag cannot; a TagDefault of 1 and a TagLanguageBCP47 of
+// und say what a flat one says, so dropping them with a changed value is no loss.
+func TestTagDefaultAndUndeterminedLanguageAreNoStructure(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		children [][]byte
+		want     bool
+	}{
+		{"TagDefault 0", [][]byte{encElement(idTagDefault, uintData(0))}, true},
+		{"TagLanguageBCP47 fr", [][]byte{stringElement(idTagLangBCP47, "fr")}, true},
+		{"TagDefault 1", [][]byte{encElement(idTagDefault, uintData(1))}, false},
+		{"an empty TagDefault, which holds the default", [][]byte{encElement(idTagDefault, nil)}, false},
+		{"TagLanguageBCP47 und", [][]byte{stringElement(idTagLangBCP47, "und")}, false},
+		{"both defaults", [][]byte{stringElement(idTagLang, "und"), stringElement(idTagLangBCP47, "und"), encElement(idTagDefault, uintData(1))}, false},
+	} {
+		src, _ := qualifiedArtistMKA(c.children...)
+		if _, _, warned := planArtists(t, src, "Changed"); warned != c.want {
+			t.Errorf("%s: tag-structure-dropped warned %v, want %v", c.name, warned, c.want)
 		}
 	}
 }
@@ -327,25 +403,27 @@ func TestChapterIETFUndNormalized(t *testing.T) {
 	}
 }
 
-// TestTitleSimpleTagMigratesWithoutDuplicate: a title that lives only in an album TITLE
-// SimpleTag (no Info.Title) migrates into Info.Title on any edit, without a duplicate.
-func TestTitleSimpleTagMigratesWithoutDuplicate(t *testing.T) {
-	// An Info element with no Title child (title lives only in a SimpleTag), plus an album
-	// group carrying TITLE + ARTIST.
+// titleTagOnlyMKA holds its title only in an album TITLE SimpleTag: the Info has no Title child.
+func titleTagOnlyMKA() (src, titleTag []byte) {
 	info := encElement(idInfo, uintElement(idTimestampScl, 1000000))
 	targets := encElement(idTargets, uintElement(idTgtTypeVal, 50))
-	titleTag := encElement(idSimpleTag, cat(stringElement(idTagName, "TITLE"), stringElement(idTagString, "MyTitle")))
+	titleTag = encElement(idSimpleTag, cat(stringElement(idTagName, "TITLE"), stringElement(idTagString, "MyTitle")))
 	artist := encElement(idSimpleTag, cat(stringElement(idTagName, "ARTIST"), stringElement(idTagString, "A")))
 	tags := encElement(idTags, encElement(idTag, cat(targets, titleTag, artist)))
-	src := segBytes(cat(info, tags, emptyCluster()))
+	return segBytes(cat(info, tags, emptyCluster())), titleTag
+}
 
+// TestTitleSimpleTagSurvivesAnUnrelatedEdit: an edit of another key leaves a title that lives
+// only in a TITLE SimpleTag where it is, and writes no Info.Title.
+func TestTitleSimpleTagSurvivesAnUnrelatedEdit(t *testing.T) {
+	src, titleTag := titleTagOnlyMKA()
 	base := parseMKA(t, src)
 	if v, _ := base.Tags.First(tag.Title); v != "MyTitle" {
 		t.Fatalf("setup: TITLE = %q, want MyTitle", v)
 	}
 
 	edited := base.Clone()
-	edited.Tags.Set(tag.Artist, "Changed") // unrelated edit forces the title migration
+	edited.Tags.Set(tag.Artist, "Changed")
 
 	plan, err := Codec{}.Plan(context.Background(), base, edited, core.DefaultWriteOptions())
 	if err != nil {
@@ -353,15 +431,47 @@ func TestTitleSimpleTagMigratesWithoutDuplicate(t *testing.T) {
 	}
 	out := renderPlan(t, src, plan)
 
-	// The TITLE SimpleTag is gone (the title lives in Info.Title now), not duplicated.
-	if bytes.Contains(out, []byte("TITLE")) {
-		t.Error("output still carries a TITLE SimpleTag after migration to Info.Title (duplicate title)")
+	if !bytes.Contains(out, titleTag) {
+		t.Error("the TITLE SimpleTag is not carried byte for byte")
 	}
 	if n := bytes.Count(out, []byte("MyTitle")); n != 1 {
+		t.Errorf("title value appears %d times, want 1 (no copy in Info.Title)", n)
+	}
+	re := parseMKA(t, out)
+	if re.Native.(*doc).hasSegTitle {
+		t.Error("the edit wrote an Info.Title")
+	}
+	if v, _ := re.Tags.First(tag.Title); v != "MyTitle" {
+		t.Errorf("reparsed TITLE = %q, want MyTitle", v)
+	}
+}
+
+// TestEditedTitleMovesToInfoTitle: an edit of the title writes it to Info.Title and drops the
+// TITLE SimpleTag, so the file holds it once.
+func TestEditedTitleMovesToInfoTitle(t *testing.T) {
+	src, _ := titleTagOnlyMKA()
+	base := parseMKA(t, src)
+	edited := base.Clone()
+	edited.Tags.Set(tag.Title, "NewTitle")
+
+	plan, err := Codec{}.Plan(context.Background(), base, edited, core.DefaultWriteOptions())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	out := renderPlan(t, src, plan)
+
+	if bytes.Contains(out, []byte("TITLE")) {
+		t.Error("output still carries a TITLE SimpleTag beside the Info.Title (duplicate title)")
+	}
+	if n := bytes.Count(out, []byte("NewTitle")); n != 1 {
 		t.Errorf("title value appears %d times, want 1 (no duplicate storage)", n)
 	}
-	if v, _ := parseMKA(t, out).Tags.First(tag.Title); v != "MyTitle" {
-		t.Errorf("reparsed TITLE = %q, want MyTitle (migrated to Info.Title)", v)
+	re := parseMKA(t, out)
+	if !re.Native.(*doc).hasSegTitle {
+		t.Error("the edited title is not in Info.Title")
+	}
+	if v, _ := re.Tags.First(tag.Title); v != "NewTitle" {
+		t.Errorf("reparsed TITLE = %q, want NewTitle", v)
 	}
 }
 

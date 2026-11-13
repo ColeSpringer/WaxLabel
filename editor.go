@@ -105,6 +105,19 @@ func (e *Editor) SetTags(t tag.Tags) *Editor { return e.Apply(t.Patch()) }
 // [WithUnrecognizedPictures].
 func (e *Editor) AddPicture(p Picture) *Editor {
 	p.SniffAuthoritative()
+	return e.appendPicture(p)
+}
+
+// addStoredPicture appends a picture another file holds, for a carry. Its type is settled as a
+// read settles it ([core.SniffStored]), so one declared for bytes the sniffer cannot verify
+// arrives under the type its file gave it, not as an unrecognized picture.
+func (e *Editor) addStoredPicture(p Picture) *Editor {
+	core.SniffStored(&p)
+	return e.appendPicture(p)
+}
+
+// appendPicture adds a picture whose type is settled.
+func (e *Editor) appendPicture(p Picture) *Editor {
 	p.Data = append([]byte(nil), p.Data...)
 	for len(e.addedMask) < len(e.pictures) {
 		e.addedMask = append(e.addedMask, false)
@@ -622,8 +635,9 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		// This reads edited.Chapters (the reconciled list), not e.chapters: a stale end
 		// truncated to the next start is inferable, so a start-title format does not
 		// report a spurious gapped-end loss. An interior gap (End < next.Start) or an
-		// on-disk overlap still warns.
-		if loss := caps.Chapters.ChapterLoss; core.ChaptersLoseMetadata(edited.Chapters, loss) {
+		// on-disk overlap still warns. Chapters the file already holds as asked are not written,
+		// so they lose nothing: a WebM file may hold the flags its subset lacks.
+		if loss := caps.Chapters.ChapterLoss; !core.EqualChapters(e.base.Chapters, edited.Chapters) && core.ChaptersLoseMetadata(edited.Chapters, loss) {
 			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChapterMetadataDropped,
 				core.ChapterMetadataDroppedMessage(loss))
 		}

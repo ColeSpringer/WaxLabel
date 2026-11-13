@@ -443,7 +443,10 @@ func renderNative(w io.Writer, doc *wl.Document) {
 		fmt.Fprintln(w, "    (provenance of tag values across containers)")
 		for _, f := range fams {
 			flag := ""
-			if !f.Selected {
+			switch {
+			case f.Targeted:
+				flag = "  (" + f.Scope.String() + "'s, not the file's)"
+			case !f.Selected:
 				flag = "  (conflict)"
 			}
 			fmt.Fprintf(w, "    %-20s %-8s %s%s\n", tag.SanitizeLine(string(f.Key)), f.Family, sanitizeJoin(f.Values, ", "), flag)

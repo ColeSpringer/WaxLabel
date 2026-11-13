@@ -79,19 +79,13 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Per-tag outcomes for preservation, covered-set, and group render (cross-scope).
 	ed := computeEditDecisions(d.groups, albumGroupIndex(d.groups), base, edited)
 
-	// TITLE SimpleTag also projects to Title: force ch.simple so title-only edits
-	// drop stale scoped TITLE via renderTags (else two titles after edit).
-	if ch.title && !ch.simple && hasManagedTitleTag(d.groups) {
-		ch.simple = true
-	}
-
-	// Scoped-only TITLE (no Info.Title): force title render to migrate when Info
-	// present; else buildAlbumGroup/checkPreservable keep or refuse the SimpleTag.
-	if ch.simple && !ch.title && !d.hasSegTitle && d.wb.info != nil {
-		if _, ok := edited.Tags.First(tag.Title); ok {
-			ch.title = true
-		}
-	}
+	// A title edit drops the TITLE SimpleTags that read as the title (else two titles after the
+	// edit) and writes it to Info.Title; in a file tagged by level that keeps no Info.Title it is
+	// written to the track-level Tag alone. Either way the Tags are rendered again, as they are
+	// for an edit that ends the level convention. Any other edit leaves the title's SimpleTags,
+	// and the Info, as they are.
+	ch.simple = ch.simple || ed.rewritesTags()
+	ch.info = ch.title && ed.writesInfoTitle(d.hasSegTitle)
 
 	// WebM: refuse cover write here too (Capabilities gates transfer). Keep isWebM in sync.
 	if ch.pictures && isWebM(d.docType) {
@@ -101,7 +95,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	// The segment title lives in Info.Title; a file with no Info element (Info is
 	// mandatory, so this is malformed) cannot receive one.
-	if ch.title && d.wb.info == nil {
+	if ch.info && d.wb.info == nil {
 		return nil, fmt.Errorf("%w: cannot write a title to a Matroska file that has no Info element",
 			waxerr.ErrUnsupportedTag)
 	}
@@ -121,7 +115,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if ch.simple {
 		report.Warnings = d.tagsDamage.warnDropped(report.Warnings, "Tags")
 	}
-	if ch.title {
+	if ch.info {
 		report.Warnings = d.infoDamage.warnDropped(report.Warnings, "Info")
 	}
 	if ch.pictures {
@@ -135,12 +129,12 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 	}
 
-	// Edited album SimpleTag with uncapturable structure: WarnTagStructureDropped
+	// An edited SimpleTag holding what a flat one cannot: WarnTagStructureDropped
 	// before planAbsorb (avoid double warn on absorb-then-shift).
 	if ch.simple {
 		if keys := tagStructureDropped(d, ed, base); len(keys) > 0 {
 			report.Warnings = core.WarnKeyed(report.Warnings, core.WarnTagStructureDropped,
-				"an edited album tag dropped its secondary language, binary value, or nested sub-tags", keys...)
+				"an edited tag dropped what a plain SimpleTag cannot hold: a language, a TagDefault of 0, a binary value, or nested sub-tags", keys...)
 		}
 	}
 
@@ -156,13 +150,24 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 	}
 
-	// Multi TITLE: only first survives Info.Title; WarnValueDropped before absorb/shift
+	// Multi TITLE: only the first is stored; WarnValueDropped before absorb/shift
 	// (shared reason with TransferClassifier).
 	if ch.title {
 		if vals, _ := edited.Tags.Get(tag.Title); len(vals) > 1 {
 			report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped,
 				multiTitleDroppedReason, tag.Title)
 		}
+	}
+
+	// A clear removes the Chapters element, so every edition goes, not the default one alone:
+	// leaving the others would bring one of them into view as the file's chapters.
+	otherEditions := 0
+	if ch.chapters && len(edited.Chapters) == 0 && d.chapters != nil {
+		otherEditions = max(len(d.chapters.editions)-1, 0)
+	}
+	if otherEditions > 0 {
+		report.Warnings = core.Warn(report.Warnings, core.WarnChapterMetadataDropped, fmt.Sprintf(
+			"clearing the chapters removes the %d other edition(s) the file holds along with the default one", otherEditions))
 	}
 
 	// Flattening nested/secondary chapter structure: plan-time warning (not on full clear).
@@ -187,22 +192,31 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			return nil, err
 		}
 	}
+	if otherEditions == 1 {
+		pl.Report.Operations = append(pl.Report.Operations, "Chapters: 1 other edition removed")
+	} else if otherEditions > 1 {
+		pl.Report.Operations = append(pl.Report.Operations, fmt.Sprintf("Chapters: %d other editions removed", otherEditions))
+	}
 	// Collapse to a clean no-op when the rendered result re-projects to base: an edit of
-	// only reserved technical names, or one whose every value survives at its existing
-	// scope.
+	// only reserved technical names, one whose every value survives at its existing scope, or
+	// a title edit that leaves the Info.Title's text and only asks for values a single title
+	// cannot hold.
+	title, _ := edited.Tags.First(tag.Title)
 	if np := core.DowngradeNoOp(core.FormatMatroska, edited.Identity.Size, base, pl.Result,
-		base.Tags.Equal(pl.Result.Tags), ch.title, pl.Report.Warnings); np != nil {
+		base.Tags.Equal(pl.Result.Tags), ch.info && title != d.segTitle, pl.Report.Warnings); np != nil {
 		return np, nil
 	}
 	return pl, nil
 }
 
-// changes records which Segment children an edit touches: the SimpleTag set (any
-// canonical key except Title, and a comment's or lyric's language), the Info.Title, the
-// Attachments cover set, and the Chapters element.
+// changes records what an edit touches: the SimpleTag set (any canonical key except Title, and
+// a comment's or lyric's language), the title, the Attachments cover set, and the Chapters
+// element. info is set by Plan where the title edit writes the Info.Title; in a file tagged by
+// level that keeps none it writes a SimpleTag instead.
 type changes struct {
 	simple   bool
 	title    bool
+	info     bool
 	pictures bool
 	chapters bool
 }
@@ -287,18 +301,16 @@ func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 				// Album group, synced in place: every SimpleTag kept verbatim (a non-canonical
 				// tag, or a managed tag whose key was not edited) needs its captured bytes.
 				for ti, st := range g.tags {
-					if ed.dropped(i, ti) || migratesToInfo(st, d.wb.info != nil) {
-						continue // re-emitted from the canonical set, or migrated to Info.Title: no raw needed
+					if ed.dropped(i, ti) {
+						continue // re-emitted from the canonical set, or moved to Info.Title: no raw needed
 					}
 					if st.raw == nil {
-						// Includes a managed TITLE kept because no Info exists to migrate it
-						// to; buildAlbumGroup would otherwise skip the uncaptured tag.
 						return uncaptured("tag")
 					}
 				}
 				continue
 			}
-			if !groupTouchedBy(len(g.tags), i, ed) {
+			if !groupTouchedBy(len(g.tags), i, ed) && !ed.writesTo(i) {
 				if g.raw != nil {
 					continue // preserved verbatim from the whole Tag element's bytes
 				}
@@ -307,8 +319,9 @@ func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 					return uncaptured("tag group")
 				}
 			}
-			// Re-rendered to drop its edited keys: every surviving SimpleTag needs its bytes,
-			// and a scope-narrowing group needs its Targets bytes too.
+			// Re-rendered to drop its edited keys, or to take a title or an artist written at
+			// track level: every surviving SimpleTag needs its bytes, and a scope-narrowing
+			// group needs its Targets bytes too.
 			kept := 0
 			for ti, st := range g.tags {
 				if ed.dropped(i, ti) {
@@ -319,12 +332,13 @@ func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 				}
 				kept++
 			}
-			if kept > 0 && g.targetsRaw == nil && narrowsScope(g) {
+			if (kept > 0 || ed.writesTo(i)) && g.targetsRaw == nil && narrowsScope(g) {
 				return uncaptured("tag targets")
 			}
 		}
 	}
 	if ch.pictures {
+		// An attachment that is no picture is copied; one that is can be rendered from its picture.
 		for _, a := range d.attachments {
 			if !a.image && a.raw == nil {
 				return uncaptured("attachment")
@@ -353,27 +367,28 @@ func isFallback(err error) bool { return errors.Is(err, errFallback) }
 // nil when the result would be empty (so the Tags element is dropped).
 func renderTags(d *doc, base, edited tag.TagSet, ed *editDecisions) (raw []byte, groups []tagGroup) {
 	covered, albumOwn, others := coveredByOtherScopes(d.groups, ed)
-	// A managed TITLE migrates to Info.Title only when an Info element exists; with
-	// none, buildAlbumGroup keeps the SimpleTag verbatim.
-	infoPresent := d.wb.info != nil
 	var content []byte
-
-	for i, g := range d.groups {
-		newGroup, gb, keep := renderGroup(g, i, base, edited, covered, albumOwn, others, ed, i == ed.albumIdx, infoPresent)
-		if !keep {
-			continue
-		}
-		content = append(content, gb...)
-		groups = append(groups, newGroup)
-	}
-
-	// No album group existed: create one carrying the canonical set.
-	if ed.albumIdx < 0 {
-		newGroup, gb := buildAlbumGroup(nil, -1, base, edited, covered, albumOwn, others, ed, infoPresent)
+	add := func(g tagGroup, gb []byte) {
 		if gb != nil {
 			content = append(content, gb...)
-			groups = append(groups, newGroup)
+			groups = append(groups, g)
 		}
+	}
+	sync := func(group *tagGroup, gi int, album, track bool) {
+		add(buildSyncGroup(group, gi, album, track, base, edited, covered, albumOwn, others, ed))
+	}
+
+	for i, g := range d.groups {
+		album, track := i == ed.albumIdx, ed.writesTo(i)
+		if album || track {
+			sync(&g, i, album, track)
+		} else if out, gb, keep := renderNonAlbumGroup(g, i, ed); keep {
+			add(out, gb)
+		}
+	}
+	// No album group existed: create one carrying the canonical set.
+	if ed.albumIdx < 0 {
+		sync(nil, -1, true, false)
 	}
 
 	if len(content) == 0 {
@@ -389,7 +404,7 @@ func renderTags(d *doc, base, edited tag.TagSet, ed *editDecisions) (raw []byte,
 // and risk a spurious cross-scope conflict.
 func coveredByOtherScopes(groups []tagGroup, ed *editDecisions) (covered, albumOwn map[tag.Key][]string, others map[tag.Key][]scopedContribution) {
 	// Per key, the case-folded values the album scope itself keeps after the edit, plus the
-	// same values as ordered lists (albumOwn) for buildAlbumGroup's subtraction.
+	// same values as ordered lists (albumOwn) for buildSyncGroup's subtraction.
 	albumFolds := map[tag.Key]map[string]bool{}
 	albumOwn = map[tag.Key][]string{}
 	var albumScope core.Scope
@@ -407,7 +422,7 @@ func coveredByOtherScopes(groups []tagGroup, ed *editDecisions) (covered, albumO
 	covered = map[tag.Key][]string{}
 	others = map[tag.Key][]scopedContribution{}
 	for i, g := range groups {
-		if i == ed.albumIdx {
+		if i == ed.albumIdx || !g.fileLevel() {
 			continue
 		}
 		// A second album-scope group contributes to the album canonical. Its values are
@@ -432,24 +447,10 @@ func forEachSurvivingContribution(g tagGroup, gi int, ed *editDecisions, fn func
 		if ed.dropped(gi, ti) || !st.hasValue {
 			continue
 		}
-		for _, c := range projectTag(st, g.scope) {
+		for _, c := range projectTag(st, g, ed.conv) {
 			fn(c)
 		}
 	}
-}
-
-// renderGroup re-renders one Tag group. The album group is synced to the edited
-// canonical set; a non-album group is preserved verbatim or, when it carries an edited
-// key, re-rendered to drop that key.
-func renderGroup(g tagGroup, gi int, base, edited tag.TagSet, covered, albumOwn map[tag.Key][]string, others map[tag.Key][]scopedContribution, ed *editDecisions, isAlbum, infoPresent bool) (out tagGroup, raw []byte, keep bool) {
-	if !isAlbum {
-		return renderNonAlbumGroup(g, gi, ed)
-	}
-	ng, gb := buildAlbumGroup(&g, gi, base, edited, covered, albumOwn, others, ed, infoPresent)
-	if gb == nil {
-		return tagGroup{}, nil, false
-	}
-	return ng, gb, true
 }
 
 // renderNonAlbumGroup renders a track/edition/chapter/part-scoped group.
@@ -485,12 +486,59 @@ func renderNonAlbumGroup(g tagGroup, gi int, ed *editDecisions) (out tagGroup, r
 // album-scope sync must emit.
 type editDecisions struct {
 	ek        map[tag.Key]bool     // keys whose value lists, or comment/lyrics languages, changed
-	albumIdx  int                  // index of the group buildAlbumGroup syncs into, -1 if none
+	albumIdx  int                  // index of the group buildSyncGroup syncs into, -1 if none
 	drop      map[[2]int]bool      // {group index, tag index} -> dropped by this edit
 	albumVals map[tag.Key][]string // per changed key: values to emit at album scope, edited order
 	// albumLangs holds the language of each albumVals value of COMMENT and LYRICS, and langs
 	// the language of each edited value of those keys ([textLangs]).
 	albumLangs, langs map[tag.Key][]string
+
+	// conv: the file is tagged by level ([titleConvention]), which is how its SimpleTags read.
+	// convAfter: it still is once the edit is written, which is how the new ones are named.
+	conv, convAfter bool
+	// trackIdx is the group a title or an artist is written to in a file that stays tagged by
+	// level, where at album level they would read as the album's ([trackGroupIndex]). -1 in any
+	// other.
+	trackIdx int
+	// trackEmit is what the edit writes there, in order.
+	trackEmit []trackValue
+	// reuse marks the dropped SimpleTags whose bytes are written again: each holds just a value
+	// the edit writes back into its group ([editDecisions.holdsJust]). albumNew reports an album
+	// value no such SimpleTag holds, written as a new one.
+	reuse    map[[2]int]bool
+	albumNew bool
+}
+
+// trackValue is one SimpleTag an edit writes to the track-level group.
+type trackValue struct {
+	key   tag.Key
+	value string
+}
+
+// rewritesTags reports whether the edit drops a SimpleTag, which a title edit does without
+// changing any key but the title, as does an edit that ends the level convention.
+func (ed *editDecisions) rewritesTags() bool { return len(ed.drop) > 0 }
+
+// albumScoped reports whether the values of key k are written to the album-scope group: not the
+// title, which lives in Info.Title or at track level, nor the artist of a file tagged by level.
+func (ed *editDecisions) albumScoped(k tag.Key) bool {
+	return k != tag.Title && !(ed.convAfter && k == tag.Artist)
+}
+
+// writesTo reports whether the edit writes a title or an artist into group gi.
+func (ed *editDecisions) writesTo(gi int) bool { return gi == ed.trackIdx && len(ed.trackEmit) > 0 }
+
+// writesInfoTitle reports whether an edit of the title writes the Info.Title: always, but in a
+// file that stays tagged by level and keeps none (infoTitle false), whose title is a track-level
+// SimpleTag.
+func (ed *editDecisions) writesInfoTitle(infoTitle bool) bool { return !ed.convAfter || infoTitle }
+
+// trackGroupIndex picks the group a title or an artist is written to in a file tagged by level:
+// the first at level 40 or under that holds a TITLE, which such a file has. -1 with none.
+func trackGroupIndex(groups []tagGroup) int {
+	return slices.IndexFunc(groups, func(g tagGroup) bool {
+		return g.fileLevel() && g.lowerLevel() && slices.ContainsFunc(g.tags, simpleTag.titled)
+	})
 }
 
 // textLangs returns the modeled language of each of m's COMMENT or LYRICS values, nil for any
@@ -556,13 +604,188 @@ type contribDecision struct {
 // computeEditDecisions resolves one edit against the parsed groups, once per write:
 // which SimpleTags drop, and per changed key the values the album-scope sync must emit.
 func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited *core.Media) *editDecisions {
+	ek := editedKeySet(base, edited)
+	conv := titleConvention(groups)
+	ed := decideEdit(groups, albumIdx, conv, conv, ek, edited).settle(groups, edited)
+	// No edit starts the convention: outside it none writes a TITLE SimpleTag.
+	if !conv || ed.conventionAfter(groups) {
+		return ed
+	}
+	// The edit leaves no TITLE at level 40 or under, or none at album level, so what stays at
+	// album level would read as the file's own title and artist. The album's are written again
+	// under the names that say so, the artist is written at album scope like any key, and an
+	// edited title goes to the Info.Title.
+	for gi, g := range groups {
+		for ti, st := range g.tags {
+			if k, ok := tagKey(st, g, true); ok && g.fileLevel() && !ed.dropped(gi, ti) && (k == tag.Album || k == tag.AlbumArtist) {
+				if plain, _ := tagKey(st, g, false); plain != k {
+					ek[k] = true
+				}
+			}
+		}
+	}
+	return decideEdit(groups, albumIdx, true, false, ek, edited).settle(groups, edited)
+}
+
+// settle completes the decisions with what follows from them: where a title and an artist are
+// written in a file tagged by level, and which dropped SimpleTags are written again.
+func (ed *editDecisions) settle(groups []tagGroup, edited *core.Media) *editDecisions {
+	ed.trackIdx = -1
+	if ed.convAfter {
+		ed.trackIdx = trackGroupIndex(groups)
+		if title, ok := edited.Tags.First(tag.Title); ok && ed.edited(tag.Title) {
+			ed.trackEmit = append(ed.trackEmit, trackValue{tag.Title, title})
+		}
+		for _, v := range ed.albumVals[tag.Artist] {
+			ed.trackEmit = append(ed.trackEmit, trackValue{tag.Artist, v})
+		}
+	}
+	ed.markReused(groups)
+	return ed
+}
+
+// conventionAfter reports whether a file tagged by level still is once the edit is written as
+// one: the read's rule ([titleConvention]) asked of the TITLE SimpleTags the edit leaves and the
+// ones it writes. A new album value is an album-level TITLE, the album-scope sync group of such
+// a file standing at album level, and an edited title a track-level one.
+func (ed *editDecisions) conventionAfter(groups []tagGroup) bool {
+	upper, lower := titleLevels(groups, func(gi, ti int) bool {
+		at := [2]int{gi, ti}
+		return !ed.drop[at] || ed.reuse[at]
+	})
+	titled := slices.ContainsFunc(ed.trackEmit, func(tv trackValue) bool { return tv.key == tag.Title })
+	return (upper || ed.albumNew) && (lower || titled)
+}
+
+// holdsJust reports whether SimpleTag st of group g holds the value the edit writes for key k
+// and no other, under a name that reads as k once written. Its bytes can then stand for the
+// value, with what a flat SimpleTag cannot say: a TagLanguageBCP47, a TagDefault, nested
+// SimpleTags.
+func (ed *editDecisions) holdsJust(st simpleTag, g tagGroup, k tag.Key, value, lang string) bool {
+	if st.raw == nil || !st.hasValue {
+		return false
+	}
+	if written, ok := tagKey(st, g, ed.convAfter); !ok || written != k {
+		return false
+	}
+	cs := projectTag(st, g, ed.conv)
+	return len(cs) == 1 && cs[0].key == k && cs[0].value == value &&
+		claimOf(k, value, cs[0].lang) == claimOf(k, value, lang)
+}
+
+// markReused finds, for each value the edit writes into the album group or the track-level one,
+// the first SimpleTag it drops there that holds just that value ([editDecisions.reuse]).
+func (ed *editDecisions) markReused(groups []tagGroup) {
+	ed.reuse, ed.albumNew = map[[2]int]bool{}, false
+	take := func(gi int, k tag.Key, value, lang string) bool {
+		if gi < 0 {
+			return false
+		}
+		for ti, st := range groups[gi].tags {
+			if at := [2]int{gi, ti}; ed.drop[at] && !ed.reuse[at] && ed.holdsJust(st, groups[gi], k, value, lang) {
+				ed.reuse[at] = true
+				return true
+			}
+		}
+		return false
+	}
+	for k := range ed.ek {
+		if !ed.albumScoped(k) {
+			continue
+		}
+		for i, v := range ed.albumVals[k] {
+			if tag.IsBooleanKey(k) {
+				v = tag.CanonicalBoolValue(v)
+			}
+			if !take(ed.albumIdx, k, v, langAt(ed.albumLangs[k], i)) && k == tag.Album {
+				ed.albumNew = true
+			}
+		}
+	}
+	for _, tv := range ed.trackEmit {
+		take(ed.trackIdx, tv.key, tv.value, "")
+	}
+}
+
+// decideEdit is computeEditDecisions for the keys ek. conv is whether the file is tagged by
+// level, convAfter whether the written one is: there the artist is written whole to the
+// track-level group. A key is written whole, too, where the values its SimpleTags would keep in
+// place do not read back as the edit asks ([editDecisions.readsBack]).
+func decideEdit(groups []tagGroup, albumIdx int, conv, convAfter bool, ek map[tag.Key]bool, edited *core.Media) *editDecisions {
+	whole := map[tag.Key]bool{tag.Artist: convAfter}
+	for {
+		ed := decideKeeping(groups, albumIdx, conv, convAfter, ek, edited, whole)
+		left := ed.leftInPlace(groups)
+		settled := true
+		for k := range ek {
+			if k != tag.Title && !whole[k] && !ed.readsBack(k, left[k], edited) {
+				whole[k], settled = true, false
+			}
+		}
+		if settled {
+			return ed
+		}
+	}
+}
+
+// leftInPlace returns, per edited key, what the file-level SimpleTags the edit does not drop
+// contribute to it, in file order.
+func (ed *editDecisions) leftInPlace(groups []tagGroup) map[tag.Key][]scopedContribution {
+	left := map[tag.Key][]scopedContribution{}
+	for gi, g := range groups {
+		if !g.fileLevel() {
+			continue
+		}
+		for ti, st := range g.tags {
+			if ed.dropped(gi, ti) || !st.hasValue {
+				continue
+			}
+			for _, c := range projectTag(st, g, ed.conv) {
+				if ed.edited(c.key) {
+					left[c.key] = append(left[c.key], c)
+				}
+			}
+		}
+	}
+	return left
+}
+
+// readsBack reports whether key k reads back as the edit asks once the decisions are written:
+// the values left in place for it ([editDecisions.leftInPlace]) and the ones written at album
+// scope, projected as a read projects them. Keeping a value in place counts on the scopes ahead
+// of it staying; with the album-scope values gone, what were suppressed copies at another scope
+// lead the projection.
+func (ed *editDecisions) readsBack(k tag.Key, left []scopedContribution, edited *core.Media) bool {
+	// Album scope leads the projection wherever its SimpleTags stand.
+	contribs := slices.Clone(left)
+	for _, v := range ed.albumVals[k] {
+		contribs = append(contribs, scopedContribution{key: k, value: v, scope: core.ScopeAlbum})
+	}
+	var got []string
+	for _, e := range projectionOrder(k, contribs) {
+		if e.emitted {
+			got = append(got, contribs[e.index].value)
+		}
+	}
+	want, _ := edited.Tags.Get(k)
+	want = slices.Clone(want)
+	slices.Sort(got)
+	slices.Sort(want)
+	return slices.Equal(got, want) // a reorder across scopes is the read's own
+}
+
+// decideKeeping is decideEdit with the keys of whole written whole: every SimpleTag that holds
+// one is dropped, and none keeps a value of it in place.
+func decideKeeping(groups []tagGroup, albumIdx int, conv, convAfter bool, ek map[tag.Key]bool, edited *core.Media, whole map[tag.Key]bool) *editDecisions {
 	ed := &editDecisions{
-		ek:         editedKeySet(base, edited),
+		ek:         ek,
 		albumIdx:   albumIdx,
 		drop:       map[[2]int]bool{},
 		albumVals:  map[tag.Key][]string{},
 		albumLangs: map[tag.Key][]string{},
 		langs:      map[tag.Key][]string{tag.Comment: textLangs(edited, tag.Comment), tag.Lyrics: textLangs(edited, tag.Lyrics)},
+		conv:       conv,
+		convAfter:  convAfter,
 	}
 	if len(ed.ek) == 0 {
 		return ed
@@ -574,16 +797,23 @@ func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited *core.Me
 	contribs := map[tag.Key][]scopedContribution{}
 	owners := map[tag.Key][][2]int{}
 	for gi, g := range groups {
+		if !g.fileLevel() {
+			continue // a targeted group's tags are not the file's: no edit of them reaches it
+		}
 		for ti, st := range g.tags {
-			if ed.edited(tag.Title) && isManagedTitle(st) {
+			if ed.edited(tag.Title) && managedTitle(st, g, conv) {
 				ed.drop[[2]int{gi, ti}] = true
 				continue
 			}
 			if !st.hasValue {
 				continue
 			}
-			for _, c := range projectTag(st, g.scope) {
+			for _, c := range projectTag(st, g, conv) {
 				if c.key == tag.Title || !ed.edited(c.key) {
+					continue
+				}
+				if whole[c.key] {
+					ed.drop[[2]int{gi, ti}] = true
 					continue
 				}
 				if len(contribs[c.key]) == 0 {
@@ -635,7 +865,8 @@ func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited *core.Me
 	// doomed tag: a denied claim dooms its tag (any dropped contribution drops the whole
 	// SimpleTag), which releases that tag's claims for the next round, so a freed value
 	// is re-offered to a denied twin rather than relocated to album scope.
-	doomed := map[[2]int]bool{}
+	// A tag a title edit or a key written whole already drops is doomed too.
+	doomed := maps.Clone(ed.drop)
 	for _, d := range ds {
 		if !d.echo && (!d.claimable || exact[d.key][d.claim] == 0) {
 			doomed[d.owner] = true
@@ -813,9 +1044,10 @@ func meaningfulLang(lang string) bool {
 }
 
 // tagStructureDropped returns the canonical keys whose dropped SimpleTag (ed.dropped)
-// carried structure the flat model cannot hold: a TagLanguage or TagLanguageBCP47, a
-// TagBinary value, or nested sub-tags. The edit re-emits such a key flat at album scope. The language of a
-// comment or lyric base reads is in the model, so its tag loses none.
+// carried structure the flat model cannot hold: a TagLanguage or TagLanguageBCP47 naming a
+// language, a TagDefault of 0, a TagBinary value, or nested sub-tags. The edit re-emits such a
+// key flat. The language of a comment or lyric base reads is in the model, so its tag loses
+// none, and a SimpleTag written again as it is ([editDecisions.reuse]) loses nothing.
 func tagStructureDropped(d *doc, ed *editDecisions, base *core.Media) []tag.Key {
 	var keys []tag.Key
 	seen := map[tag.Key]bool{}
@@ -828,16 +1060,16 @@ func tagStructureDropped(d *doc, ed *editDecisions, base *core.Media) []tag.Key 
 	}
 	for gi, g := range d.groups {
 		for ti, st := range g.tags {
-			if !ed.dropped(gi, ti) {
+			if !ed.dropped(gi, ti) || ed.reuse[[2]int{gi, ti}] {
 				continue
 			}
-			k, ok := mapping.MatroskaTagKey(st.name)
+			k, ok := tagKey(st, g, ed.conv)
 			if !ok || seen[k] {
 				continue
 			}
 			langModeled := modeled[k][core.TextItem{Text: core.SanitizeUTF8(st.value), Language: st.language()}]
 			// A plain string tag loses nothing on a flat re-emit.
-			if (!meaningfulLang(st.lang) || langModeled) && !st.bcp47 && st.binary == 0 && len(st.sub) == 0 {
+			if (!meaningfulLang(st.lang) || langModeled) && !meaningfulLang(st.langBCP47) && !st.nonDefault && st.binary == 0 && len(st.sub) == 0 {
 				continue
 			}
 			seen[k] = true
@@ -847,17 +1079,12 @@ func tagStructureDropped(d *doc, ed *editDecisions, base *core.Media) []tag.Key 
 	return keys
 }
 
-// isManagedTitle reports whether a SimpleTag maps to the canonical Title, whose home
-// is Info.Title (see migratesToInfo).
-func isManagedTitle(st simpleTag) bool {
-	k, ok := mapping.MatroskaTagKey(st.name)
+// managedTitle reports whether a SimpleTag of group g reads as the canonical Title, convention
+// being the file's [titleConvention]. An edit of the title drops every such SimpleTag and writes
+// the title where the file keeps it; an edit of another key keeps them.
+func managedTitle(st simpleTag, g tagGroup, convention bool) bool {
+	k, ok := tagKey(st, g, convention)
 	return ok && k == tag.Title
-}
-
-// migratesToInfo reports whether a managed TITLE SimpleTag moves to Info.Title and
-// leaves the Tags element, which requires an Info element to receive it.
-func migratesToInfo(st simpleTag, infoPresent bool) bool {
-	return isManagedTitle(st) && infoPresent
 }
 
 // groupTouchedBy reports whether the edit drops any of the group's nTags SimpleTags,
@@ -871,21 +1098,10 @@ func groupTouchedBy(nTags, gi int, ed *editDecisions) bool {
 	return false
 }
 
-// hasManagedTitleTag reports whether any Tag group carries a TITLE SimpleTag, which
-// projects into the canonical Title alongside Info.Title.
-func hasManagedTitleTag(groups []tagGroup) bool {
-	for _, g := range groups {
-		if slices.ContainsFunc(g.tags, isManagedTitle) {
-			return true
-		}
-	}
-	return false
-}
-
 // narrowsScope reports whether the group's Targets restrict it below album scope (a
-// track/edition/chapter UID or any explicit target type/level).
+// track/edition/chapter/attachment UID or any explicit target type/level).
 func narrowsScope(g tagGroup) bool {
-	return g.trackUID || g.editionUID || g.chapterUID || g.targetTypeValue != 0 || g.targetType != ""
+	return g.trackUID || g.editionUID || g.chapterUID || g.attachUID || g.targetTypeValue != 0 || g.targetType != ""
 }
 
 // editedKeySet returns the canonical keys whose values differ between the base and
@@ -904,20 +1120,24 @@ func editedKeySet(base, edited *core.Media) map[tag.Key]bool {
 	return ek
 }
 
-// buildAlbumGroup renders the album-scope group: the preserved Targets (carrying any
-// UID), the kept non-canonical SimpleTags verbatim, then the synced canonical
-// SimpleTags.
-func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, albumOwn map[tag.Key][]string, others map[tag.Key][]scopedContribution, ed *editDecisions, infoPresent bool) (tagGroup, []byte) {
+// buildSyncGroup renders a group the edit writes into: the preserved Targets (carrying any
+// UID), the kept SimpleTags verbatim, then the new ones. album is the album-scope group, synced
+// to the canonical set; track is the group below album level that takes the title and artist of
+// a file tagged by level ([editDecisions.trackEmit]). A nil group is the album-scope one,
+// created at album level.
+func buildSyncGroup(group *tagGroup, gi int, album, track bool, base, edited tag.TagSet, covered, albumOwn map[tag.Key][]string, others map[tag.Key][]scopedContribution, ed *editDecisions) (tagGroup, []byte) {
 	out := tagGroup{scope: core.ScopeAlbum}
+	level := 50
 	var simple []byte
 	if group != nil {
 		out = *group
 		out.tags = nil
+		level = int(min(group.level(), 100))
 		// Preserve every SimpleTag the edit does not drop, verbatim from its captured
 		// bytes: custom names, technical stats, binary, nested trees, and managed tags
 		// whose canonical key was not edited (keeping structure a flat re-emit would lose).
 		for ti, st := range group.tags {
-			if ed.dropped(gi, ti) || migratesToInfo(st, infoPresent) {
+			if ed.dropped(gi, ti) {
 				continue
 			}
 			if st.raw != nil {
@@ -926,10 +1146,26 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 			}
 		}
 	}
+	written := map[int]bool{} // the dropped SimpleTags of the group written again as they are
+	emit := func(k tag.Key, value, lang string) {
+		if group != nil {
+			for ti, st := range group.tags {
+				if ed.reuse[[2]int{gi, ti}] && !written[ti] && ed.holdsJust(st, *group, k, value, lang) {
+					written[ti] = true
+					simple = append(simple, st.raw...)
+					out.tags = append(out.tags, st)
+					return
+				}
+			}
+		}
+		name := mapping.MatroskaTagNameForLevel(k, level, ed.convAfter)
+		simple = append(simple, simpleTagBytes(name, value, lang)...)
+		out.tags = append(out.tags, simpleTag{name: name, value: value, hasValue: true, lang: lang})
+	}
 	// Append the canonical set under the Matroska-spec names, in key order.
 	for _, k := range edited.Keys() {
-		if k == tag.Title {
-			continue // stored in Info.Title
+		if !album || !ed.albumScoped(k) {
+			continue
 		}
 		vals, _ := edited.Get(k)
 		var langs []string
@@ -938,15 +1174,15 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 			// this group's own preserved SimpleTags (albumOwn), re-emits only the values not
 			// already preserved.
 			if sub := slices.Concat(covered[k], albumOwn[k]); len(sub) > 0 {
-				emit := subtractFold(vals, sub)
-				if !reprojectsTo(k, vals, albumOwn[k], emit, others[k]) {
+				vs := subtractFold(vals, sub)
+				if !reprojectsTo(k, vals, albumOwn[k], vs, others[k]) {
 					// A partially subtracted fold would leave the album emit suppressing the
 					// surviving narrower copies and shrink the value's multiplicity on re-read.
 					// Re-emit everything the album group itself does not preserve; the narrower
 					// copies become suppressed echoes.
-					emit = subtractFold(vals, albumOwn[k])
+					vs = subtractFold(vals, albumOwn[k])
 				}
-				vals = emit
+				vals = vs
 				if len(vals) == 0 {
 					continue
 				}
@@ -965,15 +1201,17 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 				vals[i] = tag.CanonicalBoolValue(v)
 			}
 		}
-		name := mapping.MatroskaTagName(k)
-		if mapping.MatroskaTechnicalName(name) {
+		if mapping.MatroskaTechnicalName(mapping.MatroskaTagName(k)) {
 			continue // reserved technical name: never emitted, warned at plan time
 		}
 		for i, v := range vals {
 			// A present empty value (set KEY=) is emitted as a zero-length SimpleTag.
-			lang := langAt(langs, i)
-			simple = append(simple, simpleTagBytes(name, v, lang)...)
-			out.tags = append(out.tags, simpleTag{name: name, value: v, hasValue: true, lang: lang})
+			emit(k, v, langAt(langs, i))
+		}
+	}
+	if track {
+		for _, tv := range ed.trackEmit {
+			emit(tv.key, tv.value, "")
 		}
 	}
 	if len(simple) == 0 {
@@ -1047,15 +1285,24 @@ func simpleTagBytes(name, value, lang string) []byte {
 	return encElement(idSimpleTag, append(payload, stringElement(idTagString, value)...))
 }
 
-// albumGroupIndex returns the index of the group to sync canonical tags into: the
-// first album-scope group with no track/edition/chapter UID, or -1 if none.
+// albumGroupIndex returns the index of the group to sync canonical tags into: the first
+// album-scope group at album level with no track/edition/chapter UID, else the first such group
+// below it (level 40 to 49), or -1 if none. A group naming an attachment is at attachment scope,
+// never this one.
 func albumGroupIndex(groups []tagGroup) int {
+	below := -1
 	for i, g := range groups {
-		if g.scope == core.ScopeAlbum && !g.trackUID && !g.editionUID && !g.chapterUID {
+		if g.scope != core.ScopeAlbum || g.trackUID || g.editionUID || g.chapterUID {
+			continue
+		}
+		if g.level() >= 50 {
 			return i
 		}
+		if below < 0 {
+			below = i
+		}
 	}
-	return -1
+	return below
 }
 
 // renderInfo splices the edited Title into the captured Info's whole children (replacing,
@@ -1094,31 +1341,78 @@ func renderInfo(ib *infoBlock, title string, present bool) (raw []byte, newTitle
 	return encElement(idInfo, content), title
 }
 
-// renderAttachments rebuilds the Attachments element from the preserved
-// non-image attachments and the edited picture set, returning nil when empty (so
-// the element is dropped).
-func renderAttachments(d *doc, pics []core.Picture) []byte {
-	var content []byte
-	// Names used so far, so two same-role, same-MIME covers (both "cover.png") get
-	// distinct FileNames. Seeded with the preserved non-image attachment names.
-	used := map[string]bool{}
-	for _, a := range d.attachments {
-		if a.image || a.raw == nil {
-			continue // images are rebuilt from the picture set below
+// renderAttachments rebuilds the Attachments element for the edited pictures, returning nil when
+// it holds nothing (so the element is dropped). An attachment that is no picture, and one whose
+// picture the edit keeps, is copied as it is where it stands: name, type, description and UID.
+// The pictures read back in the order of pics, so a new one is written ahead of the first kept
+// attachment that follows it there, or at the end.
+func renderAttachments(d *doc, base, pics []core.Picture) []byte {
+	kept := keptAttachments(d.attachments, base, pics)
+	owner := make(map[int]int, len(kept)) // attachment index -> the picture that keeps it
+	for pi, ai := range kept {
+		if ai >= 0 {
+			owner[ai] = pi
 		}
-		content = append(content, a.raw...)
-		used[a.name] = true
 	}
-	for _, p := range pics {
-		name := uniqueAttachmentName(coverFileStem(p), imageExt(p.MIME), used)
-		used[name] = true
-		content = append(content, attachedFileBytes(p, name)...)
+	// Names used so far, so two same-role, same-MIME covers (both "cover.png") get
+	// distinct FileNames. Seeded with the names of the attachments copied.
+	used := map[string]bool{}
+	for ai, a := range d.attachments {
+		if _, ok := owner[ai]; ok || !a.image {
+			used[a.name] = true
+		}
 	}
+	var content []byte
+	next := 0 // the first picture not yet written
+	writeThrough := func(last int) {
+		for ; next <= last; next++ {
+			if ai := kept[next]; ai >= 0 {
+				content = append(content, d.attachments[ai].raw...)
+				continue
+			}
+			p := pics[next]
+			name := uniqueAttachmentName(coverFileStem(p), imageExt(p.MIME), used)
+			used[name] = true
+			content = append(content, attachedFileBytes(p, name)...)
+		}
+	}
+	for ai, a := range d.attachments {
+		if !a.image {
+			content = append(content, a.raw...)
+		} else if pi, ok := owner[ai]; ok {
+			writeThrough(pi) // nothing when a picture behind it in the file came first
+		}
+	}
+	writeThrough(len(pics) - 1)
 	if len(content) == 0 {
 		return nil
 	}
 	hasCRC := d.wb.attach != nil && d.wb.attach.hasCRC
 	return masterElement(idAttachments, content, hasCRC)
+}
+
+// keptAttachments returns, for each of pics, the index of the attachment it keeps: the first not
+// yet taken whose picture, one of base, is what pics[i] reads back as. -1 is a picture to write.
+func keptAttachments(atts []attachment, base, pics []core.Picture) []int {
+	kept := make([]int, len(pics))
+	taken := make([]bool, len(atts))
+	for pi, p := range pics {
+		kept[pi] = -1
+		np, ok := reprojectPicture(p)
+		if !ok {
+			continue
+		}
+		for ai, a := range atts {
+			if taken[ai] || a.raw == nil || !a.image || a.pic >= len(base) {
+				continue
+			}
+			if core.EqualPictures(base[a.pic:a.pic+1], []core.Picture{np}) {
+				kept[pi], taken[ai] = ai, true
+				break
+			}
+		}
+	}
+	return kept
 }
 
 // attachedFileBytes renders one AttachedFile from a picture under an already-unique
@@ -1185,10 +1479,23 @@ func uniqueAttachmentName(stem, ext string, used map[string]bool) string {
 	return name
 }
 
-// imageExt returns the conventional extension for a cover MIME.
+// imageExt returns the extension a cover of the given MIME is named with: the sniffer's for a
+// type it knows, the short subtype of an image type it does not (svg+xml is .svg), else .jpg.
 func imageExt(mime string) string {
 	if ext := bits.ImageExtension(mime); ext != "" {
 		return ext
 	}
-	return ".jpg"
+	sub, ok := strings.CutPrefix(strings.ToLower(mime), "image/")
+	if !ok {
+		return ".jpg"
+	}
+	switch sub, _, _ = strings.Cut(sub, "+"); sub {
+	case "x-icon", "vnd.microsoft.icon":
+		return ".ico"
+	}
+	// A file name takes a subtype only where it is a plain short word.
+	if len(sub) < 2 || len(sub) > 4 || strings.ContainsFunc(sub, func(r rune) bool { return (r < 'a' || r > 'z') && (r < '0' || r > '9') }) {
+		return ".jpg"
+	}
+	return "." + sub
 }

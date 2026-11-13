@@ -166,7 +166,7 @@ A corrupt file (exit 4) outranks a mistyped path (exit 6).
 | MP3 | read/write | ID3v2 (`CHAP`/`CTOC`, `SYLT`); new tags are ID3v2.3. Trailing ID3v1, APEv2 and Lyrics3 as legacy. |
 | WAV / RF64 / BW64 | read/write | RIFF LIST/INFO plus embedded `id3 `; chunks preserved. RF64/BW64 form kept on save-back; `ds64` recomputed. |
 | MP4 / M4A / M4B / MOV | read/write | iTunes `ilst`, `mdta` keys (ffmpeg `+use_metadata_tags`, and the `moov.meta` store Apple's recorders write), classic `moov.udta` text, cover art, Nero and QuickTime chapters. Fragmented MP4 (`moof`) is read-only; `moov` with `mvex` but no fragment writes normally. |
-| Matroska / WebM | read/write | Scoped SimpleTags, segment title, attachments, default-edition chapters. WebM cannot write cover attachments. |
+| Matroska / WebM | read/write | Scoped SimpleTags, segment title, attachments, default-edition chapters. Tags of an attachment, chapter, edition or video track stay out of the file's tags. Beside a `TITLE` at level 40 or under, the album-level `TITLE` and `ARTIST` are `ALBUM` and `ALBUMARTIST`. Attachments an edit keeps are copied verbatim. WebM cannot write cover attachments or hidden/disabled chapter flags. |
 | AAC (ADTS) | read/write | Front ID3v2 (new tags ID3v2.4) plus ADTS frames. HE-AAC reports played rate, channels, and profile from frames when the header cannot. Trailing ID3v1, APEv2 and Lyrics3 as legacy. |
 | AIFF / AIFF-C | read/write | Native text chunks plus embedded `ID3 `; chunks preserved. |
 | WavPack | read/write | APEv2 and `Cover Art` convention; leading ID3v2, trailing ID3v1 and Lyrics3 as legacy. |

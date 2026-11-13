@@ -6,37 +6,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// Matroska SimpleTag-name <-> canonical mapping. Most names pass through [tag.ParseKey];
-// matroskaTags holds ffmpeg/spec names that differ. Structured trkn/disk handled in codec.
-
-// matroskaTags maps TagNames that need translation. Canonical-shaped names use pass-through.
-var matroskaTags = map[string]tag.Key{
-	"ALBUM_ARTIST":   tag.AlbumArtist,
-	"LEAD_PERFORMER": tag.Artist,
-	"DATE":           tag.RecordingDate, // ffmpeg flat date
-	"DATE_RECORDED":  tag.RecordingDate,
-	"DATE_RELEASED":  tag.ReleaseDate,
-	"DATE_RELEASE":   tag.ReleaseDate,
-	"DATE_ORIGINAL":  tag.OriginalDate,
-	"ORIGINAL_DATE":  tag.OriginalDate,
-	"ENCODER":        tag.Encoder,
-	"ENCODED_BY":     tag.EncodedBy,
-	"PART_NUMBER":    tag.TrackNumber, // value may be "n/total"
-	"TOTAL_PARTS":    tag.TrackTotal,
-	"DISC":           tag.DiscNumber, // ffmpeg flat disc; value may be "n/total"
-	"TOTAL_DISCS":    tag.DiscTotal,
-	"CATALOG_NUMBER": tag.CatalogNumber,
-	"PUBLISHER":      tag.Label,
-	"REMIXED_BY":     tag.Remixer,
-	"CONTENT_GROUP":  tag.Grouping,
-	// Read-only DJMIXER separator variants; write stays identity "DJMIXER".
-	"DJ_MIXER": tag.DJMixer,
-	"DJ MIXER": tag.DJMixer,
-	"DJ-MIXER": tag.DJMixer,
-	// Read-only; no tag.AliasKey here. COUNTRY is a nesting qualifier, not RELEASECOUNTRY.
-	"MUSICBRAINZ_ALBUMSTATUS": tag.ReleaseStatus,
-	"MUSICBRAINZ_ALBUMTYPE":   tag.ReleaseType,
-}
+// Matroska SimpleTag-name <-> canonical mapping. A name reads through the shared alias table
+// ([tag.AliasKey]), which holds the spec's and ffmpeg's spellings, then [tag.ParseKey];
+// matroskaNames holds the spellings written. Structured trkn/disk handled in codec.
 
 // technicalTags are structural/statistics names, not projected (like RIFF ISFT handling).
 var technicalTags = map[string]bool{
@@ -60,12 +32,13 @@ func technicalName(up string) bool {
 }
 
 // MatroskaTagKey returns the canonical key for a TagName, or ok=false for technical/invalid names.
+// COUNTRY is a nesting qualifier in the spec and no alias, so it stays a key of its own.
 func MatroskaTagKey(name string) (tag.Key, bool) {
 	up := normalizeKey(name)
 	if up == "" || technicalName(up) {
 		return "", false
 	}
-	if k, ok := matroskaTags[up]; ok {
+	if k, ok := tag.AliasKey(up); ok {
 		return k, true
 	}
 	k, err := tag.ParseKey(up)
@@ -99,4 +72,39 @@ func MatroskaTagName(key tag.Key) string {
 		return n
 	}
 	return string(key)
+}
+
+// MatroskaAlbumLevel reports a target level of the album tier: 50 up to the edition tier at 60.
+// It is the one definition of the level whose TITLE and ARTIST a file tagged by level keeps for
+// the album.
+func MatroskaAlbumLevel(level int) bool { return level >= 50 && level < 60 }
+
+// MatroskaLevelKey returns the key a SimpleTag that reads as key stands for at a target level.
+// In a file tagged by level (convention) the TITLE and ARTIST at album level are the album's
+// title and artist.
+func MatroskaLevelKey(key tag.Key, level int, convention bool) tag.Key {
+	if convention && MatroskaAlbumLevel(level) {
+		switch key {
+		case tag.Title:
+			return tag.Album
+		case tag.Artist:
+			return tag.AlbumArtist
+		}
+	}
+	return key
+}
+
+// MatroskaTagNameForLevel returns the SimpleTag name to write key under at a target level, the
+// mirror of [MatroskaLevelKey]: in a file tagged by level the album and its artist are written
+// at album level as TITLE and ARTIST.
+func MatroskaTagNameForLevel(key tag.Key, level int, convention bool) string {
+	if convention && MatroskaAlbumLevel(level) {
+		switch key {
+		case tag.Album:
+			return "TITLE"
+		case tag.AlbumArtist:
+			return "ARTIST"
+		}
+	}
+	return MatroskaTagName(key)
 }

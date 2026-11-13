@@ -103,3 +103,40 @@ func extractBetween(s, begin, end string) (string, bool) {
 	}
 	return between, true
 }
+
+// The WebM subset has no hidden or disabled chapter flags: its chapter capability names that
+// loss, for a parsed WebM file and for the file-less WebM query, where Matroska's has none.
+func TestWebMChapterCapabilityNamesTheFlagLoss(t *testing.T) {
+	mka := wl.CapabilitiesFor(wl.FormatMatroska).Chapters
+	if mka.ChapterLoss != core.ChapterLossNone || mka.Fidelity != "lossless" {
+		t.Errorf("Matroska chapters: loss %v, fidelity %q; want none, lossless", mka.ChapterLoss, mka.Fidelity)
+	}
+	if all := strings.Join(mka.Constraints, "\n"); !strings.Contains(all, "and the hidden/disabled flags)") {
+		t.Errorf("Matroska chapter constraints do not say a re-render carries the flags:\n%s", all)
+	}
+	for name, caps := range map[string]wl.Capabilities{
+		"the WebM query": wl.CapabilitiesFor(wl.FormatMatroska, wl.WithWebMSubset()),
+		"a WebM file":    mustParseFile(t, sampleWebM).Capabilities(),
+	} {
+		ch := caps.Chapters
+		if ch.ChapterLoss != core.ChapterLossFlagsOnly {
+			t.Errorf("%s: chapter loss = %v, want the flags alone", name, ch.ChapterLoss)
+		}
+		if !strings.Contains(ch.Fidelity, "hidden and disabled flags are not") {
+			t.Errorf("%s: chapter fidelity %q does not name the flags", name, ch.Fidelity)
+		}
+		if ch.Write != wl.AccessFull {
+			t.Errorf("%s: chapter write access = %v, want full", name, ch.Write)
+		}
+		if all := strings.Join(ch.Constraints, "\n"); strings.Contains(all, "and the hidden/disabled flags)") || !strings.Contains(all, "written visible and enabled") {
+			t.Errorf("%s: chapter constraints say a re-render carries the flags, or do not say they go:\n%s", name, all)
+		}
+	}
+	lossy := []wl.Chapter{{Title: "h", Hidden: true}}
+	if !core.ChaptersLoseMetadata(lossy, core.ChapterLossFlagsOnly) || core.ChaptersLoseMetadata([]wl.Chapter{{Title: "v", Language: "eng"}}, core.ChapterLossFlagsOnly) {
+		t.Error("the flags-only loss should count a hidden chapter and nothing else")
+	}
+	if msg := core.ChapterMetadataDroppedMessage(core.ChapterLossFlagsOnly); !strings.Contains(msg, "WebM") {
+		t.Errorf("the warning text %q does not name WebM", msg)
+	}
+}

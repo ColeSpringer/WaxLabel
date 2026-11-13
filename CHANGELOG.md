@@ -403,6 +403,45 @@ All notable changes to this project are documented here.
   reports the size the write has.
 - A second Matroska `Chapters` element, which is not read, is reported (`duplicate-tag-block`),
   and the chapter edit that drops it says so (`duplicate-tag-block-dropped`).
+- A picture edit leaves the Matroska attachments it does not change as they are, where they
+  stand: file name, MIME type, description and UID. Every image attachment was written again
+  as `cover` or `small_cover` with a new UID, and one with no data was dropped. An image type
+  declared for bytes the sniffer knows no signature for (SVG) is the picture's type, in every
+  format, instead of `application/octet-stream`, with the size declared beside it; `copy`
+  carries it so, and Matroska names its attachment by it (`.svg`, not `.jpg`).
+- An edit of another key, or `lint --fix`, leaves Matroska `TITLE` SimpleTags alone. With no
+  `Info.Title` in the file it moved the first into one and dropped the rest, which `--strict`
+  refused. An edit of the title still writes `Info.Title`, and one that only repeats values a
+  single title cannot hold is a no-op that warns, not a rewrite.
+- Matroska tags targeted at an attachment, a chapter, an edition or a track that holds no audio
+  stay out of the file's tags and out of `copy`; they are listed in `dump --native`
+  (`ScopeAttachment` is new) and no edit of the file's tags changes them. They read as the
+  file's own values, raised conflicts, were dropped by an edit of the same key, and a Tag
+  naming an attachment took the file's new tags. A target UID of 0 names every target, so
+  such a Tag is the file's own, at the scope its level gives.
+- In a Matroska file tagged by level, a `TITLE` at album level beside a `TITLE` at level 40 or
+  under, the album-level `TITLE` and `ARTIST` read as `ALBUM` and `ALBUMARTIST` instead of a
+  second, conflicting title and artist. Each key is written back where the file keeps it, the
+  title and artist to the Tag that holds the lower `TITLE`, and an edit that ends the layout
+  respells what stays at album level as `ALBUM` and `ALBUM_ARTIST`. A file with album-level
+  tags alone reads as before, with or without an `Info.Title`. New album-scope values go to
+  the level-50 Tag where a level-40 one stands ahead of it.
+- A Matroska SimpleTag named by an alias spelling (`YEAR`, `TOTALTRACKS`, `ORGANIZATION`,
+  `USLT`) reads under the key the alias names, as in the other formats.
+- WebM chapters are written without the `EditionFlagDefault`, `ChapterFlagHidden` and
+  `ChapterFlagEnabled` its subset lacks; a hidden or disabled chapter warns
+  `chapter-metadata-dropped` and `copy` grades it lossy.
+- A Matroska SimpleTag whose value an edit keeps is written again as it is, so its
+  `TagLanguageBCP47`, `TagDefault` and nested SimpleTags survive an added value.
+  `tag-structure-dropped` now reports a `TagDefault` of 0 and no longer a `TagLanguageBCP47`
+  of `und`.
+- Clearing the chapters of a Matroska file with several editions says that the others go too
+  (`chapter-metadata-dropped`, refused under `--strict`).
+- `copy` into Matroska or WebM keeps a last chapter end that equals the source's duration
+  where the destination is as long; it was written open. Into a shorter file it still is.
+- A Matroska key cut to a value that several SimpleTags of one narrower scope hold reads back
+  that value once. With the album-scope value gone those copies led the reading, the value read
+  twice, and the same edit wrote again; such a key is now written whole at album scope.
 
 ### Changed
 
@@ -472,6 +511,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- `FamilyValue.Targeted`, and `"targeted": true` on a `dump --json` source, mark the values of
+  one Matroska target (a chapter, an edition, an attachment, tracks with no audio), which are
+  listed and are not among the tags; `dump --native` says whose they are.
 - `ErrContentTooLarge` (`content-too-large`, exit 3), for a write that would exceed a
   format's size or count limit for content other than a picture.
 - Warning codes `trailing-lyrics3` (a Lyrics3 block), `leading-bytes` (bytes between a

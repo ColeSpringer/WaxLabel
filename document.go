@@ -72,14 +72,15 @@ func (d *Document) Properties() Properties {
 }
 
 // Pictures returns a deep copy of embedded pictures. MIME/dimensions are
-// reconciled with bytes on the copy; stored media.Pictures is unchanged.
+// reconciled with bytes on the copy; stored media.Pictures is unchanged. An image type declared
+// for bytes of no format the sniffer knows (SVG) stands.
 func (d *Document) Pictures() []Picture {
 	if d.zero() {
 		return nil
 	}
 	pics := clonePicturesDeep(d.media.Pictures)
 	for i := range pics {
-		pics[i].SniffAuthoritative()
+		core.SniffStored(&pics[i])
 	}
 	return pics
 }

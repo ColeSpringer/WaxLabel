@@ -160,6 +160,7 @@ type jsonSource struct {
 	Scope    string   `json:"scope"`
 	Values   []string `json:"values"`
 	Selected bool     `json:"selected"`
+	Targeted bool     `json:"targeted,omitempty"`
 }
 
 // toJSONDocument maps a parsed document to JSON.
@@ -256,6 +257,7 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 				Scope:    f.Scope.String(),
 				Values:   f.Values,
 				Selected: f.Selected,
+				Targeted: f.Targeted,
 			})
 		}
 	}

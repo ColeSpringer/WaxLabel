@@ -71,6 +71,15 @@ const (
 	ChapterLossFlagsOnly
 )
 
+// KeepsEndsAsGiven reports a destination that stores a chapter's end only where one is given and
+// reads an absent one as open: Matroska and WebM among the formats that write chapters. A copy
+// carries the source's last end there as it is; elsewhere it is opened, for the destination to
+// end the chapter at its own duration ([OpenRunToEOFEnd]). [ChapterLossNone] is also what a
+// format with no chapter store reports, where no chapter is written either way.
+func (l ChapterLoss) KeepsEndsAsGiven() bool {
+	return l == ChapterLossNone || l == ChapterLossFlagsOnly
+}
+
 // ChaptersLoseMetadata reports whether writing chs with loss drops metadata they carry.
 // Shared by transfers and direct-edit warnings.
 //

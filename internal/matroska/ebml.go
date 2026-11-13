@@ -33,6 +33,7 @@ const (
 	idTracks          = 0x1654AE6B
 	idTrackEntry      = 0xAE
 	idTrackNumber     = 0xD7
+	idTrackUID        = 0x73C5
 	idTrackType       = 0x83
 	idCodecID         = 0x86
 	idAudio           = 0xE1
@@ -49,12 +50,14 @@ const (
 	idTagTrackUID     = 0x63C5
 	idTagEditUID      = 0x63C9
 	idTagChapUID      = 0x63C4
+	idTagAttachUID    = 0x63C6
 	idSimpleTag       = 0x67C8
 	idTagName         = 0x45A3
 	idTagString       = 0x4487
 	idTagBinary       = 0x4485
 	idTagLang         = 0x447A
 	idTagLangBCP47    = 0x447B
+	idTagDefault      = 0x4484
 	idAttachments     = 0x1941A469
 	idAttached        = 0x61A7
 	idFileName        = 0x466E

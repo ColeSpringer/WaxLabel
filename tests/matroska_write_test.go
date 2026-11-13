@@ -864,17 +864,20 @@ func TestMatroskaWriteMultipleSeekHeadRefused(t *testing.T) {
 	}
 }
 
-// Adding a 2nd Title value is detected as a change, even though Info.Title stores only the
-// first.
-func TestMatroskaWriteMultiValueTitleNotNoOp(t *testing.T) {
+// A 2nd Title value beside the one Info.Title already holds changes nothing in the file: the
+// plan is a no-op that still reports the value it cannot store.
+func TestMatroskaWriteMultiValueTitleIsAWarnedNoOp(t *testing.T) {
 	data := testfile.Matroska("matroska", "A", testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(
 		testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ARTIST", "AA")))))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "A", "B").Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Report().NoOp {
-		t.Error("adding a 2nd Title value should not be a no-op")
+	if !plan.Report().NoOp {
+		t.Errorf("a 2nd Title value beside the stored one plans a write: %v", plan.Report().Operations)
+	}
+	if !planWarns(t, plan, wl.WarnValueDropped) {
+		t.Errorf("warnings = %v, want value-dropped for the 2nd Title value", plan.Report().Warnings)
 	}
 }
 

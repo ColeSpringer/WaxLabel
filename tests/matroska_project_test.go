@@ -132,8 +132,7 @@ func TestMatroskaWriteDupEchoPreservesMultiplicity(t *testing.T) {
 }
 
 // A title that lives only in an album-scope TITLE SimpleTag (Info has no Title child) must
-// survive an unrelated edit. A Tags re-render drops the managed TITLE SimpleTag, so the writer
-// must migrate the title into the authoritative Info.Title.
+// survive an unrelated edit: the Tags are rendered again and the TITLE SimpleTag is kept.
 func TestMatroskaWriteTitleOnlyInScopedTag(t *testing.T) {
 	// An Info element present but with no Title child, plus an album-scope TITLE SimpleTag.
 	info := testfile.El(testfile.IDInfo, testfile.El(testfile.IDDuration, make([]byte, 8)))
@@ -144,10 +143,10 @@ func TestMatroskaWriteTitleOnlyInScopedTag(t *testing.T) {
 	if got, _ := mustParseBytes(t, data).Get(tag.Title); !slices.Equal(got, []string{"MyTitle"}) {
 		t.Fatalf("read TITLE = %v, want [MyTitle]", got)
 	}
-	// An unrelated edit (changing ARTIST) re-renders Tags, dropping the managed TITLE tag.
+	// An unrelated edit (changing ARTIST) re-renders Tags.
 	out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Artist, "BB"))
 	if got, _ := mustParseBytes(t, out).Get(tag.Title); !slices.Equal(got, []string{"MyTitle"}) {
-		t.Errorf("after an unrelated edit, reparsed TITLE = %v, want [MyTitle] (migrated to Info.Title, not lost)", got)
+		t.Errorf("after an unrelated edit, reparsed TITLE = %v, want [MyTitle]", got)
 	}
 }
 

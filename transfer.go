@@ -2,6 +2,7 @@ package waxlabel
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
@@ -48,9 +49,12 @@ func (t *Transfer) SetSyncedLyrics(sls ...SyncedLyrics) *Transfer {
 }
 
 // source is shallow read-only media used for grading and writing onto a destination of
-// capabilities dst. The language the source format's writer fills in for a comment or lyric
-// (ID3's eng) is no language where dst fills in the same one or stores none.
-func (t *Transfer) source(dst Capabilities) *core.Media {
+// capabilities dst and, where a file is known, of duration dstDuration (0 for none). The language
+// the source format's writer fills in for a comment or lyric (ID3's eng) is no language where dst
+// fills in the same one or stores none. A last chapter that runs to the source's end is opened
+// for dst to end at its own, unless dst stores an end only where one is given and is no shorter
+// than the source.
+func (t *Transfer) source(dst Capabilities, dstDuration time.Duration) *core.Media {
 	m := *t.doc.media
 	if filler := t.doc.Capabilities().TextDefaultLanguage(); filler != "" {
 		if dst.TextDefaultLanguage() == filler || dst.Field(tag.Comment).TextLoss == core.TextLossDescriptionAndLanguage {
@@ -62,8 +66,9 @@ func (t *Transfer) source(dst Capabilities) *core.Media {
 	}
 	if t.chaptersSet {
 		m.Chapters = t.chapters
-	} else {
-		m.Chapters = core.OpenRunToEOFEnd(m.Chapters, m.Properties.Duration())
+	} else if src := m.Properties.Duration(); !dst.Chapters.ChapterLoss.KeepsEndsAsGiven() ||
+		dstDuration > 0 && dstDuration.Truncate(time.Millisecond) < src.Truncate(time.Millisecond) {
+		m.Chapters = core.OpenRunToEOFEnd(m.Chapters, src)
 	}
 	if t.syncedLyricsSet {
 		m.SyncedLyrics = t.syncedLyrics
@@ -82,7 +87,7 @@ func (t *Transfer) Plan(dst Format, opts ...WriteOption) (TransferReport, error)
 		return TransferReport{}, fmt.Errorf("%w: %s", waxerr.ErrUnsupportedFormat, dst)
 	}
 	caps := codec.Capabilities(nil, resolveWriteOptions(opts))
-	m := t.source(caps)
+	m := t.source(caps, 0)
 	items := core.ProjectTransfer(m, caps)
 	if err := t.checkChapters(items); err != nil {
 		return TransferReport{}, err
@@ -98,7 +103,7 @@ func (t *Transfer) Prepare(dst *Document, opts ...WriteOption) (*Plan, TransferR
 		return nil, TransferReport{}, fmt.Errorf("%w: document is not initialized; use ParseFile/Parse", waxerr.ErrInvalidData)
 	}
 	caps := dst.Capabilities(opts...)
-	m := t.source(caps)
+	m := t.source(caps, dst.media.Properties.Duration())
 	items := core.ProjectTransfer(m, caps)
 	report := TransferReport{Source: m.Format, Dest: dst.media.Format, Items: items}
 
@@ -121,7 +126,7 @@ func (t *Transfer) Prepare(dst *Document, opts ...WriteOption) (*Plan, TransferR
 			// nobody asked for the pictures the destination holds unread to go.
 			ed.dropPictures()
 			for _, p := range representable {
-				ed.AddPicture(p)
+				ed.addStoredPicture(p)
 			}
 		}
 	}

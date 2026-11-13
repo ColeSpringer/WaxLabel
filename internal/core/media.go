@@ -48,7 +48,7 @@ func (f Family) String() string {
 	}
 }
 
-// Scope is the target a value applies to (track, album, edition, chapter).
+// Scope is the target a value applies to (track, album, edition, chapter, attachment).
 type Scope uint8
 
 const (
@@ -56,6 +56,7 @@ const (
 	ScopeAlbum
 	ScopeEdition
 	ScopeChapter
+	ScopeAttachment
 )
 
 func (s Scope) String() string {
@@ -66,6 +67,8 @@ func (s Scope) String() string {
 		return "edition"
 	case ScopeChapter:
 		return "chapter"
+	case ScopeAttachment:
+		return "attachment"
 	default:
 		return "track"
 	}
@@ -80,6 +83,10 @@ type FamilyValue struct {
 	Selected bool
 	// Legacy: value from a non-authoritative container (ID3v1/APE, FLAC stray ID3).
 	Legacy bool
+	// Targeted: the values are those of one target, not the file's (a Matroska Tag naming a
+	// chapter, an edition, an attachment, or tracks with no audio). They are listed here and are
+	// not among the tags, whatever Selected says.
+	Targeted bool
 }
 
 // NativeEntry summarizes one native metadata block for dump.

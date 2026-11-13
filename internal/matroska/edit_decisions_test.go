@@ -34,7 +34,7 @@ func simple(name, value string) simpleTag {
 }
 
 // albumGroup and trackGroup build the two scopes the decisions distinguish: the group
-// buildAlbumGroup syncs into, and a UID-narrowed group that must be able to keep a
+// buildSyncGroup syncs into, and a UID-narrowed group that must be able to keep a
 // still-wanted value in place.
 func albumGroup(tags ...simpleTag) tagGroup {
 	return tagGroup{scope: core.ScopeAlbum, targetTypeValue: 50, tags: tags, raw: []byte("album")}
@@ -166,12 +166,27 @@ func TestComputeEditDecisionsValueSurvival(t *testing.T) {
 			groups: []tagGroup{
 				albumGroup(simple("ARTIST", "X")),
 				trackGroup(simple("ARTIST", "Y")),
-				trackGroup(simple("ARTIST", "Y")),
+				{scope: core.ScopeEdition, targetTypeValue: 60, tags: []simpleTag{simple("ARTIST", "Y")}, raw: []byte("edition")},
 			},
 			base:      []keyVals{{tag.Artist, []string{"X", "Y"}}},
 			edited:    []keyVals{{tag.Artist, []string{"Y"}}},
 			wantDrops: [][2]int{{0, 0}},
 			wantAlbum: []keyVals{{tag.Artist, nil}},
+		},
+		{
+			// The same echo at the scope of the value it repeats is no echo once the album
+			// value is gone: that scope leads the projection, and both copies would read. The
+			// key is written whole instead.
+			name: "copy at the kept value's own scope",
+			groups: []tagGroup{
+				albumGroup(simple("ARTIST", "X")),
+				trackGroup(simple("ARTIST", "Y")),
+				trackGroup(simple("ARTIST", "Y")),
+			},
+			base:      []keyVals{{tag.Artist, []string{"X", "Y"}}},
+			edited:    []keyVals{{tag.Artist, []string{"Y"}}},
+			wantDrops: [][2]int{{0, 0}, {1, 0}, {2, 0}},
+			wantAlbum: []keyVals{{tag.Artist, []string{"Y"}}},
 		},
 	}
 
@@ -198,5 +213,51 @@ func TestComputeEditDecisionsValueSurvival(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A SimpleTag dropped for a key written whole keeps no value of another key in place: a
+// PART_NUMBER holding a number and a total goes with the number, so the total is written again.
+func TestKeyWrittenWholeReleasesTheTagsOtherValues(t *testing.T) {
+	groups := []tagGroup{albumGroup(), trackGroup(simple("PART_NUMBER", "3/12"))}
+	edited := tagsOnly(tagSet(keyVals{tag.TrackNumber, []string{"4"}}, keyVals{tag.TrackTotal, []string{"12", "13"}}))
+	ek := map[tag.Key]bool{tag.TrackNumber: true, tag.TrackTotal: true}
+	ed := decideKeeping(groups, 0, false, false, ek, edited, map[tag.Key]bool{tag.TrackNumber: true})
+	if !ed.dropped(1, 0) {
+		t.Fatal("the PART_NUMBER of the key written whole is not dropped")
+	}
+	if got := ed.albumVals[tag.TrackTotal]; !slices.Equal(got, []string{"12", "13"}) {
+		t.Errorf("album-scope totals = %q, want 12 and 13: the dropped tag keeps none in place", got)
+	}
+	if got := ed.albumVals[tag.TrackNumber]; !slices.Equal(got, []string{"4"}) {
+		t.Errorf("album-scope numbers = %q, want 4", got)
+	}
+}
+
+// readsBack compares the values a read would give with the ones asked, not their number: a
+// SimpleTag left holding another value is no stand-in for the one the edit wants.
+func TestReadsBack(t *testing.T) {
+	groups := []tagGroup{albumGroup(), trackGroup(simple("ARTIST", "B"), simple("ARTIST", "A"), simple("GENRE", "g"))}
+	edited := tagsOnly(tagSet(keyVals{tag.Artist, []string{"A"}}))
+	readsBack := func(ed *editDecisions) bool {
+		ed.ek = map[tag.Key]bool{tag.Artist: true}
+		left := ed.leftInPlace(groups)
+		if _, other := left[tag.Genre]; other {
+			t.Error("a key the edit does not name is counted among what is left in place")
+		}
+		return ed.readsBack(tag.Artist, left[tag.Artist], edited)
+	}
+	keeps := func(ti int) *editDecisions {
+		return &editDecisions{drop: map[[2]int]bool{{1, 1 - ti}: true}, albumVals: map[tag.Key][]string{}}
+	}
+	if !readsBack(keeps(1)) {
+		t.Error("the SimpleTag holding the value asked for, kept alone, does not read back as asked")
+	}
+	if readsBack(keeps(0)) {
+		t.Error("a SimpleTag holding another value, kept alone, reads back as asked")
+	}
+	both := &editDecisions{drop: map[[2]int]bool{}, albumVals: map[tag.Key][]string{tag.Artist: {"A"}}}
+	if readsBack(both) {
+		t.Error("the value written at album scope beside both SimpleTags reads back as asked")
 	}
 }

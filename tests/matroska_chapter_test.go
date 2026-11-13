@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -249,6 +251,104 @@ func TestMatroskaChapterWebMAllowed(t *testing.T) {
 		t.Errorf("reparsed webm chapters = %+v, want %+v", mustParseBytes(t, out).Chapters(), chs)
 	}
 	essenceUnchanged(t, src, out)
+	// The WebM subset has no EditionFlagDefault.
+	if ids := chapterElementIDs(t, out); ids[idEditionFlagDf] {
+		t.Errorf("the WebM edition holds an EditionFlagDefault (elements %v)", ids)
+	}
+}
+
+// Chapter flag IDs: ChapterFlagHidden and ChapterFlagEnabled.
+const (
+	idChapFlagHidden  = 0x98
+	idChapFlagEnabled = 0x4598
+)
+
+// chapterElementIDs returns the IDs of the elements a file's first EditionEntry and its
+// ChapterAtoms hold.
+func chapterElementIDs(t *testing.T, data []byte) map[uint64]bool {
+	t.Helper()
+	_, start, end, ok := elemRange(data, 0, len(data), idEditionEntry, map[uint64]bool{testfile.IDSegment: true, idChapters: true})
+	if !ok {
+		t.Fatal("no EditionEntry in the output")
+	}
+	ids := map[uint64]bool{}
+	eachChildField(data, start, end, func(id uint64, ds, de int) {
+		ids[id] = true
+		if id == idChapterAtom {
+			eachChildField(data, ds, de, func(id uint64, _, _ int) { ids[id] = true })
+		}
+	})
+	return ids
+}
+
+// hiddenAndDisabled is one chapter of each flag the WebM subset cannot store.
+var hiddenAndDisabled = []wl.Chapter{
+	{Start: 0, End: 200 * time.Millisecond, Title: "Hidden", Hidden: true},
+	{Start: 200 * time.Millisecond, End: 400 * time.Millisecond, Title: "Disabled", Disabled: true},
+}
+
+// The WebM subset has no ChapterFlagHidden or ChapterFlagEnabled: a hidden or disabled chapter is
+// written without them, reads back visible and enabled, and the plan says so. Matroska keeps both.
+func TestMatroskaWebMChapterFlagsAreNotWritten(t *testing.T) {
+	plain := make([]wl.Chapter, len(hiddenAndDisabled))
+	for i, c := range hiddenAndDisabled {
+		c.Hidden, c.Disabled = false, false
+		plain[i] = c
+	}
+	for _, c := range []struct {
+		fixture string
+		flags   bool
+	}{{sampleWebM, false}, {notagsMKA, true}} {
+		src := readFixture(t, c.fixture)
+		plan, err := mustParseBytes(t, src).Edit().SetChapters(hiddenAndDisabled...).Prepare()
+		if err != nil {
+			t.Fatalf("%s: %v", c.fixture, err)
+		}
+		if got := planWarns(t, plan, wl.WarnChapterMetadataDropped); got == c.flags {
+			t.Errorf("%s: chapter-metadata-dropped warned %v, want %v", c.fixture, got, !c.flags)
+		}
+		out := applyToBytes(t, src, plan)
+		want := plain
+		if c.flags {
+			want = hiddenAndDisabled
+		}
+		if got := mustParseBytes(t, out).Chapters(); !equalChapterLists(got, want) {
+			t.Errorf("%s: chapters read back = %+v, want %+v", c.fixture, got, want)
+		}
+		ids := chapterElementIDs(t, out)
+		hidden, disabled := ids[idChapFlagHidden], ids[idChapFlagEnabled]
+		if hidden != c.flags || disabled != c.flags {
+			t.Errorf("%s: ChapterFlagHidden written %v, ChapterFlagEnabled written %v; want %v", c.fixture, hidden, disabled, c.flags)
+		}
+	}
+}
+
+// A copy of a hidden chapter into a WebM file is graded lossy with the reason, and the chapter
+// reads back visible.
+func TestMatroskaCopyOfHiddenChapterIntoWebMIsLossy(t *testing.T) {
+	mka := readFixture(t, notagsMKA)
+	srcBytes, _ := saveMatroska(t, mka, mustParseBytes(t, mka).Edit().SetChapters(hiddenAndDisabled[0]))
+	dstBytes := readFixture(t, sampleWebM)
+	plan, report, err := mustParseBytes(t, srcBytes).Transfer().Prepare(mustParseBytes(t, dstBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	graded := false
+	for _, it := range report.Items {
+		if it.Kind == wl.TransferChapter {
+			graded = true
+			if it.Disposition != wl.Lossy || !strings.Contains(it.Reason, "hidden") {
+				t.Errorf("chapter item = %v %q, want lossy with a reason naming the hidden flag", it.Disposition, it.Reason)
+			}
+		}
+	}
+	if !graded {
+		t.Error("the transfer report grades no chapter")
+	}
+	got := mustParseBytes(t, applyToBytes(t, dstBytes, plan)).Chapters()
+	if len(got) != 1 || got[0].Hidden || got[0].Title != "Hidden" {
+		t.Errorf("chapters read back = %+v, want the one chapter, visible", got)
+	}
 }
 
 // chapter edit reuses each chapter's original ChapterUID by position, so chapter-scoped SimpleTags
@@ -321,6 +421,18 @@ func TestMatroskaChapterClearMultiEdition(t *testing.T) {
 	data := buildMatroskaCh("matroska", "T", chapters, nil)
 	out, outDoc := saveMatroska(t, data, mustParseBytes(t, data).Edit().ClearChapters())
 
+	// The plan says the other edition goes too.
+	plan, err := mustParseBytes(t, data).Edit().ClearChapters().Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w, ok := warningFor(plan, wl.WarnChapterMetadataDropped); !ok || !strings.Contains(w.Message, "1 other edition") || len(w.Keys) != 0 {
+		t.Errorf("warning = %q keys %v (found %v), want a keyless chapter-metadata-dropped naming the 1 other edition", w.Message, w.Keys, ok)
+	}
+	if ops := plan.Report().Operations; !slices.Contains(ops, "Chapters: 1 other edition removed") {
+		t.Errorf("operations = %q, want a line for the other edition", ops)
+	}
+
 	if len(outDoc.Chapters()) != 0 {
 		t.Errorf("result still has %d chapters after clear: %+v", len(outDoc.Chapters()), outDoc.Chapters())
 	}
@@ -332,6 +444,29 @@ func TestMatroskaChapterClearMultiEdition(t *testing.T) {
 	}
 	if bytes.Contains(out, []byte("HiddenChap")) {
 		t.Error("a hidden non-default edition survived a clear")
+	}
+}
+
+// Clearing the chapters of a file with one edition, and editing those of a file with several,
+// removes no other edition and reports none.
+func TestMatroskaChapterEditReportsNoOtherEdition(t *testing.T) {
+	one := buildMatroskaCh("matroska", "T", testfile.El(idChapters, mkEdition(true, nil, mkAtom(1, 0, uint64(ms(300)), "Only"))), nil)
+	two := buildMatroskaCh("matroska", "T", testfile.El(idChapters, concat(
+		mkEdition(true, nil, mkAtom(1, 0, uint64(ms(300)), "DefaultChap")),
+		mkEdition(false, testfile.Uint(idEditionUID, 7777), mkAtom(2, 0, uint64(ms(300)), "HiddenChap")),
+	)), nil)
+	for name, plan := range map[string]*wl.Plan{
+		"clear of one edition":      prepareWith(t, one, func(e *wl.Editor) { e.ClearChapters() }),
+		"edit beside other edition": prepareWith(t, two, func(e *wl.Editor) { e.SetChapters(wl.Chapter{Title: "New"}) }),
+	} {
+		if planWarns(t, plan, wl.WarnChapterMetadataDropped) {
+			t.Errorf("%s: warnings = %v, want no chapter-metadata-dropped", name, plan.Report().Warnings)
+		}
+		for _, op := range plan.Report().Operations {
+			if strings.Contains(op, "edition") {
+				t.Errorf("%s: operations name an edition: %q", name, op)
+			}
+		}
 	}
 }
 
@@ -501,6 +636,139 @@ func TestMatroskaChapterCopyFromM4B(t *testing.T) {
 		if got[i].Start != srcChaps[i].Start || got[i].Title != srcChaps[i].Title {
 			t.Errorf("chapter %d = {%v,%q}, want {%v,%q}",
 				i, got[i].Start, got[i].Title, srcChaps[i].Start, srcChaps[i].Title)
+		}
+	}
+}
+
+// A copy into a Matroska or WebM file carries the last chapter's end as the source gives it, even
+// where that is the source's own duration: the destination stores an end only where one is given,
+// so opening it would lose it.
+func TestMatroskaCopyCarriesAChapterEndAtTheDuration(t *testing.T) {
+	src := mustParseFile(t, "../testdata/chapters.mka")
+	chs := src.Chapters()
+	if n := len(chs); n == 0 || chs[n-1].End != ms(600) || src.Properties().Duration().Truncate(time.Millisecond) != ms(600) {
+		t.Fatalf("setup: chapters %+v of a %v file, want the last to end at the 600 ms duration", chs, src.Properties().Duration())
+	}
+	for _, fixture := range []string{notagsMKA, sampleWebM} {
+		dstBytes := readFixture(t, fixture)
+		plan, _, err := src.Transfer().Prepare(mustParseBytes(t, dstBytes))
+		if err != nil {
+			t.Fatalf("%s: %v", fixture, err)
+		}
+		if got := mustParseBytes(t, applyToBytes(t, dstBytes, plan)).Chapters(); !equalChapterLists(got, chs) {
+			t.Errorf("%s: copied chapters = %+v, want %+v", fixture, got, chs)
+		}
+	}
+}
+
+// Setting the chapters a WebM file already holds, a hidden one among them, writes nothing and
+// loses nothing, so nothing is reported lost.
+func TestMatroskaWebMUnchangedHiddenChapterDoesNotWarn(t *testing.T) {
+	hidden := testfile.El(idChapterAtom, testfile.Uint(idChapterUID, 1), testfile.Uint(idChapTimeStart, 0),
+		testfile.Uint(idChapFlagHidden, 1), testfile.El(idChapDisplay, mkStr(idChapString, "Hidden")))
+	src := buildMatroskaCh("webm", "T", testfile.El(idChapters, mkEdition(true, nil, hidden)), nil)
+	doc := mustParseBytes(t, src)
+	chs := doc.Chapters()
+	if len(chs) != 1 || !chs[0].Hidden {
+		t.Fatalf("setup: chapters = %+v, want one hidden chapter", chs)
+	}
+	plan, err := doc.Edit().SetChapters(chs...).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.IsNoOp() {
+		t.Errorf("the plan writes: %v", plan.Report().Operations)
+	}
+	if planWarns(t, plan, wl.WarnChapterMetadataDropped) {
+		t.Errorf("warnings = %v, want no chapter-metadata-dropped for chapters that stay as they are", plan.Report().Warnings)
+	}
+}
+
+// A last chapter that runs to the end of its source ends at the end of a shorter destination,
+// not past it: there the end is written open, as it is for every other format.
+func TestMatroskaCopyOpensAChapterEndPastTheDestination(t *testing.T) {
+	src := mustParseFile(t, "../testdata/chapters.mka")
+	chs := src.Chapters()
+	// A destination 500 ms long: TimestampScale 1 ms, Duration 500.
+	info := testfile.El(testfile.IDInfo, testfile.Uint(idTimestampScale, 1000000), mkFloat(testfile.IDDuration, 500))
+	tracks := testfile.El(testfile.IDTracks, mkTrack(1, 1, 2, "A_PCM/INT/LIT"))
+	dstBytes := concat(testfile.EBMLHeader("matroska"), testfile.El(testfile.IDSegment, info, tracks, testfile.AudioCluster(0)))
+	dst := mustParseBytes(t, dstBytes)
+	if d := dst.Properties().Duration(); d != ms(500) {
+		t.Fatalf("setup: destination duration = %v, want 500ms", d)
+	}
+	plan, _, err := src.Transfer().Prepare(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := mustParseBytes(t, applyToBytes(t, dstBytes, plan)).Chapters()
+	want := slices.Clone(chs)
+	want[len(want)-1].End = 0
+	if !equalChapterLists(got, want) {
+		t.Errorf("copied chapters = %+v, want the last end open: %+v", got, want)
+	}
+}
+
+// A copy of a file onto itself changes nothing, even where its last chapter ends past its own
+// duration: the end is opened only for a destination shorter than the source.
+func TestMatroskaSelfCopyKeepsAChapterEndPastTheDuration(t *testing.T) {
+	info := testfile.El(testfile.IDInfo, testfile.Uint(idTimestampScale, 1000000), mkFloat(testfile.IDDuration, 500))
+	tracks := testfile.El(testfile.IDTracks, mkTrack(1, 1, 2, "A_PCM/INT/LIT"))
+	chapters := testfile.El(idChapters, mkEdition(true, nil,
+		mkAtom(1, 0, uint64(ms(300)), "One"), mkAtom(2, uint64(ms(300)), uint64(ms(600)), "Two")))
+	src := concat(testfile.EBMLHeader("matroska"), testfile.El(testfile.IDSegment, info, tracks, testfile.AudioCluster(0), chapters))
+	doc := mustParseBytes(t, src)
+	if chs := doc.Chapters(); len(chs) != 2 || chs[1].End != ms(600) || doc.Properties().Duration() != ms(500) {
+		t.Fatalf("setup: chapters %+v of a %v file, want the last to end at 600 ms in a 500 ms file", chs, doc.Properties().Duration())
+	}
+	plan, _, err := doc.Transfer().Prepare(mustParseBytes(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.IsNoOp() {
+		t.Errorf("a copy of the file onto itself plans a write: %v", plan.Report().Operations)
+	}
+}
+
+// chapteredFile is a Matroska file of the given duration in milliseconds (none when 0) whose two
+// chapters end at 300 and 600 ms.
+func chapteredFile(durationMs float64, chapters bool) []byte {
+	info := testfile.El(testfile.IDInfo, testfile.Uint(idTimestampScale, 1000000))
+	if durationMs > 0 {
+		info = testfile.El(testfile.IDInfo, testfile.Uint(idTimestampScale, 1000000), mkFloat(testfile.IDDuration, durationMs))
+	}
+	tracks := testfile.El(testfile.IDTracks, mkTrack(1, 1, 2, "A_PCM/INT/LIT"))
+	var chs []byte
+	if chapters {
+		chs = testfile.El(idChapters, mkEdition(true, nil,
+			mkAtom(1, 0, uint64(ms(300)), "One"), mkAtom(2, uint64(ms(300)), uint64(ms(600)), "Two")))
+	}
+	return concat(testfile.EBMLHeader("matroska"), testfile.El(testfile.IDSegment, info, tracks, testfile.AudioCluster(0), chs))
+}
+
+// The last chapter's end is opened only for a destination known to be shorter than the source by
+// a millisecond or more: one of unknown length, or shorter by less, takes the end as given.
+func TestMatroskaCopyKeepsAChapterEndUnlessTheDestinationIsShorter(t *testing.T) {
+	src := mustParseBytes(t, chapteredFile(600.7, true))
+	for _, c := range []struct {
+		name   string
+		dst    float64
+		wantMs int
+	}{
+		{"a destination of unknown length", 0, 600},
+		{"one shorter by less than a millisecond", 600.2, 600},
+		{"one as long", 600.7, 600},
+		{"a longer one", 900, 600},
+		{"one shorter by a millisecond", 599.7, 0},
+	} {
+		dstBytes := chapteredFile(c.dst, false)
+		plan, _, err := src.Transfer().Prepare(mustParseBytes(t, dstBytes))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		got := mustParseBytes(t, applyToBytes(t, dstBytes, plan)).Chapters()
+		if len(got) != 2 || got[1].End != ms(c.wantMs) {
+			t.Errorf("%s: copied chapters = %+v, want the last end at %d ms (0 is open)", c.name, got, c.wantMs)
 		}
 	}
 }

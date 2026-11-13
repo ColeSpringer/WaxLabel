@@ -63,23 +63,23 @@ func TestEmptySimpleTagRoundTrip(t *testing.T) {
 	if st.name != "ARTIST" || st.value != "" {
 		t.Fatalf("round-trip = name %q value %q, want ARTIST/empty", st.name, st.value)
 	}
-	got := projectTag(st, core.ScopeAlbum)
+	got := projectTag(st, tagGroup{scope: core.ScopeAlbum}, false)
 	if len(got) != 1 || got[0].key != tag.Artist || got[0].value != "" {
 		t.Fatalf("projectTag = %+v, want one Artist=\"\"", got)
 	}
 }
 
-// TestBuildAlbumGroupKeepsEmptyValue: buildAlbumGroup emits a present-empty canonical
+// TestBuildSyncGroupKeepsEmptyValue: buildSyncGroup emits a present-empty canonical
 // value as a SimpleTag rather than dropping the group (`set ARTIST=` is not `--clear
 // ARTIST`).
-func TestBuildAlbumGroupKeepsEmptyValue(t *testing.T) {
+func TestBuildSyncGroupKeepsEmptyValue(t *testing.T) {
 	const limit = int64(1 << 20)
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()
 	edited.Set(tag.Artist, "") // set ARTIST=
-	_, gb := buildAlbumGroup(nil, -1, base, edited, nil, nil, nil, computeEditDecisions(nil, -1, tagsOnly(base), tagsOnly(edited)), true)
+	_, gb := buildSyncGroup(nil, -1, true, false, base, edited, nil, nil, nil, computeEditDecisions(nil, -1, tagsOnly(base), tagsOnly(edited)))
 	if gb == nil {
-		t.Fatal("buildAlbumGroup dropped a present-empty ARTIST (set KEY= must not equal --clear KEY)")
+		t.Fatal("buildSyncGroup dropped a present-empty ARTIST (set KEY= must not equal --clear KEY)")
 	}
 	src := core.BytesSource(gb)
 	root, ok, _ := readElement(src, 0, src.Size(), limit)
@@ -92,7 +92,7 @@ func TestBuildAlbumGroupKeepsEmptyValue(t *testing.T) {
 	}
 	var got []scopedContribution
 	for _, st := range g.tags {
-		got = append(got, projectTag(st, core.ScopeAlbum)...)
+		got = append(got, projectTag(st, tagGroup{scope: core.ScopeAlbum}, false)...)
 	}
 	if len(got) != 1 || got[0].key != tag.Artist || got[0].value != "" {
 		t.Fatalf("projected %+v, want one Artist=\"\"", got)
