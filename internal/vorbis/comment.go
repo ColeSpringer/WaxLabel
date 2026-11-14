@@ -429,6 +429,40 @@ func InvalidKeyWarnings(comments []Comment) []core.Warning {
 	return core.WarnUnseparatedEntry(ws, first, unseparated)
 }
 
+// SubstitutedValues is what comments store under each key [InvalidTextWarnings] reports: every
+// value of the key, in order ([core.SubstitutedText]). nil where it reports none.
+func SubstitutedValues(comments []Comment) map[tag.Key][]string {
+	key := func(cm Comment) (tag.Key, bool) {
+		if cm.Unseparated || reservedNamespace(cm.Name) != "" {
+			return "", false
+		}
+		return canonicalTagKey(cm.Name)
+	}
+	var out map[tag.Key][]string
+	for _, cm := range comments {
+		if utf8.ValidString(cm.Value) {
+			continue
+		}
+		if k, ok := key(cm); ok {
+			if out == nil {
+				out = map[tag.Key][]string{}
+			}
+			out[k] = nil
+		}
+	}
+	if out == nil {
+		return nil
+	}
+	for _, cm := range comments {
+		if k, ok := key(cm); ok {
+			if _, bad := out[k]; bad {
+				out[k] = append(out[k], cm.Value)
+			}
+		}
+	}
+	return out
+}
+
 // InvalidTextWarnings reports a WarnInvalidText for each key holding a value that is not valid
 // UTF-8. [Project] shows such a value with U+FFFD in place of the invalid bytes; the file keeps
 // the bytes until the value is replaced. Called at the parse sites like [InvalidKeyWarnings];

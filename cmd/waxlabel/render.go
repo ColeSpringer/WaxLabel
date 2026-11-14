@@ -511,12 +511,12 @@ func renderReport(w io.Writer, path string, plan *wl.Plan, addedPics []wl.Pictur
 	}
 	fmt.Fprintf(w, "  size:    %s -> %s\n", wl.HumanBytes(r.BytesBefore), wl.HumanBytes(r.BytesAfter))
 	// The flags are named, and an absence stated, only where padding is the caller's to size; an
-	// Opus comment header or a WAV or AIFF ID3 chunk keeps what it has.
+	// Opus comment header or a WAV or AIFF ID3 chunk has what the file gives it.
 	switch controllable := wl.CapabilitiesFor(r.Format).Padding != wl.AccessNone; {
 	case r.PaddingAfter > 0 && controllable:
 		fmt.Fprintf(w, "  padding: %s  (--padding N / --no-padding to change)\n", wl.HumanBytes(r.PaddingAfter))
 	case r.PaddingAfter > 0:
-		fmt.Fprintf(w, "  padding: %s (preserved)\n", wl.HumanBytes(r.PaddingAfter))
+		fmt.Fprintf(w, "  padding: %s (not adjustable)\n", wl.HumanBytes(r.PaddingAfter))
 	case controllable:
 		fmt.Fprintln(w, "  padding: none")
 	}

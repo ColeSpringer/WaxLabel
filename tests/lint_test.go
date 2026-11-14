@@ -704,3 +704,60 @@ func crossFamilyShapes(t *testing.T) map[string][]byte {
 	}
 	return out
 }
+
+// A value holding a NUL byte is one no writer stores: an edit of its key that keeps it is refused
+// and a copy does not write it, so lint says so, as it does for a chapter title or a synced
+// lyric line a copy does not write the list or the set over.
+func TestLintReportsAValueHoldingANUL(t *testing.T) {
+	doc := mustParseBytes(t, flacWithComments("TITLE=abc\x00", "ALBUM=A"))
+	var found []wl.Finding
+	for _, f := range doc.Lint() {
+		if f.Code == "invalid-text" {
+			found = append(found, f)
+		}
+	}
+	if len(found) != 1 || found[0].Key != tag.Title || found[0].Severity != wl.LintWarning || found[0].Fixable ||
+		!strings.Contains(found[0].Message, "NUL") || !strings.Contains(found[0].Message, "an edit of the key") ||
+		!strings.Contains(found[0].Message, "a copy does not write it") {
+		t.Errorf("findings = %+v, want one invalid-text warning on TITLE naming the NUL", found)
+	}
+	for name, doc := range map[string]*wl.Document{
+		"chapter title":      mustParseBytes(t, flacWithComments("CHAPTER001=00:00:00.000", "CHAPTER001NAME=Intro\x00")),
+		"synced-lyrics line": mustParseBytes(t, flacWithComments("SYNCEDLYRICS=[00:00.10]la\x00")),
+	} {
+		var msgs []string
+		for _, f := range doc.Lint() {
+			if f.Code == "invalid-text" && f.Severity == wl.LintWarning && !f.Fixable {
+				msgs = append(msgs, f.Message)
+			}
+		}
+		if len(msgs) != 1 || !strings.Contains(msgs[0], name) || !strings.Contains(msgs[0], "NUL") || !strings.Contains(msgs[0], "a copy does not write") {
+			t.Errorf("%s: findings %q, want one invalid-text warning naming it", name, msgs)
+		}
+	}
+	if lintHasCode(mustParseBytes(t, flacWithComments("TITLE=abc", "ALBUM=A")), "invalid-text") {
+		t.Error("a clean value is reported")
+	}
+}
+
+// A stamp beside an ENCODER value no writer stores cannot be removed alone: the fix would have
+// to write that value back, so the stamp is not marked fixable and the fix plans nothing.
+func TestLintFixLeavesAStampBesideAnUnwritableValue(t *testing.T) {
+	doc := mustParseBytes(t, flacWithComments("ENCODER=Lavf58.76.100", "ENCODER=x\x00y"))
+	stamped := false
+	for _, f := range doc.Lint() {
+		if f.Code == "inherited-encoder" {
+			stamped = true
+			if f.Fixable {
+				t.Error("the stamp is marked fixable")
+			}
+		}
+	}
+	if !stamped {
+		t.Fatal("no inherited-encoder finding")
+	}
+	fix := doc.PlanLintFix()
+	if fix.Patch.Len() != 0 || len(fix.Options) != 0 {
+		t.Errorf("the fix plans %+v", fix)
+	}
+}

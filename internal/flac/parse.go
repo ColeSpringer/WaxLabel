@@ -137,6 +137,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	warnings = slices.Concat(warnings, tailWarnings, walkWarnings, vcWarnings)
 	owned := vorbis.ProjectOwned(d.comments)
 	media.Chapters, media.SyncedLyrics = owned.Chapters, owned.SyncedLyrics
+	media.Substituted = core.NewSubstitutedText(vorbis.SubstitutedValues(d.comments), owned.SubstitutedTitles, owned.SubstitutedLyrics)
 	warnings = append(warnings, vorbis.EncoderNoise(d.vendor, d.comments)...)
 	warnings = append(warnings, vorbis.InvalidKeyWarnings(d.comments)...)
 	warnings = append(warnings, vorbis.InvalidTextWarnings(d.comments)...)

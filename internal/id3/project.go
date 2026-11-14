@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
@@ -29,6 +30,9 @@ type Projection struct {
 	Families         []core.FamilyValue
 	NumericGenre     bool
 	Warnings         []core.Warning
+	// Substituted holds, for each key a frame of which shows U+FFFD for bytes that are no text
+	// in its encoding, the bodies of the key's frames as stored ([core.SubstitutedText]).
+	Substituted map[tag.Key][]string
 }
 
 // EncoderNoise reports inherited-encoder warnings for the tag's TSSE/TENC frames (ffmpeg
@@ -224,6 +228,12 @@ func Project(t *Tag) Projection {
 	// Compose the date frames gathered above into canonical date keys.
 	dp.emit(emit)
 
+	substituted, shown := substitutedValues(t)
+	for _, k := range shown {
+		warnings = core.WarnKeyed(warnings, core.WarnInvalidText,
+			string(k)+" is not valid text in its frame's encoding; its invalid bytes are shown as U+FFFD", k)
+	}
+
 	// Decode CHAP/CTOC navigation chapters. See chapters.go for ordering rules.
 	chapters, chapterWarnings := ProjectChapters(t)
 	// Decode SYLT synchronized lyrics. See synced_lyrics.go.
@@ -239,7 +249,75 @@ func Project(t *Tag) Projection {
 		Families:     core.BuildFamilies(contribs, core.FamilyID3v2),
 		NumericGenre: numeric,
 		Warnings:     append(append(chapterWarnings, syncedWarnings...), warnings...),
+		Substituted:  substituted,
 	}
+}
+
+// substitutedValues finds the keys a text, user-text, comment or lyrics frame of which decodes
+// with U+FFFD in place of bytes that are no text in its encoding, in frame order, and the
+// bodies of every frame of each.
+func substitutedValues(t *Tag) (values map[tag.Key][]string, keys []tag.Key) {
+	for _, f := range t.frames {
+		if f.Opaque || !frameSubstituted(f) {
+			continue
+		}
+		for _, k := range frameKeys(f) {
+			if _, seen := values[k]; !seen {
+				if values == nil {
+					values = map[tag.Key][]string{}
+				}
+				values[k], keys = nil, append(keys, k)
+			}
+		}
+	}
+	if values == nil {
+		return nil, nil
+	}
+	for _, f := range t.frames {
+		if f.Opaque {
+			continue
+		}
+		for _, k := range frameKeys(f) {
+			if _, bad := values[k]; bad {
+				values[k] = append(values[k], string(f.Body))
+			}
+		}
+	}
+	return values, keys
+}
+
+// frameSubstituted reports whether the text of f decodes with a substitution.
+func frameSubstituted(f Frame) bool {
+	text := 1 // past the encoding byte
+	switch {
+	case f.ID == "COMM", f.ID == "USLT":
+		text = 4 // and the language
+	case !strings.HasPrefix(f.ID, "T"):
+		return false
+	}
+	return len(f.Body) > text && textSubstituted(f.Body[0], f.Body[text:])
+}
+
+// textSubstituted reports whether data decodes in enc with U+FFFD standing for bytes that are
+// no text: invalid UTF-8, or a UTF-16 surrogate with no partner. A U+FFFD the data spells is
+// the text's own.
+func textSubstituted(enc byte, data []byte) bool {
+	switch enc {
+	case encUTF8:
+		return !utf8.Valid(data)
+	case encUTF16, encUTF16BE:
+		shown, stored := 0, 0
+		for _, s := range decodeStrings(enc, data) {
+			shown += strings.Count(s, string(utf8.RuneError))
+		}
+		for i := 0; i+1 < len(data); i += 2 {
+			if a, b := data[i], data[i+1]; a == 0xFF && b == 0xFD || a == 0xFD && b == 0xFF {
+				stored++
+			}
+		}
+		return shown > stored
+	}
+	return false
 }
 
 // textFrameItems decodes a COMM or USLT frame the canonical view reads as COMMENT or LYRICS: its

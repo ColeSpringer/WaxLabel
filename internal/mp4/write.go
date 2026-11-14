@@ -54,7 +54,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// whose value for it is not stored settles nothing.
 	named := namedKeys(opts.Touched, kept)
 	cf := ilstConflicts(d, base, stored, opts, named)
-	extraOps := cf.ops()
+	extraOps := cf.ops(stored.Tags)
 	if encodingRewrite {
 		extraOps = append(extraOps, core.EncodingRewriteOp("genre"))
 	}
@@ -135,8 +135,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// atoms under one item; WaxLabel round-trips them, but many readers show only the first.
 	for _, k := range multiValueDataKeys(rendered) {
 		vals, _ := rendered.Get(k)
-		if bv, _ := base.Tags.Get(k); slices.Equal(bv, vals) {
-			continue // the field was already multi-valued and this edit did not touch it
+		if bv, _ := base.Tags.Get(k); slices.Equal(bv, vals) && cf.duplicated[k] == 0 {
+			continue // the field was already one multi-valued item and this edit did not touch it
 		}
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnMP4MultiValue,
 			fmt.Sprintf("%s has %d values, stored as %d MP4 data atoms; some readers surface only the first", k, len(vals), len(vals)), k)

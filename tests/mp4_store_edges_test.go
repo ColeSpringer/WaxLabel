@@ -339,3 +339,78 @@ func TestMP4RespelledItemIsReported(t *testing.T) {
 		t.Errorf("operations %q", ops)
 	}
 }
+
+// Two items of one atom stay two under an edit of another key: merged into one item of two
+// values, a reader that takes the last item would read the first value instead. An edit of the
+// key itself writes one item, as naming it with the values it has does.
+func TestMP4ItemsOfOneAtomSurviveAnotherEdit(t *testing.T) {
+	for name, c := range map[string]struct {
+		first, second []byte
+		data          func(first, second []byte) []byte
+	}{
+		"ilst": {testfile.MP4Text("\xa9nam", "T1"), testfile.MP4Text("\xa9nam", "T2"), func(first, second []byte) []byte {
+			return testfile.MP4Tagged(first, testfile.MP4Text("\xa9ART", "A"), second)
+		}},
+		"keys store": {testfile.MP4KeyItem(1, "T1"), testfile.MP4KeyItem(1, "T2"), func(first, second []byte) []byte {
+			return testfile.MP4Assemble(testfile.MP4HdlrMdta(), testfile.MP4Keys("title", "artist"),
+				testfile.MP4Ilst(first, testfile.MP4KeyItem(2, "A"), second))
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := c.data(c.first, c.second)
+			doc := mustParseBytes(t, data)
+			if v, _ := doc.Get(tag.Title); !slices.Equal(v, []string{"T1", "T2"}) {
+				t.Fatalf("TITLE = %v, want both items read", v)
+			}
+			plan, err := doc.Edit().Set(tag.Composer, "C").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := applyToBytes(t, data, plan)
+			if i, j := bytes.Index(out, c.first), bytes.Index(out, c.second); i < 0 || j < i {
+				t.Errorf("the items did not stay as they were, in order (at %d and %d)", i, j)
+			}
+			re := mustParseBytes(t, out)
+			composer, _ := re.Get(tag.Composer)
+			if v, _ := re.Get(tag.Title); !slices.Equal(v, []string{"T1", "T2"}) || !slices.Equal(composer, []string{"C"}) {
+				t.Errorf("TITLE = %v, COMPOSER = %v after the edit", v, composer)
+			}
+
+			plan, err = re.Edit().Set(tag.Title, "T1", "T2").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ops := strings.Join(plan.Report().Operations, "; "); plan.IsNoOp() || !strings.Contains(ops, "1 duplicate ilst item removed") {
+				t.Errorf("naming the key with its values: no-op %v, operations %q", plan.IsNoOp(), ops)
+			}
+			// One item of two values is what a reader that takes one value reads differently.
+			if !slices.ContainsFunc(plan.Report().Warnings, func(w wl.Warning) bool { return w.Code == wl.WarnMP4MultiValue }) {
+				t.Errorf("the merge is not warned of: %v", plan.Report().Warnings)
+			}
+			// A clear removes every item: none of them is a duplicate of what stays.
+			cleared, err := re.Edit().Clear(tag.Title).Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ops := strings.Join(cleared.Report().Operations, "; "); strings.Contains(ops, "duplicate") {
+				t.Errorf("a clear reports %q", ops)
+			}
+			named := applyToBytes(t, out, plan)
+			if v, _ := mustParseBytes(t, named).Get(tag.Title); bytes.Contains(named, c.first) || bytes.Contains(named, c.second) || !slices.Equal(v, []string{"T1", "T2"}) {
+				t.Errorf("naming the key left the items apart, or lost a value: TITLE = %v", v)
+			}
+
+			plan, err = re.Edit().Set(tag.Title, "New").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = applyToBytes(t, out, plan)
+			if bytes.Contains(out, c.first) || bytes.Contains(out, c.second) {
+				t.Error("an edit of the key left an old item")
+			}
+			if v, _ := mustParseBytes(t, out).Get(tag.Title); !slices.Equal(v, []string{"New"}) {
+				t.Errorf("TITLE = %v after its own edit", v)
+			}
+		})
+	}
+}

@@ -55,6 +55,12 @@ func (f Finding) String() string {
 
 // Lint reports metadata issues (legacy, encoder noise, conflicts, pictures,
 // chapters, values, cardinality, custom keys). No I/O; does not modify.
+//
+// A finding raised from a parse warning carries that warning's code ([WarningCode]). Lint's
+// own codes are conflicting-families, legacy-only-tags, legacy-opaque-content,
+// duplicate-picture, multiple-front-covers, duplicate-icon, single-valued-multi,
+// malformed-number, malformed-date, malformed-boolean, malformed-country, negative-numeric
+// and custom-key; invalid-text also marks text holding a NUL byte, which no writer stores.
 func (d *Document) Lint() []Finding {
 	if d.zero() {
 		return nil
@@ -73,6 +79,7 @@ func (d *Document) findings() (out []Finding, legacyOnly []tag.Key) {
 	out = append(out, lintOpaqueLegacy(d.media.LegacyOpaqueContent)...)
 	out = append(out, lintPictures(core.ProjectPictures(d.media.Pictures))...)
 	out = append(out, lintChapters(d.media.Chapters, d.media.Properties.Duration())...)
+	out = append(out, lintUnwritableText(d.media)...)
 	out = append(out, lintValues(d.media.Tags)...)
 	out = append(out, lintNegativeNumbers(d.media.Tags)...)
 	out = append(out, lintCardinality(d.media)...)
@@ -128,6 +135,10 @@ func (d *Document) safeFix(fs []Finding, legacyOnly []tag.Key) safeFix {
 				}
 			}
 		}
+		// A value no writer stores cannot be written back, so the stamp beside it stays.
+		if slices.ContainsFunc(fix.left, func(v string) bool { return core.WritableTextReason(v) != "" }) {
+			return safeFix{stripLegacy: fix.stripLegacy}
+		}
 	}
 	return fix
 }
@@ -148,7 +159,7 @@ func (d *Document) markFixable(fs []Finding, fix safeFix) {
 		switch fs[i].Code {
 		case "inherited-encoder":
 			// lintWarnings marked the stamps the fix reaches.
-			fs[i].Fixable = fs[i].Fixable && writable
+			fs[i].Fixable = fs[i].Fixable && writable && fix.encoder
 		case "stray-leading-id3", "trailing-id3v1", "legacy-ape":
 			fs[i].Fixable = writable && fix.stripLegacy
 		case "conflicting-families":
@@ -371,6 +382,33 @@ func lintValues(ts tag.TagSet) []Finding {
 				out = append(out, Finding{Severity: LintWarning, Code: val.LintCode,
 					Message: fmt.Sprintf("%q %s", tag.ElideSnippet(v), detail), Key: k})
 			}
+		}
+	}
+	return out
+}
+
+// lintUnwritableText reports text no writer stores ([core.WritableTextReason]), which the file
+// keeps: a key holding such a value, once, the chapters, and each synced lyrics set.
+func lintUnwritableText(m *core.Media) []Finding {
+	finding := func(what, fate string, k tag.Key) Finding {
+		return Finding{Severity: LintWarning, Code: core.WarnInvalidText.String(),
+			Message: what + ", which no writer stores: " + fate, Key: k}
+	}
+	var out []Finding
+	for k, vals := range m.Tags.All() {
+		for _, v := range vals {
+			if r := core.WritableTextReason(v); r != "" {
+				out = append(out, finding("a value "+r, "an edit of the key that keeps it is refused and a copy does not write it", k))
+				break
+			}
+		}
+	}
+	if r := core.ChaptersUnwritableReason(m.Chapters); r != "" {
+		out = append(out, finding(r, "a copy does not write the chapters", ""))
+	}
+	for _, sl := range m.SyncedLyrics {
+		if r := core.SyncedLyricsUnwritableReason(sl); r != "" {
+			out = append(out, finding(r, "a copy does not write the set", ""))
 		}
 	}
 	return out

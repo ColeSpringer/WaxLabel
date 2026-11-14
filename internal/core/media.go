@@ -1,6 +1,7 @@
 package core
 
 import (
+	"maps"
 	"slices"
 
 	"github.com/colespringer/waxlabel/tag"
@@ -143,6 +144,9 @@ type Media struct {
 	Native       NativeDoc
 	Identity     Identity
 
+	// Substituted is nil where no text was read with a substitution.
+	Substituted *SubstitutedText
+
 	// LegacyOpaqueContent: legacy container holds content projection cannot fold (APE binary, etc.).
 	LegacyOpaqueContent bool
 
@@ -152,6 +156,39 @@ type Media struct {
 
 	// AudioRanges is multi-segment essence when non-nil (Ogg, split mdat). Else use AudioStart/End.
 	AudioRanges [][2]int64
+}
+
+// SubstitutedText is what a file stores where its model shows U+FFFD in place of bytes that are
+// not UTF-8: every value of a key read so, and a chapter's title or the lines of a synced
+// lyrics set by its index. A copy of such text holds the U+FFFD, so two files hold it alike
+// only where these bytes are the same ([ProjectTransferOnto]).
+type SubstitutedText struct {
+	Values       map[tag.Key][]string
+	Chapters     map[int]string
+	SyncedLyrics map[int]string
+}
+
+// NewSubstitutedText is the record of what a parse substituted, nil where it is nothing.
+func NewSubstitutedText(values map[tag.Key][]string, chapters, syncedLyrics map[int]string) *SubstitutedText {
+	if len(values)+len(chapters)+len(syncedLyrics) == 0 {
+		return nil
+	}
+	return &SubstitutedText{Values: values, Chapters: chapters, SyncedLyrics: syncedLyrics}
+}
+
+// Clone deep-copies s.
+func (s *SubstitutedText) Clone() *SubstitutedText {
+	if s == nil {
+		return nil
+	}
+	c := &SubstitutedText{Chapters: maps.Clone(s.Chapters), SyncedLyrics: maps.Clone(s.SyncedLyrics)}
+	if s.Values != nil {
+		c.Values = make(map[tag.Key][]string, len(s.Values))
+		for k, vals := range s.Values {
+			c.Values[k] = slices.Clone(vals)
+		}
+	}
+	return c
 }
 
 // EssenceRanges returns audio byte ranges to hash (AudioRanges or single extent).
@@ -179,6 +216,7 @@ func (m *Media) Clone() *Media {
 		Families:     cloneFamilies(m.Families),
 		Warnings:     CloneWarnings(m.Warnings),
 		Identity:     m.Identity,
+		Substituted:  m.Substituted.Clone(),
 		AudioStart:   m.AudioStart,
 		AudioEnd:     m.AudioEnd,
 

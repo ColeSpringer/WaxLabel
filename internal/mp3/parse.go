@@ -116,6 +116,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if d.id3 != nil {
 		proj = id3.Project(d.id3)
 		media.Tags, media.Pictures, media.Chapters = proj.Tags, proj.Pictures, proj.Chapters
+		media.Substituted = core.NewSubstitutedText(proj.Substituted, nil, nil)
 		media.SyncedLyrics, media.Families = proj.SyncedLyrics, proj.Families
 		media.Comments, media.Lyrics = proj.Comments, proj.Lyrics
 	}

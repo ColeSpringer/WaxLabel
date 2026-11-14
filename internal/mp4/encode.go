@@ -107,17 +107,22 @@ func buildItems(edited tag.TagSet, covr []item, preserved []item, numericGenre b
 	return dedupePreservedItems(out, preserved)
 }
 
-// conflicts is what a rebuild does about the keys that items of more than one identity hold.
+// conflicts is what a rebuild does about the keys more than one item holds: items of several
+// identities, or several of the identity read.
 type conflicts struct {
 	// frozen holds the keys of those the edit leaves alone. They are not rebuilt: every item
 	// holding one is kept as it is, so the file's disagreement stays for the user to settle.
 	frozen map[tag.Key]bool
-	// settled records that the edit names such a key, whose values not read go: a change the
-	// canonical view cannot show. removed counts the items that go whole with them, and echoes
-	// those among them that only repeated the year of a date read.
+	// settled records that the edit names such a key: its values not read go, or its several
+	// items become one, a change the canonical view cannot show. removed counts the items that
+	// go whole with values not read, and echoes those among them that only repeated the year
+	// of a date read.
 	settled bool
 	removed int
 	echoes  int
+	// duplicated holds, by key (the number of a number and total), the items past the first
+	// that it was read from when the edit names it: rebuilt, the key is one item.
+	duplicated map[tag.Key]int
 	// elsewhere holds the keys read from the second store alone, which the store written leaves
 	// to it.
 	elsewhere map[tag.Key]bool
@@ -128,19 +133,39 @@ type conflicts struct {
 // edit changes. A track or disc number and its total are settled together, as one item can hold
 // both.
 func resolveConflicts(rd reading, changed map[tag.Key]bool) conflicts {
-	c := conflicts{frozen: map[tag.Key]bool{}, changed: changed}
+	c := conflicts{frozen: map[tag.Key]bool{}, duplicated: map[tag.Key]int{}, changed: changed}
 	thawed := map[tag.Key]bool{}
+	edited := func(group []tag.Key) bool {
+		return slices.ContainsFunc(group, func(g tag.Key) bool { return changed[g] })
+	}
+	read := map[tag.Key]int{}
 	for i := range rd.items {
 		for _, k := range rd.keys[i] {
 			if rd.read(i, k) {
+				read[k]++
 				continue
 			}
 			group, into := keyGroup(k), c.frozen
-			if slices.ContainsFunc(group, func(g tag.Key) bool { return changed[g] }) {
+			if edited(group) {
 				into, c.settled = thawed, true
 			}
 			for _, g := range group {
 				into[g] = true
+			}
+		}
+	}
+	// A key read from several items is frozen too: rebuilt, they would be one item of several
+	// values, and a reader that takes the last item would read the first value. An edit that
+	// names the key settles it into that one item.
+	for k, n := range read {
+		group := keyGroup(k)
+		switch {
+		case n < 2:
+		case edited(group):
+			c.settled, c.duplicated[group[0]] = true, max(c.duplicated[group[0]], n-1)
+		default:
+			for _, g := range group {
+				c.frozen[g] = true
 			}
 		}
 	}
@@ -165,11 +190,21 @@ func keyGroup(key tag.Key) []tag.Key {
 	return []tag.Key{key}
 }
 
-// ops names what the edit removes, for the report.
-func (c conflicts) ops() []string {
+// ops names what the edit removes, for the report, edited being the tags it leaves: the items
+// of a key it clears are no duplicates of one that stays.
+func (c conflicts) ops(edited tag.TagSet) []string {
 	var ops []string
 	if c.removed > 0 {
 		ops = append(ops, fmt.Sprintf("%d conflicting ilst item%s removed", c.removed, pluralS(c.removed)))
+	}
+	duplicates := 0
+	for k, n := range c.duplicated {
+		if slices.ContainsFunc(keyGroup(k), edited.Has) {
+			duplicates += n
+		}
+	}
+	if duplicates > 0 {
+		ops = append(ops, fmt.Sprintf("%d duplicate ilst item%s removed", duplicates, pluralS(duplicates)))
 	}
 	if c.echoes > 0 {
 		ops = append(ops, fmt.Sprintf("%d year echo%s of an edited date removed", c.echoes, map[bool]string{true: "es"}[c.echoes > 1]))

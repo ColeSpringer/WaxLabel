@@ -12,6 +12,7 @@ import (
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/id3"
 	"github.com/colespringer/waxlabel/internal/mapping"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
@@ -888,8 +889,15 @@ func notifyUnknownKeys(errOut io.Writer, ce *compiledEdit, strict, asJSON bool) 
 	return err
 }
 
-// didYouMean returns "; did you mean KEY?" via [tag.ClosestKey], or "".
+// didYouMean returns "; did you mean KEY?", or "": the key an ID3 frame ID stands for, where
+// k is spelled like one, else the nearest spelling ([tag.ClosestKey]).
 func didYouMean(k tag.Key) string {
+	if held, frame := id3.FrameIDKey(string(k)); frame {
+		if held == "" {
+			return ""
+		}
+		return fmt.Sprintf("; did you mean %s?", held)
+	}
 	if s, ok := tag.ClosestKey(string(k)); ok {
 		return fmt.Sprintf("; did you mean %s?", s)
 	}

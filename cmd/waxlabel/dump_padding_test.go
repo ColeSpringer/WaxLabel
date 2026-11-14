@@ -136,10 +136,10 @@ func paddedOpus(t *testing.T, pad int) string {
 	))
 }
 
-// TestUncontrollablePaddingIsLabelledPreserved: padding no option sizes (an Opus comment header's,
-// a WAV or AIFF ID3 chunk's) shows in dump and in the plan as preserved, without the hint to the
-// flags that would not change it.
-func TestUncontrollablePaddingIsLabelledPreserved(t *testing.T) {
+// TestUncontrollablePaddingIsLabelledNotAdjustable: padding no option sizes (an Opus comment header's,
+// a WAV or AIFF ID3 chunk's) shows in dump, and in the plan as not adjustable, without the hint to
+// the flags that would not change it.
+func TestUncontrollablePaddingIsLabelledNotAdjustable(t *testing.T) {
 	t.Parallel()
 	id3 := testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "Song"), make([]byte, 300))
 	for name, f := range map[string]string{
@@ -155,8 +155,14 @@ func TestUncontrollablePaddingIsLabelledPreserved(t *testing.T) {
 			}
 			// A title of the same length leaves the padding as it was.
 			out, _, code := runCLI(t, "plan", f, "--set", "TITLE=Tune")
-			if code != 0 || !strings.Contains(out, "  padding: 300 B (preserved)\n") || strings.Contains(out, "--padding") {
-				t.Errorf("exit %d, want \"padding: 300 B (preserved)\" and no flag hint:\n%s", code, out)
+			if code != 0 || !strings.Contains(out, "  padding: 300 B (not adjustable)\n") || strings.Contains(out, "--padding") {
+				t.Errorf("exit %d, want \"padding: 300 B (not adjustable)\" and no flag hint:\n%s", code, out)
+			}
+			// A longer one takes its room from an ID3 chunk's padding, so the label must not call
+			// it kept; an Opus comment header grows and keeps its padding.
+			left := map[string]string{"Opus": "300 B", "WAV": "291 B", "AIFF": "291 B"}[name]
+			if out, _, _ = runCLI(t, "plan", f, "--set", "TITLE=A longer tune"); !strings.Contains(out, "  padding: "+left+" (not adjustable)\n") {
+				t.Errorf("want %s of padding after the longer title, labelled not adjustable:\n%s", left, out)
 			}
 			out, _, _ = runCLI(t, "--json", "plan", f, "--set", "TITLE=Tune")
 			if jr := decodeJSONList[jsonReport](t, out); len(jr) != 1 || jr[0].PaddingAfter != 300 {

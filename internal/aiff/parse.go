@@ -207,6 +207,7 @@ func project(d *doc, m *core.Media) (numericGenre bool, projWarnings []core.Warn
 	case d.id3 != nil:
 		proj := id3.Project(d.id3)
 		m.Tags = proj.Tags
+		m.Substituted = core.NewSubstitutedText(proj.Substituted, nil, nil)
 		m.Pictures = proj.Pictures
 		// Chapters and synced lyrics live only in the embedded ID3 chunk (CHAP/CTOC, SYLT);
 		// AIFF's native text chunks have no chapter or synced-lyrics concept.

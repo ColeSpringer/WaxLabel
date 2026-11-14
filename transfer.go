@@ -82,6 +82,17 @@ func (t *Transfer) source(caps Capabilities, dst *core.Media) *core.Media {
 	if t.syncedLyricsSet {
 		m.SyncedLyrics = t.syncedLyrics
 	}
+	// Text given in place of the source's was read from no file.
+	if s := m.Substituted; s != nil && (t.chaptersSet || t.syncedLyricsSet) {
+		own := *s
+		if t.chaptersSet {
+			own.Chapters = nil
+		}
+		if t.syncedLyricsSet {
+			own.SyncedLyrics = nil
+		}
+		m.Substituted = &own
+	}
 	return &m
 }
 

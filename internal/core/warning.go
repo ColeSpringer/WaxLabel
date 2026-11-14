@@ -120,8 +120,9 @@ const (
 	WarnPictureSelectorMiss
 	// WarnFragmented: MP4 moof; unwritable, duration/digest degraded. Read; keyless.
 	WarnFragmented
-	// WarnInvalidText: text that is not valid UTF-8, decoded via a legacy code page or shown
-	// with U+FFFD in place of the invalid bytes (Warning.Keys where a key reads it). Read path.
+	// WarnInvalidText: text that is not valid in its encoding, decoded via a legacy code page
+	// or shown with U+FFFD in place of the invalid bytes (Warning.Keys where a key reads it).
+	// Read path. Lint uses the code for text holding a NUL byte too.
 	WarnInvalidText
 	// WarnElementCap: parse element limit; partial model; write refused. Read path.
 	WarnElementCap

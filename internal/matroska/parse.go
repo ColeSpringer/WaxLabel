@@ -3,10 +3,12 @@ package matroska
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
@@ -203,6 +205,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	media.Families = families
 	media.Warnings = mediaWarnings(tags, families)
 	media.Warnings = append(media.Warnings, invalidKeyWarnings(d)...)
+	media.Warnings = append(media.Warnings, invalidTextWarnings(media.Substituted)...)
 	media.Warnings = d.tagsDamage.warn(media.Warnings, "Tags")
 	media.Warnings = d.chapDamage.warn(media.Warnings, "Chapters")
 	media.Warnings = d.attachDamage.warn(media.Warnings, "Attachments")
@@ -1025,8 +1028,10 @@ func project(d *doc, m *core.Media) (tag.TagSet, []core.FamilyValue) {
 	// Matroska text is stored as raw bytes; a non-conformant file can hold invalid UTF-8
 	// in a TagString or the Info.Title.
 	var contribs []scopedContribution
+	invalid := false
 	if d.hasSegTitle {
 		contribs = append(contribs, scopedContribution{key: tag.Title, value: core.SanitizeUTF8(d.segTitle), scope: core.ScopeAlbum})
+		invalid = !utf8.ValidString(d.segTitle)
 	}
 	convention := titleConvention(d.groups)
 	for _, g := range d.groups {
@@ -1035,11 +1040,65 @@ func project(d *doc, m *core.Media) (tag.TagSet, []core.FamilyValue) {
 				continue // a binary- or nested-only SimpleTag has no string value to project
 			}
 			contribs = append(contribs, projectTag(st, g, convention)...)
+			invalid = invalid || !utf8.ValidString(st.value)
 		}
 	}
 	m.Tags, m.Comments, m.Lyrics = projectFlat(contribs)
+	if invalid {
+		m.Substituted = core.NewSubstitutedText(substitutedValues(d, convention), nil, nil)
+	}
 	core.SyncTextItems(m)
 	return m.Tags, buildFamilies(contribs)
+}
+
+// substitutedValues is the stored text of every value of each key one value of which is not
+// valid UTF-8 and shows with U+FFFD: the Info.Title and the SimpleTags the tags are read from
+// ([core.SubstitutedText]).
+func substitutedValues(d *doc, convention bool) map[tag.Key][]string {
+	type stored struct {
+		key  tag.Key
+		text string
+	}
+	var all []stored
+	if d.hasSegTitle {
+		all = append(all, stored{tag.Title, d.segTitle})
+	}
+	for _, g := range d.groups {
+		for _, st := range g.tags {
+			if !st.hasValue {
+				continue
+			}
+			for _, c := range projectTag(st, g, convention) {
+				if !c.targeted {
+					all = append(all, stored{c.key, st.value})
+				}
+			}
+		}
+	}
+	bad := map[tag.Key]bool{}
+	for _, s := range all {
+		bad[s.key] = bad[s.key] || !utf8.ValidString(s.text)
+	}
+	out := map[tag.Key][]string{}
+	for _, s := range all {
+		if bad[s.key] {
+			out[s.key] = append(out[s.key], s.text)
+		}
+	}
+	return out
+}
+
+// invalidTextWarnings reports each key s holds: read with U+FFFD in place of bytes that are
+// not UTF-8.
+func invalidTextWarnings(s *core.SubstitutedText) []core.Warning {
+	if s == nil {
+		return nil
+	}
+	var ws []core.Warning
+	for _, k := range slices.Sorted(maps.Keys(s.Values)) {
+		ws = core.WarnKeyed(ws, core.WarnInvalidText, string(k)+" is not valid UTF-8; its invalid bytes are shown as U+FFFD", k)
+	}
+	return ws
 }
 
 // projectFlat builds the flat TagSet from scoped Matroska contributions, and the comment and

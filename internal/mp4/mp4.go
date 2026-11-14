@@ -96,7 +96,7 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 			"the long tail is stored as com.apple.iTunes freeform atoms",
 			"values go to one store per file: the ilst when the file has one, moov.udta.meta's ahead of moov.meta's, else its moov.udta text atoms",
 			"moov.udta text atoms and a second ilst follow each write for the keys they hold; a text atom drops a value it cannot hold, and a key the second ilst alone holds stays there",
-			"a key that several ilst items hold reads from the first; the others stay until the key is edited",
+			"a key that items of several atoms hold reads from the first; the others, and several items of one atom, stay until the key is edited",
 			"a new mdta entry takes ffmpeg's name for the key, and a track or disc number shares one entry with its total",
 		},
 	}

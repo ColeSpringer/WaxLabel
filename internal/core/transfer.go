@@ -166,6 +166,15 @@ func ProjectTransferOnto(src, dst *Media, caps Capabilities) TransferProjection 
 	// The pictures, chapters and synced lyrics first: a format may place its fields by which
 	// of them the write brings, so the fields are graded against the source as written.
 	var p TransferProjection
+	// What each read with a substitution: the destination holds text as given only where the
+	// two store the same bytes.
+	var lost, kept SubstitutedText
+	if src.Substituted != nil {
+		lost = *src.Substituted
+	}
+	if dst != nil && dst.Substituted != nil {
+		kept = *dst.Substituted
+	}
 	written := *src
 	written.Pictures, written.Chapters, written.SyncedLyrics = nil, nil, nil
 	if n := len(src.Pictures); n > 0 {
@@ -188,10 +197,9 @@ func ProjectTransferOnto(src, dst *Media, caps Capabilities) TransferProjection 
 	}
 	if n := len(src.Chapters); n > 0 {
 		if dst != nil && EqualChapters(src.Chapters, dst.Chapters) {
-			p.sets = append(p.sets, TransferItem{Kind: TransferChapter, Count: n, Disposition: Carried})
-			p.chapters = make([]Disposition, n)
+			p.chapters = p.heldSet(TransferChapter, n, lost.Chapters, kept.Chapters, "a chapter title is "+otherBytesReason)
 		} else {
-			p.projectChapters(src.Chapters, caps)
+			p.projectChapters(src.Chapters, caps, lost.Chapters)
 		}
 		if p.SetChapters {
 			written.Chapters = src.Chapters
@@ -199,10 +207,9 @@ func ProjectTransferOnto(src, dst *Media, caps Capabilities) TransferProjection 
 	}
 	if n := len(src.SyncedLyrics); n > 0 {
 		if dst != nil && EqualSyncedLyrics(src.SyncedLyrics, dst.SyncedLyrics) {
-			p.sets = append(p.sets, TransferItem{Kind: TransferSyncedLyric, Count: n, Disposition: Carried})
-			p.lyrics = make([]Disposition, n)
+			p.lyrics = p.heldSet(TransferSyncedLyric, n, lost.SyncedLyrics, kept.SyncedLyrics, "a synced-lyric line is "+otherBytesReason)
 		} else {
-			p.projectSyncedLyrics(src.SyncedLyrics, caps)
+			p.projectSyncedLyrics(src.SyncedLyrics, caps, lost.SyncedLyrics)
 		}
 		written.SyncedLyrics = p.SyncedLyrics
 	}
@@ -227,6 +234,10 @@ func ProjectTransferOnto(src, dst *Media, caps Capabilities) TransferProjection 
 			f.item.Reason = "not transferred; describes this file's own audio, not the work, so the destination keeps whatever it already had for this key"
 		case dst != nil && fieldHeld(k, vals, f.graded, src, dst):
 			rendered = append(rendered, k)
+			// The same text read from other bytes: nothing to take, and not what the source stores.
+			if !slices.Equal(lost.Values[k], kept.Values[k]) {
+				f.item.Disposition, f.item.Reason = Lossy, "a value is "+otherBytesReason
+			}
 		default:
 			f.item.Disposition, f.item.Reason = tableGrade(k, f.graded, src, caps)
 			if f.stored = f.item.Disposition != Dropped; f.stored {
@@ -256,6 +267,10 @@ func ProjectTransferOnto(src, dst *Media, caps Capabilities) TransferProjection 
 			if writers != nil && f.item.Disposition != Dropped {
 				take(writers(f.item.Key))
 			}
+			// Last, so the format's own word on the stored form stands.
+			if _, substituted := lost.Values[f.item.Key]; substituted {
+				take(Lossy, "a value is "+substitutedReason)
+			}
 			if f.item.Disposition != Dropped {
 				p.Keys = append(p.Keys, f.item.Key)
 			}
@@ -264,6 +279,30 @@ func ProjectTransferOnto(src, dst *Media, caps Capabilities) TransferProjection 
 	}
 	p.Items, p.sets = append(p.Items, p.sets...), nil
 	return p
+}
+
+// Why text read with U+FFFD in place of bytes that are no text is lossy: written, the copy
+// holds the U+FFFD; where the destination reads the same text already, from other bytes than
+// the source stores, nothing is written and the two still differ.
+const (
+	substitutedReason = "not valid text in the source: U+FFFD is stored in place of its invalid bytes"
+	otherBytesReason  = "stored as other bytes in the destination, which read the same: bytes that are no text show as U+FFFD"
+)
+
+// heldSet grades the n elements of kind a destination holds as the source gives them and adds
+// their items: carried, but lossy for reason where either file read one with a substitution
+// (lost and kept, the bytes each stores by index) and the two store other bytes. Nothing of
+// them is written.
+func (p *TransferProjection) heldSet(kind TransferKind, n int, lost, kept map[int]string, reason string) []Disposition {
+	grades := make([]Disposition, n)
+	lossy := 0
+	for i := range grades {
+		if lost[i] != kept[i] {
+			grades[i], lossy = Lossy, lossy+1
+		}
+	}
+	p.sets = appendCarriedLossyItems(p.sets, kind, n-lossy, lossy, reason)
+	return grades
 }
 
 // fieldHeld reports whether dst holds k as src gives it: the same values, as the source holds
@@ -417,14 +456,14 @@ func pick[T any](s []T, idx []int) []T {
 }
 
 // projectChapters grades chapters, which the destination does not hold as given.
-func (p *TransferProjection) projectChapters(chapters []Chapter, caps Capabilities) {
+func (p *TransferProjection) projectChapters(chapters []Chapter, caps Capabilities, lost map[int]string) {
 	c := caps.Chapters
 	p.chapters = make([]Disposition, len(chapters))
 	disp, reason := dispose(c, caps.ReadOnly, len(chapters), "chapters", nil)
 	if disp != Dropped {
 		// A list is written whole or not at all: leaving one chapter out moves the end of the
 		// one before it.
-		if r := chaptersUnwritableReason(chapters); r != "" {
+		if r := ChaptersUnwritableReason(chapters); r != "" {
 			disp, reason = Dropped, r
 		}
 	}
@@ -437,15 +476,17 @@ func (p *TransferProjection) projectChapters(chapters []Chapter, caps Capabiliti
 		return
 	}
 	// Per-chapter loss splits carried vs lossy. One lossy reason: lost metadata, then a time
-	// clamped, then a time between the format's steps, then a title cut short.
+	// clamped, then a time between the format's steps, then a title read with a substitution,
+	// then a title cut short.
 	var carried, lossy int
-	var lostMetadata, clamped, cutTime bool
+	var lostMetadata, clamped, cutTime, substituted bool
 	for i, ch := range chapters {
 		metaLoss := ChapterLosesMetadata(chapters, i, c.ChapterLoss)
 		clampLoss := c.ChapterTimeMax > 0 && max(ch.Start, ch.End) > c.ChapterTimeMax
 		timeLoss := c.ChapterTimeUnit > 0 && (ch.Start%c.ChapterTimeUnit != 0 || ch.End%c.ChapterTimeUnit != 0)
 		titleLoss := c.ChapterTitleByteMax > 0 && len(ch.Title) > c.ChapterTitleByteMax
-		if !metaLoss && !clampLoss && !timeLoss && !titleLoss {
+		_, substLoss := lost[i]
+		if !metaLoss && !clampLoss && !timeLoss && !titleLoss && !substLoss {
 			carried++
 			continue
 		}
@@ -454,6 +495,7 @@ func (p *TransferProjection) projectChapters(chapters []Chapter, caps Capabiliti
 		lostMetadata = lostMetadata || metaLoss
 		clamped = clamped || clampLoss
 		cutTime = cutTime || timeLoss
+		substituted = substituted || substLoss
 	}
 	lossyReason := "chapter title is too long and was truncated"
 	switch {
@@ -463,13 +505,15 @@ func (p *TransferProjection) projectChapters(chapters []Chapter, caps Capabiliti
 		lossyReason = "a chapter time is past the largest the format stores and is clamped"
 	case cutTime:
 		lossyReason = fmt.Sprintf("a chapter time finer than the %s the format counts in is not stored exactly", c.ChapterTimeUnit)
+	case substituted:
+		lossyReason = "a chapter title is " + substitutedReason
 	}
 	p.sets = appendCarriedLossyItems(p.sets, TransferChapter, carried, lossy, lossyReason)
 }
 
-// chaptersUnwritableReason names the first text of chapters no format stores as given, "" when
+// ChaptersUnwritableReason names the first text of chapters no format stores as given, "" when
 // every title and language can be written.
-func chaptersUnwritableReason(chapters []Chapter) string {
+func ChaptersUnwritableReason(chapters []Chapter) string {
 	for _, ch := range chapters {
 		for _, f := range []struct{ what, text string }{
 			{"title", ch.Title}, {"language", ch.Language}, {"IETF language", ch.LanguageIETF},
@@ -482,8 +526,8 @@ func chaptersUnwritableReason(chapters []Chapter) string {
 	return ""
 }
 
-// syncedLyricsUnwritableReason is [chaptersUnwritableReason] for one synced lyrics set.
-func syncedLyricsUnwritableReason(sl SyncedLyrics) string {
+// SyncedLyricsUnwritableReason is [ChaptersUnwritableReason] for one synced lyrics set.
+func SyncedLyricsUnwritableReason(sl SyncedLyrics) string {
 	for _, f := range []struct{ what, text string }{{"language", sl.Language}, {"description", sl.Description}} {
 		if r := WritableTextReason(f.text); r != "" {
 			return "a synced-lyrics " + f.what + " " + r
@@ -500,7 +544,7 @@ func syncedLyricsUnwritableReason(sl SyncedLyrics) string {
 // projectSyncedLyrics grades sets, which the destination does not hold as given, and resolves
 // the sets written: one holding text no format stores is left out, ahead of the count a format
 // holds no more than.
-func (p *TransferProjection) projectSyncedLyrics(sets []SyncedLyrics, caps Capabilities) {
+func (p *TransferProjection) projectSyncedLyrics(sets []SyncedLyrics, caps Capabilities, lost map[int]string) {
 	c := caps.SyncedLyrics
 	p.lyrics = make([]Disposition, len(sets))
 	drop := func(idx []int, reason string) {
@@ -515,7 +559,7 @@ func (p *TransferProjection) projectSyncedLyrics(sets []SyncedLyrics, caps Capab
 	var unwritableReason string
 	for i, sl := range sets {
 		// A destination that takes no set at all gives its own reason for every one.
-		if r := syncedLyricsUnwritableReason(sl); r != "" && !caps.ReadOnly && c.Write != AccessNone {
+		if r := SyncedLyricsUnwritableReason(sl); r != "" && !caps.ReadOnly && c.Write != AccessNone {
 			unwritable = append(unwritable, i)
 			if unwritableReason == "" {
 				unwritableReason = r
@@ -538,9 +582,10 @@ func (p *TransferProjection) projectSyncedLyrics(sets []SyncedLyrics, caps Capab
 		}
 	default:
 		// Per-set loss splits carried vs lossy. One lossy reason: lost metadata, then a
-		// language stored in another form, then a timestamp clamped.
+		// language stored in another form, then a line read with a substitution, then a
+		// timestamp clamped.
 		var carried, lossy int
-		var lostMetadata bool
+		var lostMetadata, substituted bool
 		var language string
 		for _, i := range kept {
 			sl := sets[i]
@@ -549,13 +594,15 @@ func (p *TransferProjection) projectSyncedLyrics(sets []SyncedLyrics, caps Capab
 			if c.storedLanguage != nil {
 				stored = c.storedLanguage(sl.Language)
 			}
-			if !metaLoss && stored == sl.Language && !SyncedLyricsSetClampOverflows(sl, c.SyncedLyricsTimeMax) {
+			_, substLoss := lost[i]
+			if !metaLoss && stored == sl.Language && !substLoss && !SyncedLyricsSetClampOverflows(sl, c.SyncedLyricsTimeMax) {
 				carried++
 				continue
 			}
 			lossy++
 			p.lyrics[i] = Lossy
 			lostMetadata = lostMetadata || metaLoss
+			substituted = substituted || substLoss
 			if stored != sl.Language && language == "" {
 				language = fmt.Sprintf("language %q reads back as %q", sl.Language, stored)
 			}
@@ -566,6 +613,8 @@ func (p *TransferProjection) projectSyncedLyrics(sets []SyncedLyrics, caps Capab
 			lossyReason = c.Reason()
 		case language != "":
 			lossyReason = language
+		case substituted:
+			lossyReason = "a synced-lyric line is " + substitutedReason
 		}
 		p.sets = appendCarriedLossyItems(p.sets, TransferSyncedLyric, carried, lossy, lossyReason)
 	}

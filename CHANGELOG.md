@@ -6,14 +6,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
-- A save refuses a source that changed while it ran, not only since parse: bytes
-  appended or cut off during the copy, an in-place edit that kept the size and mtime
-  (the change time catches it on Unix), and a competitor that renamed its own file over
-  the path before the commit. Concurrent saves of one file take an advisory `flock` and
-  run one at a time; `set`, `copy` and `lint --fix` say when another process's lock holds
-  up a save. A deleted source, or a path that no longer names a file, is `source-changed`
-  (exit 5), and a parse records the identity of the file it read, not whatever the path
-  names afterwards.
+- A save refuses a source that changed while it ran, not only since parse: bytes appended
+  or cut off during the copy, an in-place edit that kept the size and mtime (the change time
+  catches it on Unix), and a competitor that renamed its own file over the path before the
+  commit. Concurrent saves of one file take an advisory `flock` and run one at a time; `set`,
+  `copy` and `lint --fix` say when another process's lock holds up a save. A deleted source,
+  or a path that no longer names the file parsed, is `source-changed` (exit 5).
 - `HashAudioEssence` and `HashFile` (and so `verify`) refuse a file that changed since
   the parse as `source-changed` instead of hashing it with the parsed file's layout; a
   deleted file reads `source-changed` (exit 5) rather than `not-found` (exit 6).
@@ -43,13 +41,11 @@ All notable changes to this project are documented here.
 - A Monkey's Audio header is read where its descriptor declares it, and one that would run
   into the trailing tags or past the end of the file is refused as `invalid-data` instead of
   read from a guessed offset, which gave wrong audio properties or let a tag edit change them.
-- A tag or other structure larger than `MaxAllocBytes` is refused with `ErrSizeTooLarge`
-  (declared size too large) in every format, even a fixed-size header under a very small
-  limit, instead of parsing as absent (an edit then buried it), being read in part, or
+- A tag or other structure larger than `MaxAllocBytes` is refused with `ErrSizeTooLarge` in
+  every format instead of parsing as absent (an edit then buried it), being read in part, or
   failing as `ErrInvalidData`; only a Musepack SV8 chapter packet over the limit is still
-  skipped, reported (`malformed-tag-entry`). The search for APE tags behind junk refuses the
-  same way once the candidates it reads pass the limit together. An ASF header or a WAV/AIFF
-  metadata chunk over 64 MiB is read whole instead of cut at 64 MiB.
+  skipped, reported (`malformed-tag-entry`). An ASF header or a WAV/AIFF metadata chunk over
+  64 MiB is read whole instead of cut there.
 - WavPack and Monkey's Audio files behind a leading ID3v2 tag are read, not refused as
   unsupported: the tag is legacy (`stray-leading-id3`), kept by an edit and dropped by
   `--legacy strip`. `dump --native` no longer counts a Musepack leading tag as audio.
@@ -59,9 +55,10 @@ All notable changes to this project are documented here.
   tag: an edit preserves both, `--legacy strip` drops both, and `lint --fix` keeps them. An
   MP4 whose `ftyp` follows a leading free, skip or wide box within the first KiB is identified.
 - WavPack, Monkey's Audio, Musepack, MP3, ADTS and FLAC read every stacked ID3v1 tag after the
-  stream into the family view (MP3 read only the first, FLAC only the last): `lint --fix` keeps
-  them when they hold the only copy of a value, and one `--legacy strip` removes the whole run. An
-  ID3v1 tag sealed between the stream and the APE tag is found instead of read as audio.
+  stream into the family view (MP3 read none of a stacked run, FLAC only the last): `lint --fix`
+  keeps them when they hold the only copy of a value, and one `--legacy strip` removes the whole
+  run, warning `legacy-strip-dropped` (`--strict` refuses) for a value only they hold. An ID3v1
+  tag sealed between the stream and the APE tag is found instead of read as audio.
 - An APE tag behind junk, a Lyrics3 block or another APE tag after a WavPack, Monkey's Audio,
   Musepack, MP3, ADTS or FLAC stream is found where it opens at the end of the stream, ends in the
   64 KiB before the tags at the end of the file, or abuts such a tag. Junk is kept and reported
@@ -82,12 +79,11 @@ All notable changes to this project are documented here.
 - An MP3 or ADTS stream whose frames or VBR byte count claim such a tag's bytes is reported
   `truncated-audio`, by the bytes claimed past the audio, unless the stream goes on after the tag.
 - A FLAC file whose frames are followed by zeros past the 4 MiB its frame walk reads back keeps
-  the clean file's digest and bitrate: the walk first measures the zeros before the tags, in whole
-  64 KiB reads within `MaxAllocBytes`, and leaves them out of the essence; a run at least as long
-  as those reads stays audio, reported (`trailing-bytes`) with that bound in bytes. A read the walk
-  needs over `MaxAllocBytes` is refused (`ErrSizeTooLarge`) instead of narrowed. The
-  `flac-frames-v2` label stays, as a well-formed FLAC hashes as before, so a digest stored for a
-  file with such zeros, or with a tag found inside its frames, no longer matches.
+  the clean file's digest and bitrate: the zeros before the tags are measured first, within
+  `MaxAllocBytes`, and left out of the essence; a run that limit cannot span stays audio,
+  reported (`trailing-bytes`). The `flac-frames-v2` label stays, as a well-formed FLAC hashes
+  as before, so a digest stored for a file with such zeros, or with a tag found inside its
+  frames, no longer matches.
 - A read that fails inside the file fails the parse, format detection included: a device error as
   `io` (exit 6), keeping its cause, and a source that serves fewer bytes than its size as
   `invalid-data` (exit 4). It read as `invalid-data`, an unrecognized format (exit 3) or an absent
@@ -106,12 +102,11 @@ All notable changes to this project are documented here.
   bitrates vary, and its bytes taken at their bitrate where they do not. The second stream and
   the tags between stay audio.
 - An MP3 whose VBR byte count runs past the tags keeps the declared duration and is reported
-  `truncated-audio` when it claims at least the shortest frame of the stream more than the file
+  `truncated-audio` when it claims at least the stream's shortest frame more than the file
   holds, where only an average below 8 kbps was. A byte count that ends where no frame ends
-  places no end, so one a byte off leaves neither junk nor a cut, and one that places it reports
-  nothing inside the bytes it counts. Where no VBR header places the end, bytes the MPEG frames
-  go on past in the 64 KiB before the tags are reported (`trailing-bytes`) with their count and
-  stay in the essence.
+  places no end, so one a byte off leaves neither junk nor a cut. Where no VBR header places
+  the end, bytes the MPEG frames go on past in the 64 KiB before the tags are reported
+  (`trailing-bytes`) and stay in the essence.
 - ADTS whose frames the SBR probe cannot parse (AAC Main, SSR) is probed over its first 16
   frames, not read to the end a second time.
 - A WavPack stream takes its length from its blocks when its first block states none (as ffmpeg
@@ -130,15 +125,12 @@ All notable changes to this project are documented here.
   chapter's sub-frames sized that way keep a long title whole; `dump --native` notes such sizes,
   and a rewrite writes them sync-safe. Where the sizes cannot tell, the tag reads sync-safe, as
   mutagen and ffmpeg read it, and reports what that leaves.
-- Of the ID3v2 tags chained at the start of an MP3 or ADTS file, the first readable one that is not
-  empty is read and the others are reported (`duplicate-tag-block`) instead of counted as leading
-  bytes; a rewrite drops them, warning `duplicate-tag-block-dropped` (`--strict` refuses) when one
-  held a value, picture or frame the file holds nowhere else, before or after the edit, or could not
-  be read. A duplicate APE tag after WavPack, Monkey's Audio or Musepack is graded the same way.
-  WAV and AIFF keep the first id3 chunk that is not empty and grade a dropped duplicate the same
-  way, where they named only its values, pictures and chapters; they report an id3 chunk they
-  cannot read, warning `malformed-tag-entry-dropped` when a fresh one replaces it, and refuse one
-  over the element cap wherever it sits, as MP3 does.
+- Of the ID3v2 tags chained at the start of an MP3 or ADTS file, the first readable one that is
+  not empty is read and the others are reported (`duplicate-tag-block`) instead of counted as
+  leading bytes; a rewrite drops them, warning `duplicate-tag-block-dropped` (`--strict`
+  refuses) when one held content the file holds nowhere else or could not be read. A second
+  WAV or AIFF id3 chunk is graded the same way; an id3 chunk that cannot be read is reported,
+  and warned `malformed-tag-entry-dropped` when a fresh one replaces it.
 - A TXXX frame whose description is an alias spelling reads as the canonical key (ffmpeg passes a
   FLAC's `TOTALTRACKS`, `ALBUM ARTIST` or `UNSYNCEDLYRICS` through and writes LYRICS as
   `TXXX:USLT`), so an edit or `--clear` of that key reaches it instead of leaving it behind.
@@ -162,22 +154,18 @@ All notable changes to this project are documented here.
   content a strip cannot prove redundant: `--legacy strip` warns `legacy-strip-dropped`
   (`--strict` refuses) and `lint --fix` keeps the tag.
 - An MP3's duration leaves out the delay and padding its encoder states behind the Xing or Info
-  header (LAME, libav), the length a decoder plays and ffmpeg 8 reports, and a trailing ID3
-  chapter ends there: a file that read 2.04 s reads 2.00 s. An MP3 of mixed bitrates that no Xing
-  or VBRI header counts reports the length and average bitrate of its frames, less the header's
-  own frame and stated delay where there is one, instead of an estimate at the first frame's
-  bitrate; counting them reads the whole stream at parse, the one case that does. A Xing header
-  is read from its own frame only.
+  header (LAME, libav), the length a decoder plays and ffmpeg 8 reports: a file that read
+  2.04 s reads 2.00 s. An MP3 of mixed bitrates that no Xing or VBRI header counts reports the
+  length and average bitrate of its frames instead of an estimate at the first frame's
+  bitrate; counting them reads the whole stream at parse, the one case that does.
 - Clearing the last frame of an MP3 or ADTS ID3v2 tag that bytes separate from the first audio
   frame leaves an empty tag (`ID3v2 emptied`), padded as the policy sizes any front tag, so the
-  file still reads as its format; the write was refused as `invalid-data`.
+  file still reads as its format; the write left a file that could not be identified.
 - A WAV or AIFF edit copies each tag chunk it does not change whole and in place: an AIFF text
-  chunk is no longer moved up to the first one or cut at a NUL, a LIST/INFO chunk keeps a tail
-  its items do not account for, and an id3 chunk whose frames stay, one without frames included,
-  keeps its padding and reports no rewrite. A new AIFF text chunk goes behind the last one ahead
-  of the sound. A rewritten id3 chunk keeps its identifier (`ID3 ` in WAV, `id3 ` in AIFF) and,
-  where its tag had padding the new frames fit in, its size; like an Opus comment packet's, that
-  padding is not the caller's to set, so `--padding` and `--no-padding` leave it alone.
+  chunk is no longer moved or cut at a NUL, a LIST/INFO chunk keeps a tail its items do not
+  account for, and an id3 chunk whose frames stay keeps its padding and reports no rewrite. A
+  rewritten id3 chunk keeps its identifier (`ID3 ` in WAV, `id3 ` in AIFF) and, where the new
+  frames fit its padding, its size; `--padding` and `--no-padding` leave that padding alone.
 - Bytes after the NUL that ends an AIFF text value, and bytes that follow the ID3v2 tag inside a
   WAV or AIFF id3 chunk, are reported (`malformed-tag-entry`) and warned
   `malformed-tag-entry-dropped` (`--strict` refuses) when an edit of that chunk or a strip drops
@@ -198,30 +186,33 @@ All notable changes to this project are documented here.
   first without saying so.
 - A FLAC or Ogg write that would hold more than 100,000 Vorbis comments (an Ogg cover's comment
   among them), or a FLAC or Ogg FLAC more metadata blocks than a reader takes, is refused as
-  `content-too-large` (exit 3) instead of failing its read-back as `invalid-data`; a file read
-  under a raised `MaxElements` keeps the count it holds. A comment block past the 24-bit block
+  `content-too-large` (exit 3); it was written, and WaxLabel refused the file afterwards. A file
+  read under a raised `MaxElements` keeps the count it holds. A comment block past the 24-bit block
   length, or an Ogg comment header past the allocation limit that no cover the edit adds accounts
   for, is `content-too-large` too. `caps` states the comment limit.
 - A Vorbis field name with a byte outside ASCII or whitespace at an edge (`tıtle`, ` ALBUM`) is
-  left alone and reported (`invalid-tag-key`, whose message now quotes the name in every format)
-  instead of read as the key that Unicode case folding or trimming made of it, which no other
-  reader sees there and an edit then rewrote under that name; setting the key writes the real
-  field beside it. `SYNCEDLYRICS` and `METADATA_BLOCK_PICTURE` match in ASCII case only. A
-  hand-built `tag.Key` with a space at its edge warns `value-dropped` there instead of being
-  written under a name nothing reads back.
+  left alone and reported (`invalid-tag-key`, whose message now quotes the name in every
+  format) instead of read as the key that case folding or trimming made of it, which no other
+  reader sees there; setting the key writes the real field beside it. `SYNCEDLYRICS` and
+  `METADATA_BLOCK_PICTURE` match in ASCII case only. A hand-built `tag.Key` with a space at
+  its edge warns `value-dropped` instead of being written.
 - A Vorbis comment that is not valid UTF-8 warns `invalid-text`, naming the key, and keeps its
   bytes when an edit of that key keeps the value, which was rewritten with U+FFFD in their place;
-  a chapter title keeps its bytes through a chapter edit likewise. `lint` reports `invalid-text`
-  in every format.
-- `CHAPTERxxx` and `SYNCEDLYRICS` comments that do not read (a time that does not parse, a repeated
-  chapter, a title with no time, an untimed or second `SYNCEDLYRICS`) are reported
-  (`malformed-tag-entry`), and they and a cover comment that does not decode are removed by
-  `--clear-chapters`, `--clear-synced-lyrics`, `--remove-pictures` or a `--clear` of their
-  exact name, listed as an operation; nothing could remove them. `--remove-pictures`
-  (`ClearPictures`) also removes a FLAC PICTURE block that does not decode, which a picture added
-  beside it still keeps. Chapters or synced lyrics set over unread ones warn
-  `malformed-tag-entry-dropped` (`--strict` refuses). The note for such a `--clear` says what the
-  name holds in FLAC and Ogg.
+  a chapter title keeps its bytes through a chapter edit likewise. `lint` reports
+  `invalid-text`, which it left out.
+- An ID3 text, comment or lyrics frame and a Matroska tag or title holding bytes that are no
+  text in their encoding warn `invalid-text`, naming the key; they showed U+FFFD and said
+  nothing.
+- `copy` grades text read with U+FFFD lossy, as the copy holds the U+FFFD: a value in FLAC,
+  Ogg, ID3 and Matroska, and a chapter title or lyric line in FLAC and Ogg. Only a destination
+  that stores the same bytes holds it as given; one that reads the same text from other bytes
+  is graded lossy and left as it is.
+- `CHAPTERxxx` and `SYNCEDLYRICS` comments that do not read (a time that does not parse, a
+  repeated chapter, a title with no time, an untimed or second `SYNCEDLYRICS`) are reported
+  (`malformed-tag-entry`), and they and a cover comment or FLAC PICTURE block that does not
+  decode are removed by `--clear-chapters`, `--clear-synced-lyrics`, `--remove-pictures` or a
+  `--clear` of their exact name; nothing could remove them. Chapters or synced lyrics set
+  over unread ones warn `malformed-tag-entry-dropped` (`--strict` refuses).
 - A `METADATA_BLOCK_PICTURE` comment whose base64 lacks its padding reads as the cover.
 - An edit that is discarded (every change dropped with a warning) no longer rewrites a FLAC only
   to give it the padding it lacks; it writes nothing, as in the other formats.
@@ -230,7 +221,7 @@ All notable changes to this project are documented here.
 - Padding figures agree: a FLAC padding-only plan counts from the padding `dump` shows (`padding
   8192 -> 0`, was 8196), and a plan with nothing to do reports the file's padding in JSON
   `paddingAfter` instead of 0. Padding no option sizes (an Opus comment header's, a WAV or AIFF
-  ID3 chunk's, which `dump` now shows) prints `(preserved)` in a plan, without the hint to
+  ID3 chunk's, which `dump` now shows) prints `(not adjustable)` in a plan, without the hint to
   `--padding`.
 - `--add-cover` puts the new front cover where the old one stood instead of last.
 - An Ogg rewrite numbers its pages on from the first page's sequence number instead of from 0,
@@ -239,54 +230,51 @@ All notable changes to this project are documented here.
   position -1, not 0.
 - An Ogg file that ends inside its last page is read up to the last whole page and reported
   (`truncated-audio`) instead of refused as `invalid-data`; a rewrite keeps the cut page's
-  bytes. Bytes between two pages no longer end the read: it goes on at the next page within
+  bytes.
+- Bytes between two Ogg pages no longer end the read: it goes on at the next page within
   64 KiB whose checksum holds, so the duration and the essence count the pages behind them.
-  They are reported (`page-gap`) and a rewrite keeps them between pages, renumbering around
-  them; those among the header pages go behind the first page, and more than 64 KiB of them
-  makes the file read-only (`unsupported-alignment`). An Ogg stream behind bytes that are no
-  tag, pages of another stream among them, is identified and read too, where 1.8.0 could not
-  identify the file, when its first page begins within 64 KiB and its checksum holds; the
-  bytes are reported (`leading-bytes`) and kept.
-- An Ogg stream of more than about half a million pages is no longer refused. What the page
-  walk keeps, 48 bytes a page (it was 72 and the page's lacing values), is bounded by
-  `Limits.MaxAllocBytes`, and the refusal names that limit. So is what a rewrite takes to
-  renumber the pages, 88 bytes each: over the limit it is refused as `ErrSizeTooLarge`.
+  They are reported (`page-gap`) and kept by a rewrite, which renumbers around them; more
+  than 64 KiB of them makes the file read-only (`unsupported-alignment`).
+- An Ogg stream behind bytes that are no tag is identified and read when its first page
+  begins within 64 KiB and its checksum holds; the bytes are reported (`leading-bytes`) and
+  kept.
+- An Ogg stream of very many pages (about 900,000 of one packet each, fewer of more) is no
+  longer refused. What the page walk keeps, 48 bytes a page (it was 72 and the page's lacing
+  values), is bounded by `Limits.MaxAllocBytes`, and the refusal names that limit. So is what a
+  rewrite takes to renumber the pages, 88 bytes each: over the limit it is refused as
+  `ErrSizeTooLarge`.
 - Ogg durations count from the granule position the stream starts at, read from the packets
   of its first audio page in all three mappings: a stream cut from a longer one with its
   timestamps kept no longer reports the original's length, and the bitrate follows. An Ogg
   FLAC whose `STREAMINFO` declares more than a page beyond what its pages hold, cut at
   either end, is reported (`truncated-audio`) and takes its duration from the pages.
-- Ogg files behind an ID3v2 tag (with a gap or chained tags, as for FLAC), ahead of ID3v1,
-  Lyrics3 or APE tags, or beside a Skeleton stream are read. The tags are legacy
-  (`stray-leading-id3`, `trailing-id3v1`, `trailing-lyrics3`, `legacy-ape`): out of the essence,
-  kept by an edit and removed by `--legacy strip`, the ID3 and APE values shown in the family
-  view, where 1.8.0 refused a leading tag and read trailing ones as junk. A file whose streams
-  begin together is `multiplexed-stream` where it read as `chained-stream`, or was refused when
-  the Skeleton came first; like a chained file it refuses writes, and `caps` reports both, and a
-  stream whose audio shares a page with its headers, as read-only.
+- Ogg files behind an ID3v2 tag (with a gap or chained tags, as for FLAC) or ahead of ID3v1,
+  Lyrics3 or APE tags are read. The tags are legacy (`stray-leading-id3`, `trailing-id3v1`,
+  `trailing-lyrics3`, `legacy-ape`): out of the essence, kept by an edit, removed by
+  `--legacy strip`, the ID3 and APE values shown in the family view. 1.8.0 refused a leading
+  tag and read trailing ones as junk.
+- An Ogg file whose streams begin together, as audio beside a Skeleton stream, is read and
+  reported `multiplexed-stream`, where it read as `chained-stream` or, the Skeleton first, was
+  refused. Like a chained file it refuses writes, and `caps` reports both, and a stream whose
+  audio shares a page with its headers, as read-only.
 - `copy`, `dump` and `caps` name the Ogg mapping (`Ogg Vorbis`, `Ogg Opus`, `Ogg FLAC`)
-  where they printed `Ogg`.
+  where they printed `Ogg`, and JSON `subformat` carries it.
 - A chapter edit on a QuickTime file whose tags are classic `udta` text atoms (a plain `.mov`)
   no longer plans every tag as removed.
 - Of several `chpl` atoms the first holding chapters is read, and of several `udta` text atoms
-  of one name the first holding a value, where a clear left the second `chpl` to read back and
-  both text values were read. The file is reported (`duplicate-tag-block`) and `dump --native`
-  marks the duplicates; an edit of anything else keeps them, and an edit of the chapters or of
-  that key removes them, warning `duplicate-tag-block-dropped` (`--strict` refuses) when one
-  held chapters or a value the file holds nowhere else, or did not decode. Of several `moov`
-  atoms, as in two files joined end to end, the first is read where the last was, reported the
-  same way, and a write leaves the others as they are.
+  of one name the first holding a value; a clear left the second `chpl` to read back. The
+  file is reported (`duplicate-tag-block`); an edit of the chapters or of that key removes
+  the duplicates, warning `duplicate-tag-block-dropped` (`--strict` refuses) when one held
+  content the file holds nowhere else, and any other edit keeps them. Of several `moov`
+  atoms the first is read where the last was, and a write leaves the others as they are.
 - A final `mdat` declared as running to the end of the file takes its real size before a
   chapter track's samples go behind it. The appended samples read as audio, so every chapter
-  edit changed the digest and `--verify` refused it. Such an `mdat` over 4 GiB, or one cut short
+  edit changed the digest, which `--verify` passed. Such an `mdat` over 4 GiB, or one cut short
   of its declared size, refuses the chapter track as unsupported (exit 3); tag edits still write.
-- An MP4 chapter track's samples go behind the last whole atom, ahead of bytes that are none:
-  an ID3v1 tag appended to the file, stray bytes, a final box of declared size 0, a second
-  `moov` cut short. Written after them the samples read as part of those bytes, so each
-  chapter rewrite left the previous ones in the file, a clear removed none, and a four-byte
-  tail failed the write as `invalid-data`. Bytes there that a track's table names stay where
-  they are, the samples going after them. A `moov` that runs to the end of the file by its
-  declared size is sized by a chapter write that leaves its length alone.
+- An MP4 chapter track's samples go behind the last whole atom, ahead of bytes that are none
+  (an ID3v1 tag appended to the file, stray bytes, a second `moov` cut short). Written after
+  them the samples read as part of those bytes, so each chapter rewrite left the previous
+  ones in the file and a clear removed none.
 - A chapter rewrite removes the old chapter samples' trailing `mdat` only when a text track's
   samples fill it end to end: one that opens with them and holds more, which lost those bytes,
   stays whole. An `mdat` they fill elsewhere in the file, which cannot be removed, is marked
@@ -298,7 +286,6 @@ All notable changes to this project are documented here.
 - MP4 plans report `offset table shift(s)` only for a table an entry of which moves: none when
   the audio sits ahead of the `moov`, never the replaced chapter track's own table, and one on
   a first tag write ahead of the audio, which reported none.
-- An MP4 chapter track named by a second `chap` entry of the audio track's `tref` is read.
 - An MP4 chapter title that is not UTF-8 is read through a code page and reported
   (`invalid-text`), where it read as empty: Windows-1252 in a Nero `chpl`, Mac OS Roman in a
   chapter track, and the `chpl`'s page in a track beside such a list, so the two agree. A
@@ -336,9 +323,10 @@ All notable changes to this project are documented here.
 - Two MP4 items holding one key (`gnre` beside `©gen`, `software` beside `encoder`, a freeform
   beside its atom) no longer merge into one two-valued item on the next edit. The first is
   read, the others show in the families (`conflicting-families`) and stay where they are until
-  the key is edited, even to the value it has, which leaves one and reports the removal. A bare
-  year beside the full date of its key, as Picard's `originalyear` beside `originaldate`, is
-  no conflict: the date is read.
+  the key is edited, even to the value it has, which leaves one and reports the removal. Two
+  items of one atom are both read and stay two until then, when they become one item of two
+  values (`mp4-multi-value`). A bare year beside the full date of its key, as Picard's
+  `originalyear` beside `originaldate`, is no conflict: the date is read.
 - A tag store in a `meta` directly under `moov`, as Apple's recorders write, is read and edited
   where it is, with a chapter edit too; it went unread, and a write added a second store under
   `moov.udta`. Beside a store under `moov.udta.meta` it shows in the families, fills the keys
@@ -376,13 +364,12 @@ All notable changes to this project are documented here.
   unmentioned.
 - An MP4 keys item whose index lies past the keys table no longer takes the name of a key a
   write appends there.
-- A Matroska element that runs past its parent, or bytes no element header parses from (an ID
-  longer than four bytes among them), in the Info, Tags, Chapters or Attachments is reported
-  (`malformed-tag-entry`) and read as nothing, and a rewrite of that element leaves it out
-  (`malformed-tag-entry-dropped`, refused under `--strict`). A tag was read through it or lost,
-  and an edit wrote its tags and chapters inside the element's reach, where neither WaxLabel
-  nor ffmpeg found them again. The `matroska-clusters-v2` label stays: only a file whose track
-  states its codec or geometry in such an element hashes differently, the value being unread.
+- A Matroska element that runs past its parent, or bytes no element header parses from, in the
+  Info, Tags, Chapters or Attachments is reported (`malformed-tag-entry`) and read as nothing,
+  and a rewrite of that element leaves it out (`malformed-tag-entry-dropped`, refused under
+  `--strict`). An edit wrote its tags and chapters inside the element's reach, where neither
+  WaxLabel nor ffmpeg found them again. The `matroska-clusters-v2` label stays: only a file
+  whose track states its codec or geometry in such an element hashes differently.
 - A Matroska file cut short warns `truncated-audio`, and an edit that moves the audio keeps
   the Segment declaring the bytes the file lacks. It was resized to the cut file, which left
   the last Cluster running past it.
@@ -421,11 +408,9 @@ All notable changes to this project are documented here.
   such a Tag is the file's own, at the scope its level gives.
 - In a Matroska file tagged by level, a `TITLE` at album level beside a `TITLE` at level 40 or
   under, the album-level `TITLE` and `ARTIST` read as `ALBUM` and `ALBUMARTIST` instead of a
-  second, conflicting title and artist. Each key is written back where the file keeps it, the
-  title and artist to the Tag that holds the lower `TITLE`, and an edit that ends the layout
-  respells what stays at album level as `ALBUM` and `ALBUM_ARTIST`. A file with album-level
-  tags alone reads as before, with or without an `Info.Title`. New album-scope values go to
-  the level-50 Tag where a level-40 one stands ahead of it.
+  second, conflicting title and artist. Each key is written back where the file keeps it, and
+  an edit that ends the layout respells what stays at album level as `ALBUM` and
+  `ALBUM_ARTIST`. A file with album-level tags alone reads as before.
 - A Matroska SimpleTag named by an alias spelling (`YEAR`, `TOTALTRACKS`, `ORGANIZATION`,
   `USLT`) reads under the key the alias names, as in the other formats.
 - WebM chapters are written without the `EditionFlagDefault`, `ChapterFlagHidden` and
@@ -436,7 +421,7 @@ All notable changes to this project are documented here.
   `tag-structure-dropped` now reports a `TagDefault` of 0 and no longer a `TagLanguageBCP47`
   of `und`.
 - Clearing the chapters of a Matroska file with several editions says that the others go too
-  (`chapter-metadata-dropped`, refused under `--strict`).
+  (`chapter-metadata-dropped`, refused under `--strict`), as `caps` now states.
 - `copy` into Matroska or WebM keeps a last chapter end that equals the source's duration
   where the destination is as long; it was written open. Into a shorter file it still is.
 - A Matroska key cut to a value that several SimpleTags of one narrower scope hold reads back
@@ -445,20 +430,15 @@ All notable changes to this project are documented here.
 - A key whose APEv2 item name would fall outside the 2 to 255 printable ASCII characters the
   format allows (`X`, a 256-character key) is not written to WavPack, Monkey's Audio or
   Musepack: the write warns (`value-dropped`) and keeps the items the file holds, and `copy`
-  grades the key dropped unless the destination holds the very values. Such a name already in
-  a file is reported (`malformed-tag-entry`), and an edit of a key held under one writes a name
-  inside the rule where the file or the key has one (`Artist` for an item named with a stray
-  tab).
+  grades the key dropped. Such a name already in a file is reported (`malformed-tag-entry`).
 - A refused set of a key that several APEv2 items hold (a reserved name, a cover item's, one
   outside the format's rule) keeps every one of them; the items after the first were dropped.
 - Every binary `Cover Art (<role>)` item is read as a picture of its role, not only the front
   and back covers: the names Mp3tag, Kid3 and TagLib# write, foobar2000's `Artist Picture` and
   `Cover Art (Disc)`, and an unknown role as Other. A picture of any role is written under a
-  name of its own, `Cover Art (<role>)` as Mp3tag and Kid3 spell it; a third picture was
-  dropped and an artist picture stored as a cover. Only a second new picture of a role, in an
-  edit or a copy, has no name left (`picture-unsupported`). Adding again the picture a file
-  holds under its role's name changes nothing; it warned of a replaced picture, which
-  `--strict` refused.
+  name of its own, as Mp3tag and Kid3 spell it; a third picture was dropped and an artist
+  picture stored as a cover. Only a second new picture of a role has no name left
+  (`picture-unsupported`), and adding again the picture a file holds changes nothing.
 - A picture edit leaves the APEv2 cover items it does not change as they are: item name, stored
   file name and flags. Every cover was written again under a made-up file name.
 - `--remove-pictures` (`ClearPictures`) also removes the APEv2 cover items that did not decode,
@@ -467,11 +447,10 @@ All notable changes to this project are documented here.
   both, and `dump --native` shows it; it does not stop an edit.
 - APEv2 item bytes past the items the footer counts, or behind an item that does not parse, are
   reported (`malformed-tag-entry`), and the rewrite that drops them says so
-  (`malformed-tag-entry-dropped`, refused under `--strict`). In a legacy tag `--legacy strip`
-  removes, or a duplicate tag a rewrite drops, they count as content only that tag holds
-  (`legacy-strip-dropped`, `duplicate-tag-block-dropped`). They went silently. A write that
-  leaves the items of a WavPack, Monkey's Audio or Musepack tag as they are, a legacy strip or
-  an edit it refuses, copies the tag as it is, even one the element limit cut short.
+  (`malformed-tag-entry-dropped`, refused under `--strict`); they went silently. In a legacy
+  tag a strip removes, or a duplicate tag a rewrite drops, they count as content only that
+  tag holds. A write that leaves the items of a WavPack, Monkey's Audio or Musepack tag as
+  they are copies the tag as it is.
 - `dump --native` names an APEv2 item's type, `external locator` and `reserved type 3` beside
   `binary`, and marks a read-only item.
 - An empty value ahead of or between the values of an APEv2 item is stored and read back. One
@@ -486,30 +465,19 @@ All notable changes to this project are documented here.
 - `WM/IsCompilation` in a WMA file reads as `COMPILATION`.
 - `copy` grades each item by what the destination holds once written, so the report and
   `--strict` say what the file gets. Lossy where they read carried: a second value on an ID3
-  key whose frame holds one (dates, track, disc and movement numbers and totals, the
-  MusicBrainz recording ID, a lyric under a description already in use, a v2.4 release date),
-  values `--id3-multi slash` joins into one, a custom key the format reads back under another
-  name (`TCMP` in ID3, `MUSICBRAINZ ALBUM ID` in MP4; beside the key it reads as it is
-  dropped), a comment, lyric or synced lyrics language an ID3 frame cuts to three bytes, a
-  chapter time finer than the format counts in (a millisecond in ID3 and Vorbis comments,
-  100 ns in MP4) or past the largest it stores, and the size a FLAC picture block declares for
-  a link or an image type that states none, copied to a format with no size fields.
-  `PlanTransfer` grades these from the format alone, as a write onto a file with no metadata
-  stores them; a prepared copy is also held to what its own plan writes, each picture, chapter
-  and synced lyrics set by its own fate.
+  key whose frame holds one, values `--id3-multi slash` joins into one, a custom key the
+  format reads back under another name (`TCMP` in ID3), a language an ID3 frame cuts to
+  three bytes, a chapter time finer than the format counts in or past the largest it stores,
+  and the size a FLAC picture block declares for a link, copied to a format with no size
+  fields. `PlanTransfer` grades these from the format alone; a prepared copy is also held to
+  what its own plan writes.
 - A copy no longer fails whole over one item the destination cannot take: the item is dropped
-  with the reason and the rest is written. That covers a value holding a NUL byte (a chapter
-  list or a synced lyrics set holding one, which takes no place under the one set FLAC and Ogg
-  hold; a picture is carried without such a description), a link picture onto WavPack,
-  Monkey's Audio or Musepack, where the URL was stored as a cover, a cover or a value over
-  what the store holds (a 16 MiB FLAC block or APEv2 tag, an MP4 item or Ogg header packet
-  over the allocation limit), and an item the writer stores nothing of, or only under a key the
-  destination holds with another value. That one is left unwritten, so the destination keeps
-  what it held: an empty track number in MP4 deleted the number the destination had, and a
-  `TCMP` copied onto an MP3 whose COMPILATION says otherwise joined it as a second value.
-  Values that fit one by one and overflow together still refuse
-  the write (`content-too-large`). A dropped link reads `cannot store a linked (URL) picture`,
-  not `cannot store -->`.
+  with the reason and the rest is written. That covers a value, chapter list or synced lyrics
+  set holding a NUL byte, a link picture onto WavPack, Monkey's Audio or Musepack, a cover or
+  value over what the store holds, and an item the writer stores nothing of. A dropped item
+  is left unwritten, so the destination keeps what it held: an empty track number in MP4
+  deleted the number the destination had. Values that fit one by one and overflow together
+  still refuse the write (`content-too-large`).
 - A copy onto a file that already holds the source's metadata writes nothing and loses
   nothing, onto itself too: what the destination holds as given is carried whatever its format
   can write. `copy X X` rewrote an AIFF's text chunks, graded a Musepack file's chapters
@@ -522,15 +490,13 @@ All notable changes to this project are documented here.
   beside the `transfer` report.
 - `set --id3-multi slash` warns (`value-dropped`, refused under `--strict`) when it joins
   several values into one; it was silent.
-- An edit is checked for NUL bytes and invalid UTF-8 only in the chapters and synced lyrics
-  it adds: one the file already holds no longer refuses `--add-chapter` or a lyrics edit
-  beside it.
+- An edit checks chapters and synced lyrics for NUL bytes and invalid UTF-8 only where it adds
+  them: one the file already holds no longer refuses `--add-chapter` or a lyrics edit beside
+  it.
 - An MP4 tag value over the allocation limit refuses the write as `content-too-large` (exit
   3), like a cover, not `invalid-data` (exit 4).
 - `copy` and `diff` read the spellings of a boolean every writer stores alike (`yes` and `1`
   under COMPILATION) as one value.
-- JSON `subformat` is the format name for an Ogg file (`Ogg Vorbis`), no longer the less
-  specific `Ogg`.
 - `AddPicture` of a link picture on WavPack, Monkey's Audio or Musepack is refused
   (`unsupported-tag`), or dropped with a warning under `WithAllowUnsupportedDrop`; the URL was
   stored as a cover.
@@ -590,15 +556,12 @@ All notable changes to this project are documented here.
   whether or not the run authors lyrics.
 - `--set TRACKNUMBER=3/10 --clear TRACKTOTAL` warns (`number-total-conflict`) that the `/10`
   is not stored; the total vanished silently.
-- Text output elides a key over 96 bytes, as it elides a long value: a 50,000-character key
-  printed whole in `dump`, `lint`, `plan`, `diff`, `copy`, a warning and the notes of `set`,
-  and an MP4 warning quoted a value whole. A chapter title, a synced lyric line, a picture's
-  or synced lyric set's description and a per-family value of `dump --native` are held to the
-  4 KiB a tag value is, a native block's name and note to 96 bytes, and no line of text
-  output passes 16 KiB, whatever a message quotes. A change line or per-family row of a key
-  with very many values shows about 4 KiB of them and counts the rest (`…[+872 more]`), so
-  the line still reaches its `-> new value`. JSON keeps them whole, but for a lint finding,
-  which quotes a malformed value at 96 bytes.
+- Text output elides a key over 96 bytes, as it elides a long value; a 50,000-character key
+  printed whole. A chapter title, a synced lyric line, a description and a per-family value
+  of `dump --native` are held to the 4 KiB a tag value is, and no line of text output passes
+  16 KiB. A change line of a key with very many values shows about 4 KiB of them and counts
+  the rest (`…[+872 more]`). JSON keeps them whole, but for a lint finding, which quotes a
+  malformed value at 96 bytes.
 - Text output also escapes the invisible operators (U+2061 to U+2064), the deprecated format
   characters (U+206A to U+206F), interlinear annotation marks, tag characters, the soft
   hyphen, the combining grapheme joiner, the Mongolian vowel separator, the Khmer inherent
@@ -608,6 +571,13 @@ All notable changes to this project are documented here.
 - JSON `file`, `output`, `source`, `a` and `b` carry a file name that is not UTF-8 with each
   invalid byte as `\xNN`, as text output shows it, instead of U+FFFD, which named no file;
   so does the message of an error that names the path.
+- `lint` reports a tag value, chapter title or synced lyric line holding a NUL byte
+  (`invalid-text`): no writer stores one, so an edit of the key that keeps the value is refused
+  and a copy does not write it. It said `no issues`, and marked an encoder stamp beside such an
+  `ENCODER` value fixable, which `--fix` then failed on.
+- The note for an unknown key spelled like an ID3 frame ID suggests the key that frame holds
+  (`TCON`: GENRE, `TDRC`: RECORDINGDATE) instead of the nearest spelling (`TDRC` suggested
+  ISRC), and nothing for a frame that holds no one key (`TIPL`, `WOAR`).
 
 ### Changed
 
@@ -621,12 +591,10 @@ All notable changes to this project are documented here.
   the last moment on a filesystem without hard links (FAT, exFAT, some network shares).
 - MP3's write report renames its trailing-tag operations: 1.8.0's `ID3v1 strip`,
   `ID3v1 preservation`, `APEv2 strip` and `APEv2 preservation` read `trailing ID3v1 strip` and
-  so on, the ID3v1 wording FLAC and the APE-tagged formats use, with `(N stacked tags)` for a
-  run and `trailing Lyrics3v2 strip` for a Lyrics3 block. ADTS and FLAC name their trailing tags
-  the same way. In `dump --native` and JSON `native[].kind`, MP3's `APEv2 (legacy)` and
-  `ID3v1 (trailing)` and FLAC's `ID3v1 (trailing)` and `ID3v2 (leading)` read `APEv2` (`APEv1`
-  for a version 1 tag), `ID3v1` and `ID3v2`, a leading tag noted `leading, legacy, preserved` as
-  in the APE-tagged formats.
+  so on, as FLAC and the APE-tagged formats word them, with `(N stacked tags)` for a run and
+  `trailing Lyrics3v2 strip` for a Lyrics3 block; ADTS and FLAC follow. In `dump --native` and
+  JSON `native[].kind`, `APEv2 (legacy)`, `ID3v1 (trailing)` and `ID3v2 (leading)` read `APEv2`
+  (`APEv1` for a version 1 tag), `ID3v1` and `ID3v2`.
 - **The `wavpack-v2`, `monkeys-audio-v2`, `musepack-v2`, `mp3-frames-v2` and `aac-adts-v2`
   essence extents** leave trailing, stacked and duplicate tags, Lyrics3 blocks and junk out of
   the essence, which v1 hashed as audio, and the MP3 and ADTS extents the bytes between the ID3v2
@@ -635,9 +603,9 @@ All notable changes to this project are documented here.
 - **The MP4 essence extent is `mp4-samples-v4`**: the sound tracks' sample chunks, so a video
   track's and the chapter track's samples are out of the digest and two files with the same
   sample entry and audio packets hash the same. A file whose sample tables cannot be read, or
-  place a chunk in no `mdat`, keeps `mp4-mdat-v3`, every `mdat` from its first chunk. `verify`
-  labels the change; a stored v3 digest of any other file never compares equal and needs a
-  rehash.
+  place a chunk in no `mdat`, keeps `mp4-mdat-v3`: every `mdat` from its first chunk but those
+  chapter samples fill. `verify` labels the change; a stored v3 digest of any other file never
+  compares equal and needs a rehash.
 - The v2 essence ends where the stream says it does: by the WavPack blocks' sample counts (with a
   length every block states, those in the 64 KiB before the tags, so a break at or before the first
   of them, or a stream of that length joined there, reads as part of the stream), a Monkey's Audio
@@ -670,10 +638,8 @@ All notable changes to this project are documented here.
   3): only its first link is read, so the digest stood for part of the audio. The Ogg extents
   keep their names; a file with junk between its pages hashes the pages behind the junk too,
   and a second stream within 64 KiB of junk behind the first makes the file chained, where
-  it read as trailing bytes. A page that would begin another stream, or belongs to one that
-  never began, counts only if its checksum holds; bytes shaped like one are junk. A file
-  with more junk between its pages than a read crosses (256 runs, or 64 forged pages) is
-  read up to there, and has no digest and takes no write (`invalid-data`).
+  it read as trailing bytes. A file with more junk between its pages than a read crosses has
+  no digest and takes no write (`invalid-data`).
 
 ### Added
 
@@ -698,15 +664,12 @@ All notable changes to this project are documented here.
 - Comments and lyrics carry a description and language: `Document.Comments`,
   `Document.Lyrics`, `Editor.SetComments`, `Editor.SetLyrics`, and `--comment-desc`,
   `--comment-lang`, `--lyrics-desc` and `--lyrics-lang` for the values an invocation sets or
-  adds. ID3 keeps both, in one `COMM` or `USLT` frame per description and language, and
-  Matroska keeps the `TagLanguage` (none where a `TagLanguageBCP47` supersedes it); elsewhere
-  an authored one warns `value-reduced`, as does a language stored in another form, and a
-  comment description that names machine data (`iTunNORM`, ReplayGain) is refused. Language
-  codes read in lowercase. `copy` carries them and grades a dropped one lossy, but not the
-  `eng` an ID3 writer fills in; a destination comment of the same text keeps what the source's
-  format cannot say of it. `diff` compares them where both formats store them, `dump` prints
-  them after the value, `caps` lists them, and JSON `dump` and `diff` gain `comments` and
-  `lyrics`.
+  adds. ID3 keeps both, one `COMM` or `USLT` frame per description and language, and Matroska
+  the `TagLanguage`; elsewhere an authored one warns `value-reduced`, and a comment description
+  naming machine data (`iTunNORM`, ReplayGain) is refused. Language codes read in lowercase.
+  `copy` carries them and grades a dropped one lossy, `diff` compares them where both formats
+  store them, `dump` prints them, `caps` lists them, and JSON `dump` and `diff` gain `comments`
+  and `lyrics`.
 - `Editor.ReplacePictures(match, p)` puts a picture in place of the ones a predicate selects,
   keeping the order of the rest.
 - `Capability.ChapterTimeUnit` and `Capability.ChapterTimeMax`, the step a format counts

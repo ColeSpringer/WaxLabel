@@ -676,3 +676,38 @@ func TestRebuildDropsKeyWithEdgeWhitespace(t *testing.T) {
 		}
 	}
 }
+
+// TestSubstitutedHoldsTheStoredBytes: the record names what the warnings report, with the bytes
+// as stored: every value of a key holding an invalid one, the titles by chapter and the lyrics.
+func TestSubstitutedHoldsTheStoredBytes(t *testing.T) {
+	comments := []Comment{
+		{Name: "ARTIST", Value: "ok"}, {Name: "artist", Value: "caf\xe9"}, {Name: "ALBUM", Value: "fine"},
+		{Name: "CHAPTER002", Value: "00:00:05.000"}, {Name: "CHAPTER002NAME", Value: "Vers\xe9"},
+		{Name: "CHAPTER001", Value: "00:00:00.000"}, {Name: "CHAPTER001NAME", Value: "Intro"},
+		{Name: "SYNCEDLYRICS", Value: "[00:01.00]caf\xe9"},
+		{Name: " ALBUM", Value: "bad\xff"}, {Value: "noseparator\xff", Unseparated: true},
+	}
+	values, owned := SubstitutedValues(comments), ProjectOwned(comments)
+	if len(values) != 1 || !slices.Equal(values[tag.Artist], []string{"ok", "caf\xe9"}) {
+		t.Errorf("values = %v, want ARTIST with both values", values)
+	}
+	// Chapters are indexed in start order, as they are read.
+	if len(owned.SubstitutedTitles) != 1 || owned.SubstitutedTitles[1] != "Vers\xe9" {
+		t.Errorf("chapters = %v, want the second chapter's title", owned.SubstitutedTitles)
+	}
+	if len(owned.SubstitutedLyrics) != 1 || owned.SubstitutedLyrics[0] != "caf\xe9" {
+		t.Errorf("synced lyrics = %v, want the line's text", owned.SubstitutedLyrics)
+	}
+	keyed := InvalidTextWarnings(comments)
+	if len(keyed) != len(values) || len(core.WarningsWithCode(owned.Warnings, core.WarnInvalidText)) != len(owned.SubstitutedTitles)+len(owned.SubstitutedLyrics) {
+		t.Errorf("the record and the warnings disagree: %+v", keyed)
+	}
+	if SubstitutedValues([]Comment{{Name: "TITLE", Value: "caf" + string(utf8.RuneError)}, {Name: " ALBUM", Value: "bad\xff"}}) != nil {
+		t.Error("a record for comments nothing reads with a substitution")
+	}
+	// Bytes in an LRC header or an untimed line show in no line read.
+	header := ProjectOwned([]Comment{{Name: "SYNCEDLYRICS", Value: "[ar:Caf\xe9]\nuntimed \xff\n[00:00.50]hello"}})
+	if len(header.SubstitutedLyrics) != 0 || len(core.WarningsWithCode(header.Warnings, core.WarnInvalidText)) != 0 || len(header.SyncedLyrics) != 1 {
+		t.Errorf("a header's bytes are reported as shown: %+v", header)
+	}
+}

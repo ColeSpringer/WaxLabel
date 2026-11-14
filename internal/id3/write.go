@@ -627,6 +627,30 @@ func frameKeys(f Frame) []tag.Key {
 	return nil
 }
 
+// FrameIDKey reports whether id is a frame ID ([knownFrameIDs]), and the key it is read as
+// where that is one key or a number with its total: none for a frame of several keys (TIPL), of
+// a key its body names (TXXX, UFID) or of no key. An ID that is also a word is taken for the
+// word.
+func FrameIDKey(id string) (key tag.Key, frame bool) {
+	if !knownFrameIDs[id] {
+		return "", false
+	}
+	switch id {
+	case "TEXT", "TIME", "USER", "LINK", "SEEK", "SIGN":
+		return "", false
+	case "COMM":
+		return tag.Comment, true
+	case "USLT":
+		return tag.Lyrics, true
+	case "TRCK", "TPOS", "MVIN":
+		return frameKeys(Frame{ID: id})[0], true
+	}
+	if keys := frameKeys(Frame{ID: id}); len(keys) == 1 && string(keys[0]) != id {
+		return keys[0], true
+	}
+	return "", true
+}
+
 // touchesChangedKey reports whether any canonical key the frame contributes to
 // is in the changed set.
 func touchesChangedKey(f Frame, changed map[tag.Key]bool) bool {

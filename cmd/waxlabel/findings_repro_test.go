@@ -161,6 +161,20 @@ func TestUnknownKeySuggestions(t *testing.T) {
 	if !strings.Contains(errb, "clearing affects only a custom field") || !strings.Contains(errb, "did you mean ARTIST?") {
 		t.Errorf("--clear ARTIS should note + suggest ARTIST:\n%s", errb)
 	}
+	// A key spelled like an ID3 frame ID means the key that frame holds, not its nearest
+	// spelling (TDRC is two letters from ISRC); a frame that holds no one key gets no guess.
+	for id, want := range map[string]string{
+		"TCON": "did you mean GENRE?", "TDRC": "did you mean RECORDINGDATE?", "TRCK": "did you mean TRACKNUMBER?",
+		"TBPM": "did you mean BPM?", "MVIN": "did you mean MOVEMENT?", "COMM": "did you mean COMMENT?",
+		"TIPL": "", "TXXX": "", "WOAR": "", "POPM": "", "TIT3": "",
+		// A frame ID that is also a word is as likely the word.
+		"TEXT": "", "USER": "",
+	} {
+		_, errb, _ = runCLI(t, "plan", sampleFLAC, "--set", id+"=1")
+		if !strings.Contains(errb, id+" is not a known key") || !strings.Contains(errb, want) || want == "" && strings.Contains(errb, "did you mean") {
+			t.Errorf("--set %s: want %q:\n%s", id, want, errb)
+		}
+	}
 }
 
 func TestValueNotes(t *testing.T) {

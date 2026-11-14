@@ -2258,3 +2258,26 @@ func TestChangedCommentUnitFollowsThePolicy(t *testing.T) {
 		}
 	}
 }
+
+// TestTextSubstituted: text decodes with a substitution where its bytes are no text in the
+// frame's encoding, and not where it spells U+FFFD itself.
+func TestTextSubstituted(t *testing.T) {
+	for name, c := range map[string]struct {
+		enc  byte
+		data string
+		want bool
+	}{
+		"UTF-8 with a Latin-1 byte":           {encUTF8, "caf\xe9", true},
+		"UTF-8 spelling U+FFFD":               {encUTF8, "caf\xef\xbf\xbd", false},
+		"Latin-1":                             {encLatin1, "caf\xe9", false},
+		"UTF-16 with a lone surrogate":        {encUTF16, "\xff\xfea\x00\x00\xd8b\x00", true},
+		"UTF-16 with a surrogate pair":        {encUTF16, "\xff\xfe\x3d\xd8\x00\xde", false},
+		"UTF-16 spelling U+FFFD":              {encUTF16, "\xff\xfea\x00\xfd\xff", false},
+		"UTF-16BE with a lone surrogate":      {encUTF16BE, "\x00a\xdc\x00", true},
+		"UTF-16 lone surrogate beside U+FFFD": {encUTF16, "\xff\xfe\xfd\xff\x00\xd8", true},
+	} {
+		if got := textSubstituted(c.enc, []byte(c.data)); got != c.want {
+			t.Errorf("%s: %v, want %v", name, got, c.want)
+		}
+	}
+}

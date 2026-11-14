@@ -132,7 +132,9 @@ accept `--json`. `-o` writes atomically and refuses an existing target unless
 container, and a conflict or extra `ENCODER` value that goes with either), false
 on a file that cannot be written. A rewrite can clear other findings on its way,
 such as a duplicate tag block it drops. Exit code reflects the highest-precedence
-result. Finding codes are in `waxlabel <command> --help` and package docs.
+result. A finding raised from a parse warning carries that warning's code, one of
+the `WarningCode` constants in the package docs; lint's own codes are listed on
+`Document.Lint`.
 
 ### Exit codes
 
@@ -142,10 +144,10 @@ an exit status:
 | Exit | Machine code | Meaning |
 | --- | --- | --- |
 | 0 | none, or `broken-pipe` | Success, or a closed output pipe (`... \| head`) |
-| 1 | `error` | Unclassified failure |
+| 1 | `error`, or none | Unclassified failure; `lint` found warnings; `diff` found a difference |
 | 2 | `usage`, `invalid-key`, `needs-file` | Bad invocation, invalid canonical key, or `--strict` refusal |
 | 3 | `unsupported-format`, `unsupported-tag`, `unsupported-stream`, `unsupported-alignment`, `unsupported-fragmentation`, `picture-too-large`, `content-too-large` | Unsupported format, or file reads but format refuses the write |
-| 4 | `invalid-data` | Corrupt file or format violation |
+| 4 | `invalid-data`, or none | Corrupt file or format violation; `lint` found an error-severity issue |
 | 5 | `source-changed` | File changed between read and save-back |
 | 6 | `not-found`, `io` | Wrong path, or local I/O failure |
 | 7 | `input-too-large` | Streamed input exceeded `--max-size` |
@@ -168,11 +170,11 @@ status the work earned.
 | Format | Metadata | Notes |
 | --- | --- | --- |
 | FLAC | read/write | Vorbis comments, FLAC pictures, `CHAPTERxxx` chapters, `SYNCEDLYRICS` (LRC); padding fully controllable. Leading ID3v2, trailing ID3v1, APEv2 and Lyrics3 as legacy. |
-| Ogg Vorbis / Opus | read/write | Vorbis comments, `METADATA_BLOCK_PICTURE`, `CHAPTERxxx`, `SYNCEDLYRICS` (LRC). Opus also has `OpusHead` output gain (`--output-gain`); rebases `R128_TRACK_GAIN`/`R128_ALBUM_GAIN` per RFC 7845. |
-| Ogg FLAC (`.oga`) | read/write | Vorbis comments and chapters as above; cover art is a native FLAC `PICTURE` block, not a comment. |
+| Ogg Vorbis / Opus | read/write | Vorbis comments, `METADATA_BLOCK_PICTURE`, `CHAPTERxxx`, `SYNCEDLYRICS` (LRC). Opus also has `OpusHead` output gain (`--output-gain`); rebases `R128_TRACK_GAIN`/`R128_ALBUM_GAIN` per RFC 7845. Leading ID3v2, trailing ID3v1, APEv2 and Lyrics3 as legacy. Chained and multiplexed files are read-only, and a chained file has no essence digest. |
+| Ogg FLAC (`.oga`) | read/write | Vorbis comments, chapters, legacy tags and read-only cases as above; cover art is a native FLAC `PICTURE` block, not a comment. |
 | MP3 | read/write | ID3v2 (`CHAP`/`CTOC`, `SYLT`); new tags are ID3v2.3. Trailing ID3v1, APEv2 and Lyrics3 as legacy. |
 | WAV / RF64 / BW64 | read/write | RIFF LIST/INFO plus embedded `id3 `; chunks preserved. RF64/BW64 form kept on save-back; `ds64` recomputed. |
-| MP4 / M4A / M4B / MOV | read/write | iTunes `ilst`, `mdta` keys (ffmpeg `+use_metadata_tags`, and the `moov.meta` store Apple's recorders write), classic `moov.udta` text, cover art, Nero and QuickTime chapters. Fragmented MP4 (`moof`) is read-only; `moov` with `mvex` but no fragment writes normally. |
+| MP4 / M4A / M4B / MOV | read/write | iTunes `ilst`, `mdta` keys (ffmpeg `+use_metadata_tags`, and the `moov.meta` store Apple's recorders write), classic `moov.udta` text, cover art, Nero `chpl` chapters and the QuickTime chapter track (the text or subtitle track a `chap` reference names, in any track). Fragmented MP4 (`moof`) is read-only; `moov` with `mvex` but no fragment writes normally. |
 | Matroska / WebM | read/write | Scoped SimpleTags, segment title, attachments, default-edition chapters. Tags of an attachment, chapter, edition or video track stay out of the file's tags. Beside a `TITLE` at level 40 or under, the album-level `TITLE` and `ARTIST` are `ALBUM` and `ALBUMARTIST`. Attachments an edit keeps are copied verbatim. WebM cannot write cover attachments or hidden/disabled chapter flags. |
 | AAC (ADTS) | read/write | Front ID3v2 (new tags ID3v2.4) plus ADTS frames. HE-AAC reports played rate, channels, and profile from frames when the header cannot. Trailing ID3v1, APEv2 and Lyrics3 as legacy. |
 | AIFF / AIFF-C | read/write | Native text chunks plus embedded `ID3 `; chunks preserved. |

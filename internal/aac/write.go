@@ -132,6 +132,7 @@ func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagLen int64, s
 		Format:       core.FormatAAC,
 		Properties:   edited.Properties.Clone(),
 		Tags:         proj.Tags,
+		Substituted:  core.NewSubstitutedText(proj.Substituted, nil, nil),
 		Pictures:     core.ClonePictures(edited.Pictures),
 		Chapters:     core.ChaptersOpenedPastDuration(proj.Chapters, base.track.Duration),
 		SyncedLyrics: proj.SyncedLyrics,

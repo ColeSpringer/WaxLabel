@@ -76,6 +76,9 @@ type Owned struct {
 	// Warnings: a synced-lyrics document cut at the line cap, the chapter and synced-lyrics
 	// comments nothing reads, and titles or lyrics read with U+FFFD in place of invalid bytes.
 	Warnings []core.Warning
+	// SubstitutedTitles and SubstitutedLyrics hold what the file stores of those, by chapter
+	// and by set ([core.SubstitutedText]).
+	SubstitutedTitles, SubstitutedLyrics map[int]string
 }
 
 // ProjectOwned is [ProjectChapters] and [ProjectSyncedLyrics] in one pass, with what they
@@ -108,18 +111,42 @@ func ProjectOwned(comments []Comment) Owned {
 
 	// One WarnInvalidText for the chapter titles read with a substitution, and one for the lyrics.
 	var titles []int
-	for _, ch := range r.chapters {
+	for i, ch := range r.chapters {
 		if ch.titleAt >= 0 && !utf8.ValidString(comments[ch.titleAt].Value) {
 			titles = append(titles, ch.titleAt)
+			if o.SubstitutedTitles == nil {
+				o.SubstitutedTitles = map[int]string{}
+			}
+			o.SubstitutedTitles[i] = comments[ch.titleAt].Value
 		}
 	}
 	if len(titles) > 0 {
 		o.Warnings = core.Warn(o.Warnings, core.WarnInvalidText, invalidTextMessage(comments[slices.Min(titles)].Name)+andMore(len(titles)-1))
 	}
-	if r.lyricsAt >= 0 && !utf8.ValidString(comments[r.lyricsAt].Value) {
-		o.Warnings = core.Warn(o.Warnings, core.WarnInvalidText, invalidTextMessage(comments[r.lyricsAt].Name))
+	if r.lyricsAt >= 0 {
+		if raw := substitutedLines(comments[r.lyricsAt].Value); raw != "" {
+			o.SubstitutedLyrics = map[int]string{0: raw}
+			o.Warnings = core.Warn(o.Warnings, core.WarnInvalidText, invalidTextMessage(comments[r.lyricsAt].Name))
+		}
 	}
 	return o
+}
+
+// substitutedLines is the stored text of the lines an LRC document reads with U+FFFD in place
+// of bytes that are not UTF-8, "" where it reads none so: such bytes in a header or an untimed
+// line show nowhere.
+func substitutedLines(doc string) string {
+	if utf8.ValidString(doc) {
+		return ""
+	}
+	lines, _ := core.ParseLRCReport(doc)
+	var raw []string
+	for _, ln := range lines {
+		if !utf8.ValidString(ln.Text) {
+			raw = append(raw, ln.Text)
+		}
+	}
+	return strings.Join(raw, "\n")
 }
 
 // invalidTextMessage is the WarnInvalidText wording for the key or owned comment name.
