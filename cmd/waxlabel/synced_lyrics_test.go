@@ -223,6 +223,20 @@ func TestCLISyncedLyricsLangValidation(t *testing.T) {
 			t.Errorf("--synced-lyrics-lang %q message = %q, want it to mention \"3 ASCII letters\"", bad, errb)
 		}
 	}
+	// A malformed code is refused whether or not the run authors lyrics for it to label.
+	for _, args := range [][]string{
+		{"plan", file, "--set", "TITLE=x", "--synced-lyrics-lang", "english"},
+		{"set", file, "--set", "TITLE=x", "--synced-lyrics-lang", "english"},
+		{"set", file, "--clear-synced-lyrics", "--synced-lyrics-lang", "e1g"},
+	} {
+		if _, errb, code := runCLI(t, args...); code != 2 || !strings.Contains(errb, "3 ASCII letters") {
+			t.Errorf("%v: exit %d, stderr %q; want the usage error", args, code, errb)
+		}
+	}
+	// A well-formed one with nothing to label is tolerated.
+	if _, errb, code := runCLI(t, "plan", file, "--set", "TITLE=x", "--synced-lyrics-lang", "eng"); code != 0 {
+		t.Errorf("a valid code without authoring: exit %d: %s", code, errb)
+	}
 	// Any 3 ASCII letters accepted (including unregistered codes).
 	for _, ok := range []string{"eng", "zzz"} {
 		if _, errb, code := runCLI(t, "set", file, "--add-synced-lyric", "0:00=Hi", "--synced-lyrics-lang", ok); code != 0 {

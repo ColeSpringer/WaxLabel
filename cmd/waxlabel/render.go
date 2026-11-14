@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/internal/core"
@@ -13,7 +14,7 @@ import (
 
 // displayName is the text header path: "-" becomes "<stdin>"; other paths pass through
 // [tag.SanitizeLine] so hostile names cannot forge lines in a multi-file listing.
-// JSON keeps the raw path so scripts can key on the argument they passed.
+// JSON has [jsonFileName].
 func displayName(path string) string {
 	if s := stdinDisplay(path); s != "" {
 		return s
@@ -30,12 +31,33 @@ func stdinDisplay(path string) string {
 	return ""
 }
 
-// jsonFileName maps "-" to "<stdin>" for JSON "file"; other paths are unchanged (no SanitizeLine).
+// jsonFileName is a path as JSON carries it: "-" as "<stdin>", else [jsonText].
 func jsonFileName(path string) string {
 	if s := stdinDisplay(path); s != "" {
 		return s
 	}
-	return path
+	return jsonText(path)
+}
+
+// jsonText is a file name, or a message that holds one, as JSON carries it: each byte that is
+// not UTF-8 as \xNN, the way text output shows it. The encoder would turn such a byte into
+// U+FFFD, and the name would no longer lead back to the file. Valid text is unchanged (no
+// SanitizeLine: JSON escapes controls itself).
+func jsonText(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			fmt.Fprintf(&b, `\x%02x`, s[i])
+		} else {
+			b.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
 }
 
 // renderDocument writes the human-readable view of a parsed file.
@@ -80,11 +102,11 @@ func audioLine(p wl.Properties) string {
 	hasSubstantive := false
 	switch {
 	case t.Codec != "":
-		// Canonical codec name, rendered verbatim to match --json; escape for one-line output.
-		parts = append(parts, tag.SanitizeLine(t.Codec))
+		// Canonical codec name as --json gives it, escaped and bounded for one-line output.
+		parts = append(parts, core.WarnSnippet(t.Codec))
 	case p.Container != "":
 		// Container parsed but codec did not; keep the line even without rate/channels.
-		parts = append(parts, fmt.Sprintf("%s (codec unknown)", tag.SanitizeLine(p.Container)))
+		parts = append(parts, fmt.Sprintf("%s (codec unknown)", core.WarnSnippet(p.Container)))
 		hasSubstantive = true
 	}
 	if t.SampleRate > 0 {
@@ -173,7 +195,7 @@ func tagNotesOf(doc *wl.Document) tagNotes {
 		for i, it := range items {
 			var parts []string
 			if it.Language != "" {
-				parts = append(parts, tag.SanitizeLine(it.Language))
+				parts = append(parts, core.WarnSnippet(it.Language))
 			}
 			if it.Description != "" {
 				// %q escapes the description; SanitizeLine would escape it twice.
@@ -224,7 +246,7 @@ func renderTags(w io.Writer, ts tag.TagSet, notes tagNotes) {
 	valueCol := 4 + width + 2
 	for k, vals := range ts.All() {
 		// Defensive sanitize: hostile keys could forge tag lines (SanitizeLine for single-line keys).
-		ks := tag.SanitizeLine(string(k))
+		ks := tag.SanitizeLine(tag.ElideKey(k))
 		if len(vals) == 0 {
 			fmt.Fprintf(w, "    %-*s  (present, no value)\n", width, ks)
 			continue
@@ -277,15 +299,6 @@ func writeWrappedSuffix(w io.Writer, col int, value, suffix string) {
 	}
 }
 
-// sanitizeJoin escapes values and joins with sep for safe single-line display.
-func sanitizeJoin(vals []string, sep string) string {
-	out := make([]string, len(vals))
-	for i, v := range vals {
-		out[i] = tag.SanitizeLine(v)
-	}
-	return strings.Join(out, sep)
-}
-
 // pictureRow formats type, MIME, dimensions, and size on one line (shared by dump and plan C4a).
 func pictureRow(p wl.Picture) string {
 	dim := "--"
@@ -314,7 +327,7 @@ func renderPictures(w io.Writer, pics []wl.Picture) {
 		fmt.Fprintf(w, "    %d. %s\n", i+1, pictureRow(p))
 		if p.Description != "" {
 			// %q escapes description; do not SanitizeLine (would double-escape).
-			fmt.Fprintf(w, "       %q\n", p.Description)
+			fmt.Fprintf(w, "       %q\n", tag.ElideValue(p.Description))
 		}
 	}
 }
@@ -326,7 +339,7 @@ func renderChapters(w io.Writer, chs []wl.Chapter) {
 	}
 	fmt.Fprintf(w, "  chapters (%d):\n", len(chs))
 	for _, c := range chs {
-		title := tag.SanitizeLine(c.Title)
+		title := tag.SanitizeLine(tag.ElideValue(c.Title))
 		// JSON omits empty titles; text shows "(untitled)".
 		if title == "" {
 			title = "(untitled)"
@@ -339,7 +352,7 @@ func renderChapters(w io.Writer, chs []wl.Chapter) {
 func chapterAnnotations(c wl.Chapter) string {
 	var b strings.Builder
 	if lang := cmp.Or(c.Language, c.LanguageIETF); lang != "" {
-		fmt.Fprintf(&b, " [lang: %s]", tag.SanitizeLine(lang))
+		fmt.Fprintf(&b, " [lang: %s]", core.WarnSnippet(lang))
 	}
 	if c.Hidden {
 		b.WriteString(" (hidden)")
@@ -383,10 +396,10 @@ func pluralUnit(n int, unit string) string {
 func syncedLyricsHeader(sl wl.SyncedLyrics, idx, total int) string {
 	var notes []string
 	if sl.Language != "" {
-		notes = append(notes, "lang: "+tag.SanitizeLine(sl.Language))
+		notes = append(notes, "lang: "+core.WarnSnippet(sl.Language))
 	}
 	if sl.Description != "" {
-		notes = append(notes, "desc: "+tag.SanitizeLine(sl.Description))
+		notes = append(notes, "desc: "+tag.SanitizeLine(tag.ElideValue(sl.Description)))
 	}
 	if len(notes) == 0 && total <= 1 {
 		return ""
@@ -407,7 +420,7 @@ func syncedLyricsHeader(sl wl.SyncedLyrics, idx, total int) string {
 
 // syncedLineText renders lyric text; empty becomes "(blank)".
 func syncedLineText(s string) string {
-	if t := tag.SanitizeLine(s); t != "" {
+	if t := tag.SanitizeLine(tag.ElideValue(s)); t != "" {
 		return t
 	}
 	return "(blank)"
@@ -432,9 +445,9 @@ func renderNative(w io.Writer, doc *wl.Document) {
 			for _, e := range entries {
 				note := ""
 				if e.Note != "" {
-					note = "  - " + tag.SanitizeLine(e.Note)
+					note = "  - " + core.WarnSnippet(e.Note)
 				}
-				fmt.Fprintf(w, "    %-18s %8s%s\n", tag.SanitizeLine(e.Kind), nativeSize(e), note)
+				fmt.Fprintf(w, "    %-18s %8s%s\n", core.WarnSnippet(e.Kind), nativeSize(e), note)
 			}
 		}
 	}
@@ -449,7 +462,7 @@ func renderNative(w io.Writer, doc *wl.Document) {
 			case !f.Selected:
 				flag = "  (conflict)"
 			}
-			fmt.Fprintf(w, "    %-20s %-8s %s%s\n", tag.SanitizeLine(string(f.Key)), f.Family, sanitizeJoin(f.Values, ", "), flag)
+			fmt.Fprintf(w, "    %-20s %-8s %s%s\n", tag.SanitizeLine(tag.ElideKey(f.Key)), f.Family, tag.ElideValues(f.Values, ", "), flag)
 		}
 	}
 }
@@ -536,7 +549,7 @@ func renderChanges(w io.Writer, changes []tag.Change, addedPics []wl.Picture) {
 			for _, p := range addedPics {
 				fmt.Fprintf(w, "      + %s\n", pictureRow(p))
 				if p.Description != "" {
-					fmt.Fprintf(w, "          %q\n", p.Description)
+					fmt.Fprintf(w, "          %q\n", tag.ElideValue(p.Description))
 				}
 			}
 		}

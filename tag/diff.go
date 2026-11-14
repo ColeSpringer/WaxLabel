@@ -2,6 +2,7 @@ package tag
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -187,12 +188,13 @@ func Diff(base, edited TagSet) []Change {
 
 // String renders one change as a diff-style line: "- KEY: old" for a removed
 // key, "+ KEY: new" for an added one, "~ KEY: old -> new" for a changed one.
-// Multiple values join with " | "; a key with no values reads "(present, no
-// value)". Key and values pass through [SanitizeLine], so an embedded newline
-// or tab cannot forge a row; read Key/Old/New for the exact bytes. No indent,
-// no trailing newline. The plan/diff previews and the CLI share it.
+// Multiple values join with " | " as [ElideValues] joins them; a key with no
+// values reads "(present, no value)". A long key is elided ([ElideKey]), and key
+// and values pass through [SanitizeLine], so an embedded newline or tab cannot
+// forge a row; read Key/Old/New for the exact bytes. No indent, no trailing
+// newline. The plan/diff previews and the CLI share it.
 func (c Change) String() string {
-	key := SanitizeLine(string(c.Key))
+	key := SanitizeLine(ElideKey(c.Key))
 	join := joinChangeValues
 	if c.Quote {
 		join = joinQuotedValues
@@ -210,26 +212,41 @@ func (c Change) String() string {
 }
 
 // joinQuotedValues is joinChangeValues with each value in double quotes, so an empty one shows.
-func joinQuotedValues(vals []string) string {
-	out := make([]string, len(vals))
-	for i, v := range vals {
-		out[i] = `"` + SanitizeLine(ElideValue(v)) + `"`
-	}
-	return strings.Join(out, " | ")
-}
+func joinQuotedValues(vals []string) string { return joinValues(vals, " | ", `"`) }
 
 // joinChangeValues renders a key's values for a change line: "(present, no value)"
-// for none, otherwise each value elided ([ElideValue]), escaped ([SanitizeLine]),
-// and joined with " | ". The exact values are in [Change.Old]/[Change.New].
+// for none, otherwise as [ElideValues] joins them with " | ". The exact values are in
+// [Change.Old]/[Change.New].
 func joinChangeValues(vals []string) string {
 	if len(vals) == 0 {
 		return "(present, no value)"
 	}
-	out := make([]string, len(vals))
+	return joinValues(vals, " | ", "")
+}
+
+// ElideValues renders values for one line of human output: each elided ([ElideValue]) and
+// escaped ([SanitizeLine]), joined with sep. Once the values shown pass the length one value
+// is shown at, the rest are counted in their place ("…[+998 more]"), so a key with a thousand
+// values leaves the line readable.
+func ElideValues(vals []string, sep string) string { return joinValues(vals, sep, "") }
+
+func joinValues(vals []string, sep, quote string) string {
+	var b strings.Builder
 	for i, v := range vals {
-		out[i] = SanitizeLine(ElideValue(v))
+		if i > 0 {
+			b.WriteString(sep)
+		}
+		if b.Len() > maxDisplayValueBytes {
+			b.WriteString("…[+")
+			b.WriteString(strconv.Itoa(len(vals) - i))
+			b.WriteString(" more]")
+			break
+		}
+		b.WriteString(quote)
+		b.WriteString(SanitizeLine(ElideValue(v)))
+		b.WriteString(quote)
 	}
-	return strings.Join(out, " | ")
+	return b.String()
 }
 
 // maxDisplayValueBytes bounds how much of one tag value a human-facing renderer
@@ -247,6 +264,17 @@ const maxDisplayValueBytes = 4096
 // before sanitizing, so the hint and boundary come from the real value and the
 // caller's [SanitizeLine]/[SanitizeText] then escapes the result.
 func ElideValue(v string) string { return ElideValueAt(v, maxDisplayValueBytes) }
+
+// maxSnippetBytes bounds a key, and text a message quotes, in human output. Every vocabulary
+// key and tagger spelling is far shorter; a file can still hold a name of any length.
+const maxSnippetBytes = 96
+
+// ElideSnippet is [ElideValue] at the length a key or a quoted piece of text is shown at.
+func ElideSnippet(s string) string { return ElideValueAt(s, maxSnippetBytes) }
+
+// ElideKey is [ElideSnippet] for a key. Like [ElideValue] it runs before sanitizing; --json
+// and the structured accessors keep the key whole.
+func ElideKey(k Key) string { return ElideSnippet(string(k)) }
 
 // ElideValueAt is [ElideValue] with a caller-chosen threshold, for text held to a tighter
 // bound than a displayed tag value, such as a warning quoting a file-derived key or entry.
@@ -269,9 +297,10 @@ func ElideValueAt(v string, max int) string {
 	return v[:keep] + "…[+" + bits.HumanBytes(int64(len(v)-keep)) + "]"
 }
 
-// SanitizeText escapes control/non-printable runes as \xNN (or \uXXXX for bidi/
-// zero-width). Keeps \t and \n. Rune-aware so multi-byte UTF-8 is intact.
-// Single-line fields use [SanitizeLine].
+// SanitizeText escapes control/non-printable runes as \xNN (or \uXXXX, \UXXXXXXXX past
+// U+FFFF, for the invisible and reordering ones). Keeps \t and \n. Rune-aware so multi-byte
+// UTF-8 is intact. Escaping the result again changes nothing. Single-line fields use
+// [SanitizeLine].
 func SanitizeText(s string) string { return sanitize(s, controlRune) }
 
 // SanitizeLine is [SanitizeText] that also escapes \t and \n (listing/spoof safety).
@@ -317,30 +346,40 @@ func writeHexEscape(b *strings.Builder, c byte) {
 	b.WriteByte(hexDigits[c&0x0f])
 }
 
-// formatControlRune reports a Unicode control that reorders, hides or breaks text without
-// being a C0/C1 byte: the bidirectional overrides, isolates and marks, the Arabic letter
-// mark, the zero width space, word joiner and byte order mark, and the line and paragraph
-// separators some terminals render as line breaks. The zero width joiner and non-joiner
-// stay, since emoji sequences and Indic text need them.
+// formatControlRune reports a rune that reorders or breaks text without being a C0/C1 byte, or
+// that shows as nothing, so a value can differ from what it reads as: the bidirectional
+// controls, the zero width space, word joiner and byte order mark, the line and paragraph
+// separators, the invisible operators, deprecated format characters, interlinear annotation
+// marks and tag characters, the soft hyphen, combining grapheme joiner, Mongolian vowel
+// separator and Khmer inherent vowels, and the Hangul fillers. The zero width joiner and
+// non-joiner and the variation selectors stay: emoji sequences and Indic text need them.
 func formatControlRune(r rune) bool {
 	switch {
-	case r == 0x061C, r == 0x200B, r == 0x200E, r == 0x200F, r == 0x2060, r == 0xFEFF:
+	case r == 0x00AD, r == 0x034F, r == 0x061C, r == 0x115F, r == 0x1160, r == 0x17B4, r == 0x17B5, r == 0x180E:
 		return true
-	case r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069, r == 0x2028, r == 0x2029:
+	case r == 0x200B, r == 0x200E, r == 0x200F, r == 0x2028, r == 0x2029, r >= 0x202A && r <= 0x202E:
+		return true
+	case r >= 0x2060 && r <= 0x206F, r == 0x3164, r == 0xFEFF, r == 0xFFA0, r >= 0xFFF0 && r <= 0xFFFB:
+		return true
+	case r == 0xE0001, r >= 0xE0020 && r <= 0xE007F:
 		return true
 	}
 	return false
 }
 
-// writeUnicodeEscape writes r as a \uXXXX escape, for a format control whose codepoint
-// does not fit \xNN. Like [writeHexEscape] it avoids fmt. Every rune formatControlRune
-// matches is below U+10000, so four digits suffice.
+// writeUnicodeEscape writes r as a \uXXXX escape, or \UXXXXXXXX past U+FFFF, for a format
+// control whose codepoint does not fit \xNN. Like [writeHexEscape] it avoids fmt.
 func writeUnicodeEscape(b *strings.Builder, r rune) {
-	b.WriteString(`\u`)
-	b.WriteByte(hexDigits[r>>12&0x0f])
-	b.WriteByte(hexDigits[r>>8&0x0f])
-	b.WriteByte(hexDigits[r>>4&0x0f])
-	b.WriteByte(hexDigits[r&0x0f])
+	digits := 4
+	if r > 0xFFFF {
+		digits = 8
+		b.WriteString(`\U`)
+	} else {
+		b.WriteString(`\u`)
+	}
+	for shift := 4 * (digits - 1); shift >= 0; shift -= 4 {
+		b.WriteByte(hexDigits[r>>shift&0x0f])
+	}
 }
 
 // controlRune reports whether r is a control codepoint SanitizeText escapes: a

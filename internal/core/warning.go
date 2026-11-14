@@ -23,7 +23,9 @@ const (
 	WarnLegacyAPE
 	// WarnMultipleVorbisComment: extra comment blocks; first wins on rewrite. Read path.
 	WarnMultipleVorbisComment
-	// WarnInheritedEncoder: transcoder encoder stamp (Lavf/Lavc). Read path.
+	// WarnInheritedEncoder: transcoder encoder stamp (Lavf/Lavc). Read path. Warning.Keys may name
+	// the key the stamp reads under, and must where that is not ENCODER: lint --fix reaches a stamp
+	// with no key (ENCODER's, a vendor string's, a WAV ISFT item's) or keyed ENCODER, and no other.
 	WarnInheritedEncoder
 	// WarnDistrustedBlockSize: declared block size disagreed with content. Read path.
 	WarnDistrustedBlockSize
@@ -95,7 +97,8 @@ const (
 	WarnSyncedLyricsTimestampClamped
 	// WarnInvalidTagKey: Vorbis name not mappable to canonical key; preserved in file. Read; keyless.
 	WarnInvalidTagKey
-	// WarnNumberTotalConflict: slash number and explicit total disagree. Edit only; Warning.Keys; not --strict.
+	// WarnNumberTotalConflict: slash number and explicit total disagree, or the total is cleared beside a
+	// slash total. Edit only; Warning.Keys; not --strict.
 	WarnNumberTotalConflict
 	// WarnValueCoerced: value normalized instead of dropped (vs WarnValueDropped). Plan; Warning.Keys; --strict.
 	WarnValueCoerced
@@ -297,8 +300,20 @@ type Warning struct {
 	Keys []tag.Key
 }
 
-// String renders "[code] message". Message sanitized via [tag.SanitizeLine].
-func (w Warning) String() string { return "[" + w.Code.String() + "] " + tag.SanitizeLine(w.Message) }
+// String renders "[code] message": [Warning.Text], sanitized via [tag.SanitizeLine].
+func (w Warning) String() string { return "[" + w.Code.String() + "] " + tag.SanitizeLine(w.Text()) }
+
+// Text is Message for one line of human output: each key the warning names is held to the
+// length a key is shown at ([tag.ElideKey]). Message keeps them whole.
+func (w Warning) Text() string {
+	msg := w.Message
+	for _, k := range w.Keys {
+		if short := tag.ElideKey(k); len(short) < len(k) {
+			msg = strings.ReplaceAll(msg, string(k), short)
+		}
+	}
+	return msg
+}
 
 // Warn appends a warning to a slice, returning the new slice.
 func Warn(ws []Warning, code WarningCode, msg string) []Warning {
@@ -394,11 +409,8 @@ func WarnUnknownSize(ws []Warning, ids [][4]byte) []Warning {
 	return ws
 }
 
-// warnSnippetBytes caps quoted file-derived text in warning messages.
-const warnSnippetBytes = 96
-
-// WarnSnippet sanitizes and elides file-derived warning text.
-func WarnSnippet(s string) string { return tag.SanitizeLine(tag.ElideValueAt(s, warnSnippetBytes)) }
+// WarnSnippet sanitizes and elides file-derived text for a warning or one line of output.
+func WarnSnippet(s string) string { return tag.SanitizeLine(tag.ElideSnippet(s)) }
 
 // UnparsedNote suffix for unread bytes in a native block summary. Empty when none.
 func UnparsedNote(n int64) string {

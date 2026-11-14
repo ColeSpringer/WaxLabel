@@ -144,65 +144,52 @@ func editFlagsEmpty(cmd *cobra.Command) bool {
 	return empty
 }
 
-// quotingHint detects unquoted spaced values: --set/--add with a stray bare-word
-// positional beside an existing input (--set TITLE=Two Words -> file + Words).
-// Needs a resolved sibling to avoid false positives on lone missing extensionless paths.
-// Shared by plan (advisory) and set (refuses before write).
-func quotingHint(ef *editFlags, realOf func(string) string, args []string) (hint string, ok bool) {
-	if len(ef.set) == 0 && len(ef.add) == 0 {
+// strayWord detects an unquoted value with a space in it (--set TITLE=Two Words -> file +
+// Words; --padding 8 KiB -> 8 + KiB): a flag that takes a value, an operand that exists, and
+// beside it a missing bare word, which it returns. Needs the existing sibling to avoid false
+// positives on a lone missing extensionless path.
+func strayWord(cmd *cobra.Command, args []string) (word string, ok bool) {
+	takesValue := false
+	cmd.Flags().Visit(func(f *pflag.Flag) { takesValue = takesValue || f.Value.Type() != "bool" })
+	// Nothing is statted unless some operand could be the stray half of a value.
+	if !takesValue || !slices.ContainsFunc(args, func(a string) bool { return a != stdinArg && looksLikeBareWord(a) }) {
 		return "", false
 	}
-	// Pre-pass: skip stat unless some positional looks like a stray bare word.
-	hasBareWord := false
+	hasRealInput := false
 	for _, a := range args {
-		if a != stdinArg && looksLikeBareWord(a) {
-			hasBareWord = true
-			break
+		if a != stdinArg {
+			if _, err := os.Stat(a); err != nil {
+				if word == "" && looksLikeBareWord(a) {
+					word = a
+				}
+				continue
+			}
 		}
+		hasRealInput = true
 	}
-	if !hasBareWord {
-		return "", false
-	}
-	// Stat only after a bare-word candidate exists.
-	resolves := func(a string) bool {
-		if a == stdinArg {
-			return true
-		}
-		_, err := os.Stat(realOf(a))
-		return err == nil
-	}
-	hasRealInput, hasStrayWord := false, false
-	for _, a := range args {
-		switch {
-		case resolves(a):
-			hasRealInput = true // present input (incl. existing extensionless file)
-		case looksLikeBareWord(a):
-			hasStrayWord = true // missing bare word, likely split value
-		}
-	}
-	if hasRealInput && hasStrayWord {
-		return "a value containing spaces must be quoted, e.g. --set 'TITLE=Two Words'", true
-	}
-	return "", false
+	return word, hasRealInput && word != ""
 }
 
-// refuseUnquotedValue refuses unquoted spaced values (quotingHint). Exit 2 for plan and set.
-// writes adds "; nothing was written" for set. Shared so wording stays aligned.
-func refuseUnquotedValue(ef *editFlags, realOf func(string) string, args []string, writes bool) error {
-	hint, ok := quotingHint(ef, realOf, args)
+// refuseUnquotedValue refuses a run [strayWord] finds a split value in (exit 2), before any
+// flag's file is read or operand written, so a script cannot take a partial write for success.
+// writes adds "; nothing was written" for set.
+func refuseUnquotedValue(cmd *cobra.Command, args []string, writes bool) error {
+	word, ok := strayWord(cmd, args)
 	if !ok {
 		return nil
 	}
+	written := ""
 	if writes {
-		return usagef("%s; nothing was written", hint)
+		written = "; nothing was written"
 	}
-	return usagef("%s", hint)
+	return usagef("%q is not a file; a value containing spaces must be quoted, e.g. --set 'TITLE=Two Words'%s", word, written)
 }
 
 // rejectEmptyScalarFlags rejects empty scalar flags (empty vs unset is ambiguous).
 // Uses Changed so set and plan share one check.
 func rejectEmptyScalarFlags(cmd *cobra.Command) error {
-	for _, name := range []string{"preset", "legacy", "id3-multi", "padding", "synced-lyrics-file", "comment-lang", "lyrics-lang"} {
+	for _, name := range []string{"preset", "legacy", "id3-multi", "padding", "synced-lyrics-file", "comment-lang", "lyrics-lang",
+		"output-gain", "synced-lyrics-lang", "picture-description"} {
 		if cmd.Flags().Changed(name) {
 			if v, _ := cmd.Flags().GetString(name); v == "" {
 				return usagef("--%s cannot be empty", name)
@@ -213,7 +200,8 @@ func rejectEmptyScalarFlags(cmd *cobra.Command) error {
 }
 
 // patch compiles --set/--add/--clear into a presence-aware patch.
-// Malformed input or the same key in write and clear is a usage error (exit 2).
+// Malformed input or the same key in write and clear is a usage error (exit 2); a key the
+// tag model refuses keeps its own class (invalid-key, exit 2 too).
 // Clears run last, so set+add vs clear conflicts are rejected up front.
 func (e *editFlags) patch() (tag.TagPatch, error) {
 	var p tag.TagPatch
@@ -235,10 +223,10 @@ func (e *editFlags) patch() (tag.TagPatch, error) {
 	for _, ks := range e.clear {
 		k, err := parseEditKey(strings.TrimSpace(ks))
 		if err != nil {
-			return p, &usageError{msg: err.Error()}
+			return p, err
 		}
 		if p.Writes(k) {
-			return p, usagef("%s is given to both --set/--add and --clear; remove one (they conflict)", k)
+			return p, usagef("%s is given to both --set/--add and --clear; remove one (they conflict)", tag.ElideKey(k))
 		}
 		p.Clear(k)
 	}
@@ -261,9 +249,9 @@ func splitAssign(s string) (tag.Key, string, error) {
 	}
 	k, err := parseEditKey(strings.TrimSpace(rawKey))
 	if err != nil {
-		return "", "", &usageError{msg: err.Error()}
+		return "", "", err
 	}
-	if err := checkArgText(v, fmt.Sprintf("value for %q", k)); err != nil {
+	if err := checkArgText(v, fmt.Sprintf("value for %q", tag.ElideKey(k))); err != nil {
 		return "", "", err
 	}
 	return k, v, nil
@@ -334,8 +322,7 @@ func (e *editFlags) loadPictureFile(label string, pt wl.PictureType, path string
 	if path == "" {
 		return wl.Picture{}, usagef("%s: image path cannot be empty", label)
 	}
-	// Pictures have no stdin path (acceptsStdin false).
-	if err := checkRegularFile(path, false); err != nil {
+	if err := checkRegularFile(path); err != nil {
 		return wl.Picture{}, fmt.Errorf("%s: %w", label, err)
 	}
 	data, err := os.ReadFile(path)
@@ -399,35 +386,57 @@ func pictureRoleList() string {
 	return strings.Join(roles, ", ")
 }
 
-// resolveRemovals maps --remove-picture selectors to dump-order indices.
-// Selector: 1-based index or role name. Bad index/role: usage error.
-// Unmatched role removes nothing but is reported in missedRoles (--strict fails).
-// missedRoles is deduped in canonical role names.
-func resolveRemovals(selectors []string, pics []wl.Picture) (targets map[int]bool, missedRoles []string, err error) {
-	targets = map[int]bool{}
-	seenMiss := map[string]bool{}
+// removeSelector is one --remove-picture value: a 1-based dump index, or a role when index is 0.
+type removeSelector struct {
+	index int
+	role  wl.PictureType
+}
+
+// parseRemoveSelectors reads the --remove-picture values once for the run: a value that is
+// neither a role name nor a 1-based index is wrong for every file.
+func parseRemoveSelectors(selectors []string) ([]removeSelector, error) {
+	var out []removeSelector
 	for _, sel := range selectors {
 		s := strings.TrimSpace(sel)
 		if n, err := strconv.Atoi(s); err == nil {
-			if n < 1 || n > len(pics) {
-				return nil, nil, usagef("--remove-picture index %d is out of range (file has %d picture(s))", n, len(pics))
+			if n < 1 {
+				return nil, usagef("--remove-picture index %d is not a 1-based index", n)
 			}
-			targets[n-1] = true
+			out = append(out, removeSelector{index: n})
 			continue
 		}
 		pt, ok := pictureRole(s)
 		if !ok {
-			return nil, nil, usagef("--remove-picture wants a role name or a 1-based index, got %q; valid roles: %s", sel, pictureRoleList())
+			return nil, usagef("--remove-picture wants a role name or a 1-based index, got %q; valid roles: %s", sel, pictureRoleList())
+		}
+		out = append(out, removeSelector{role: pt})
+	}
+	return out, nil
+}
+
+// resolveRemovals maps selectors to dump-order indices of pics. An index the file does not
+// have is that file's usage error. Unmatched role removes nothing but is reported in
+// missedRoles (--strict fails), deduped in canonical role names.
+func resolveRemovals(selectors []removeSelector, pics []wl.Picture) (targets map[int]bool, missedRoles []string, err error) {
+	targets = map[int]bool{}
+	seenMiss := map[string]bool{}
+	for _, sel := range selectors {
+		if sel.index > 0 {
+			if sel.index > len(pics) {
+				return nil, nil, usagef("--remove-picture index %d is out of range (file has %d picture(s))", sel.index, len(pics))
+			}
+			targets[sel.index-1] = true
+			continue
 		}
 		matched := false
 		for i, p := range pics {
-			if p.Type == pt {
+			if p.Type == sel.role {
 				targets[i] = true
 				matched = true
 			}
 		}
 		if !matched {
-			if role := pt.String(); !seenMiss[role] {
+			if role := sel.role.String(); !seenMiss[role] {
 				seenMiss[role] = true
 				missedRoles = append(missedRoles, role)
 			}
@@ -571,9 +580,6 @@ func (e *editFlags) writeOptions() ([]wl.WriteOption, bool, error) {
 // maxPaddingBytes caps --padding (64 MiB). Without it, reuse+floor could allocate huge regions.
 const maxPaddingBytes = 64 << 20
 
-// parsePaddingBytes uses the same size parser as --max-size. Truncating values are rejected.
-func parsePaddingBytes(s string) (int64, error) { return parseByteSizeExact(s) }
-
 // resolvePaddingFlag turns --padding/--no-padding into a write option.
 // Returns (nil, false) when neither set (default 8 KiB policy).
 // Zero spellings ("0", "00", " 0 ") all mean no padding; conflict only for positive --padding.
@@ -583,7 +589,7 @@ func resolvePaddingFlag(padding string, noPadding bool) (opt wl.WriteOption, fla
 	hasValue := false
 	// "" means unset; whitespace-only "   " must parse-fail, not default.
 	if padding != "" {
-		v, perr := parsePaddingBytes(padding)
+		v, perr := parseByteSize(padding)
 		if perr != nil {
 			return nil, false, usagef("--padding %v", perr)
 		}
@@ -660,9 +666,9 @@ var id3MultiOptions = map[string]wl.ID3MultiValuePolicy{
 type compiledEdit struct {
 	patch         tag.TagPatch
 	opts          []wl.WriteOption
-	addPics       []wl.Picture // validated at compile time
-	replaceFront  bool         // --add-cover replaces front cover (--add-picture front-cover appends)
-	removePics    []string     // --remove-picture selectors, resolved per file
+	addPics       []wl.Picture     // validated at compile time
+	replaceFront  bool             // --add-cover replaces front cover (--add-picture front-cover appends)
+	removePics    []removeSelector // --remove-picture, resolved per file
 	rmPics        bool
 	chapters      []wl.Chapter
 	clearChapters bool
@@ -701,6 +707,10 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 	if patch.Touches(tag.Encoder) {
 		opts = append(opts, wl.WithStripEncoderStamp())
 	}
+	removePics, err := parseRemoveSelectors(e.removePicture)
+	if err != nil {
+		return nil, err
+	}
 	addPics, err := e.loadPictures()
 	if err != nil {
 		return nil, err
@@ -732,7 +742,7 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 		opts:                     opts,
 		addPics:                  addPics,
 		replaceFront:             len(e.addCover) > 0,
-		removePics:               e.removePicture,
+		removePics:               removePics,
 		rmPics:                   e.rmPics,
 		chapters:                 chapters,
 		clearChapters:            e.clearChapters,
@@ -753,8 +763,11 @@ const outputGainStepsPerDB = 256
 
 // parseOutputGainDB converts --output-gain dB to signed Q7.8 for the Opus header.
 func parseOutputGainDB(s string) (int, error) {
-	db, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
-	if err != nil || math.IsNaN(db) || math.IsInf(db, 0) {
+	// A plain decimal: ParseFloat alone also takes hex floats, exponents, digit-separating
+	// underscores, "inf" and "nan".
+	num := strings.TrimSpace(s)
+	db, err := strconv.ParseFloat(num, 64)
+	if err != nil || strings.Trim(num, "+-.0123456789") != "" {
 		return 0, usagef("--output-gain %q is not a decibel value", s)
 	}
 	// Bounds use shared formatter so ceiling display matches rejection threshold.
@@ -865,7 +878,7 @@ func notifyUnknownKeys(errOut io.Writer, ce *compiledEdit, strict, asJSON bool) 
 	})
 	notes := &cappedNotes{w: errOut, noun: "unknown key(s)"}
 	for _, k := range note {
-		notes.printf("note: %s is not a known key; treated as a custom field where the format permits%s\n", k, didYouMean(k))
+		notes.printf("note: %s is not a known key; treated as a custom field where the format permits%s\n", tag.ElideKey(k), didYouMean(k))
 	}
 	notes.done()
 	// One trailing hint after per-key lines, not repeated per key.
@@ -901,10 +914,10 @@ func notifyClearKeys(errOut io.Writer, ce *compiledEdit, asJSON bool) {
 	for _, k := range ce.clearKeys {
 		if owned := vorbis.OwnedByName(k); owned != "" {
 			notes.printf("note: %s is not a known key; FLAC and Ogg store %s under such names, where clearing it removes only a comment that is not read (use %s for the %s), and elsewhere it clears a custom field of that name\n",
-				k, owned, ownedClearFlags[owned], owned)
+				tag.ElideKey(k), owned, ownedClearFlags[owned], owned)
 			continue
 		}
-		notes.printf("note: %s is not a known key (clearing affects only a custom field of that exact name)%s\n", k, didYouMean(k))
+		notes.printf("note: %s is not a known key (clearing affects only a custom field of that exact name)%s\n", tag.ElideKey(k), didYouMean(k))
 	}
 }
 
@@ -956,17 +969,17 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 		if prev.collided && i == lastAt[k] {
 			// Alias collision vs duplicate spelling.
 			if prev.other == "" {
+				// %q escapes the value; sanitizing it first would escape it twice.
 				notes.printf("note: --set %s was given more than once; last value %q was used\n",
-					tag.SanitizeLine(prev.first), tag.SanitizeLine(v))
+					core.WarnSnippet(prev.first), tag.ElideSnippet(v))
 			} else {
 				notes.printf("note: --set %s and --set %s refer to the same field (%s); last value %q was used\n",
-					tag.SanitizeLine(prev.first), tag.SanitizeLine(prev.other),
-					tag.SanitizeLine(string(k)), tag.SanitizeLine(v))
+					core.WarnSnippet(prev.first), core.WarnSnippet(prev.other), core.WarnSnippet(string(k)), tag.ElideSnippet(v))
 			}
 		}
 		if v == "" {
 			// Empty --set value; format outcome varies. Distinct from --clear.
-			notes.printf("note: %s= writes an empty value (some formats may drop an empty field rather than store it); use --clear %s to remove it\n", k, k)
+			notes.printf("note: %s= writes an empty value (some formats may drop an empty field rather than store it); use --clear %s to remove it\n", tag.ElideKey(k), tag.ElideKey(k))
 			continue
 		}
 		noteMalformedValue(notes, k, v)
@@ -983,9 +996,8 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 
 // noteMalformedValue emits pre-parse advisory for values failing [tag.ValidatorFor].
 // Uses same registry as [Document.Lint]. Per-file value-dropped warning is authoritative for drops.
-// SanitizeLine prevents control bytes and forged newlines in one-line notes.
 func noteMalformedValue(notes *cappedNotes, k tag.Key, v string) {
-	ks, vs := tag.SanitizeLine(string(k)), tag.SanitizeLine(v)
+	ks, vs := core.WarnSnippet(string(k)), core.WarnSnippet(v)
 	if val, ok := tag.ValidatorFor(k); ok && !val.Valid(k, v) {
 		_, detail := val.Details(k, v)
 		notes.printf("note: %s=%s %s; kept as text where the format supports it\n", ks, vs, detail)
@@ -1141,11 +1153,12 @@ func (c *cappedNotes) done() {
 	}
 }
 
-// keyList renders keys comma-separated. Uncapped: used in errors and --json messages.
+// keyList renders keys comma-separated, every one of them (it is used in errors and --json
+// messages), each held to the length a key is shown at.
 func keyList(keys []tag.Key) string {
 	s := make([]string, len(keys))
 	for i, k := range keys {
-		s[i] = string(k)
+		s[i] = tag.ElideKey(k)
 	}
 	return strings.Join(s, ", ")
 }

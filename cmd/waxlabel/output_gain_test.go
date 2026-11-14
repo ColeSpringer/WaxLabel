@@ -93,9 +93,25 @@ func TestCLIOutputGainReadOnlyExits3(t *testing.T) {
 
 // TestCLIOutputGainUsageErrors: non-finite or out-of-range dB is usage error.
 func TestCLIOutputGainUsageErrors(t *testing.T) {
-	for _, v := range []string{"abc", "200", "-200", "nan", "inf", "1e400"} {
+	for _, v := range []string{"abc", "200", "-200", "nan", "inf", "1e400",
+		"", " ", "1_0", "0x1p-2", "0x10", "1e1", "+", "-", ".", "1.2.3", "--1", "1 0", "Infinity"} {
 		if _, _, code := runCLI(t, "set", copyFixture(t, td("sample.opus")), "--output-gain", v); code != 2 {
 			t.Errorf("--output-gain %q exit = %d, want 2", v, code)
+		}
+	}
+	// --keep-r128 does not change which values parse.
+	if _, errb, code := runCLI(t, "set", copyFixture(t, td("sample.opus")), "--output-gain", "", "--keep-r128"); code != 2 || !strings.Contains(errb, "--output-gain cannot be empty") {
+		t.Errorf("--output-gain '' --keep-r128: exit %d, stderr %q", code, errb)
+	}
+}
+
+// TestParseOutputGainDB: a plain decimal, signed or not, with digits on either side of the point.
+func TestParseOutputGainDB(t *testing.T) {
+	for in, want := range map[string]int{
+		".5": 128, "5.": 1280, "-3.5": -896, "+2": 512, "0": 0, "-0.0": 0, " 1 ": 256, "007": 1792,
+	} {
+		if got, err := parseOutputGainDB(in); err != nil || got != want {
+			t.Errorf("parseOutputGainDB(%q) = %d, %v; want %d", in, got, err, want)
 		}
 	}
 }

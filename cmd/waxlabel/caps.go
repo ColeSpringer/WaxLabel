@@ -25,7 +25,8 @@ func newCapsCmd() *cobra.Command {
 			"every editable key with its cardinality (single- or multi-valued) and meaning.\n" +
 			"For the format-independent key vocabulary on its own, see the keys command.\n\n" +
 			"Pass files to describe them (a single \"-\" reads from standard input), or\n" +
-			"--format <name> (e.g. flac, mp3, m4a) to describe a format with no file.",
+			"--format <name> to describe a format with no file: an extension (flac, m4a) or\n" +
+			"any format or container name this command prints (\"Ogg Vorbis\", rf64).",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if format != "" {
@@ -45,7 +46,7 @@ func newCapsCmd() *cobra.Command {
 			return runCapsFiles(cmd, args)
 		},
 	}
-	cmd.Flags().StringVar(&format, "format", "", "describe a format with no file (e.g. flac, mp3, m4a)")
+	cmd.Flags().StringVar(&format, "format", "", "describe a format with no file, by extension or by a name caps prints (e.g. flac, m4a, \"Ogg Vorbis\", rf64)")
 	return markListCommand(cmd)
 }
 
@@ -66,24 +67,21 @@ func runCapsFiles(cmd *cobra.Command, args []string) error {
 	if err := checkEmptyOperands(args...); err != nil {
 		return err
 	}
-	realOf, cleanup, err := readInputs(cmd.InOrStdin(), maxSizeFlag(cmd), args)
+	realOf, cleanup, stdinErr, err := readInputs(cmd.Context(), cmd.InOrStdin(), maxSizeFlag(cmd), args)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-	if err := checkRegularInputs(realOf, true, args...); err != nil {
-		return err
-	}
 	// No-audio still has readable capabilities; caps exits 0 (unlike hash/write/lint).
 	return perFile(cmd, args,
-		func(ctx context.Context, path string) (jsonCaps, error) {
+		guardPathErrors(operandErrors(true, stdinErr, args...), func(ctx context.Context, path string) (jsonCaps, error) {
 			doc, err := parseInput(ctx, realOf(path), path)
 			if err != nil {
 				return jsonCaps{}, err
 			}
 			// WebM/Matroska distinction is container subtype only (same as copy.go).
 			return buildCaps(path, doc.Properties().Container, doc.Capabilities()), nil
-		},
+		}),
 		func(_ string, jc jsonCaps) any { return jc },
 		func(w io.Writer, _ string, jc jsonCaps) { renderCaps(w, jc) },
 		false,
@@ -272,28 +270,32 @@ func renderCapDim(w io.Writer, label string, d *jsonCapDim) {
 	}
 }
 
-// parseFormat resolves a format name to Format, write opts, and container label.
-// Accepts extensions (optional dot) and aliases (Ogg codecs, Matroska/WebM).
-// Case-insensitive. Ambiguous extensions (e.g. .oga) error with alternatives.
+// parseFormat resolves a format name to Format, write opts, and container label. It takes an
+// extension, any name the tool prints for a format or a container, and the aliases below,
+// ignoring case, spaces and punctuation ("AAC (ADTS)", "Monkey's Audio", ".flac").
+// Ambiguous extensions (e.g. .oga) error with alternatives.
 func parseFormat(s string) (f wl.Format, opts []wl.WriteOption, container string, err error) {
-	norm := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), ".")
+	norm := foldFormatName(s)
 	switch norm {
-	case "ogg", "vorbis", "oggvorbis":
+	case "ogg", "vorbis":
 		// "ogg" means Vorbis despite shared .ogg extension.
 		return wl.FormatOggVorbis, nil, "", nil
-	case "opus", "oggopus":
+	case "opus":
 		return wl.FormatOggOpus, nil, "", nil
-	case "oggflac":
-		// .oga is ambiguous; use oggflac alias.
-		return wl.FormatOggFLAC, nil, "", nil
-	case "matroska":
-		return wl.FormatMatroska, nil, "", nil
 	case "webm":
 		// WebM is Matroska subset (WithWebMSubset). Container label "WebM"; JSON format stays Matroska.
 		return wl.FormatMatroska, []wl.WriteOption{wl.WithWebMSubset()}, "WebM", nil
+	case "rf64", "bw64":
+		return wl.FormatWAV, nil, strings.ToUpper(norm), nil
+	case "aifc", "aiffc":
+		return wl.FormatAIFF, nil, "AIFC", nil
 	}
 	var hits []wl.Format
 	for _, cand := range wl.Formats() {
+		// The printed name: "Ogg FLAC" is oggflac, which no extension is.
+		if foldFormatName(cand.String()) == norm {
+			return cand, nil, soleContainer(cand), nil
+		}
 		for _, ext := range wl.ExtensionsFor(cand) {
 			if strings.TrimPrefix(ext, ".") == norm {
 				hits = append(hits, cand)
@@ -303,7 +305,7 @@ func parseFormat(s string) (f wl.Format, opts []wl.WriteOption, container string
 	}
 	switch len(hits) {
 	case 1:
-		return hits[0], nil, "", nil
+		return hits[0], nil, soleContainer(hits[0]), nil
 	case 0:
 		return wl.FormatUnknown, nil, "", fmt.Errorf("unknown format %q; try one of: %s", s, formatHint())
 	}
@@ -313,6 +315,24 @@ func parseFormat(s string) (f wl.Format, opts []wl.WriteOption, container string
 	}
 	return wl.FormatUnknown, nil, "", fmt.Errorf("%q names more than one format (%s); name the one you mean",
 		s, strings.Join(names, ", "))
+}
+
+// soleContainer is the container label every file of f reports beside the format's name.
+func soleContainer(f wl.Format) string {
+	if f == wl.FormatWMA {
+		return "ASF"
+	}
+	return ""
+}
+
+// foldFormatName lowercases a format name and keeps its letters and digits.
+func foldFormatName(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, strings.ToLower(s))
 }
 
 // formatHint lists representative format names for the unknown-format error.

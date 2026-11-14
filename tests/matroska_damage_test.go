@@ -1180,6 +1180,51 @@ func TestMatroskaTooManyBytesThatAreNoElement(t *testing.T) {
 	}
 }
 
+// A layout no edit can be written to is read-only in the capabilities, with the reason the plan
+// refuses with, as for an Ogg or MP4 file; lint marks nothing in it fixable. An edit of nothing
+// still plans.
+func TestMatroskaUnwritableLayoutsAreReadOnly(t *testing.T) {
+	whole := readFixture(t, chaptersMKA)
+	cues, _, _, _ := elemRange(whole, 52, len(whole), testfile.IDCues, nil)
+	seek := testfile.El(idSeekHead, nil)
+	stamped := testfile.El(testfile.IDTags, testfile.El(testfile.IDTag, concat(
+		testfile.El(testfile.IDTargets, testfile.Uint(testfile.IDTgtTypeVal, 50)), testfile.SimpleTag("ENCODER", "Lavf61.7.100"))))
+	for name, c := range map[string]struct {
+		data  []byte
+		class error
+	}{
+		"the read stops early": {zerosAhead(t, whole, cues, 70<<10), waxerr.ErrInvalidData},
+		"two SeekHeads": {concat(testfile.EBMLHeader("matroska"),
+			testfile.El(testfile.IDSegment, concat(seek, seek, testfile.AudioCluster(0), stamped))), waxerr.ErrUnsupportedTag},
+	} {
+		doc := mustParseBytes(t, c.data)
+		caps := doc.Capabilities()
+		if !caps.ReadOnly || !errors.Is(caps.ReadOnlyReason(), c.class) {
+			t.Errorf("%s: read-only %v, reason %v; want the refusal", name, caps.ReadOnly, caps.ReadOnlyReason())
+			continue
+		}
+		if _, err := doc.Edit().Set(tag.Title, "T").Prepare(); err == nil || err.Error() != caps.ReadOnlyReason().Error() {
+			t.Errorf("%s: Prepare = %v, want the capabilities' reason %v", name, err, caps.ReadOnlyReason())
+		}
+		if plan, err := doc.Edit().Prepare(); err != nil || !plan.IsNoOp() {
+			t.Errorf("%s: an edit of nothing: %v, want a plan that writes nothing", name, err)
+		}
+		saw := false
+		for _, f := range doc.Lint() {
+			saw = saw || f.Code == "inherited-encoder"
+			if f.Fixable {
+				t.Errorf("%s: %s reads fixable, and the fix cannot be written", name, f.Code)
+			}
+		}
+		if !saw {
+			t.Errorf("%s: the case should lint inherited-encoder, got %v", name, doc.Lint())
+		}
+	}
+	if caps := mustParseBytes(t, whole).Capabilities(); caps.ReadOnly || caps.ReadOnlyReason() != nil {
+		t.Errorf("a sound file reports read-only (%v)", caps.ReadOnlyReason())
+	}
+}
+
 // A second Chapters element is not read, so whatever it holds costs the parse nothing, and the
 // chapter edit that drops it always says so.
 func TestMatroskaDuplicateChaptersElementIsNotRead(t *testing.T) {

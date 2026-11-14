@@ -45,27 +45,20 @@ func newExportPictureCmd() *cobra.Command {
 				return usagef("-o - is not supported; export-picture writes a named file")
 			}
 
-			ctx := cmd.Context()
-			realOf, cleanup, err := readInputs(cmd.InOrStdin(), maxSizeFlag(cmd), args)
+			ctx := mutationContext(cmd.Context())
+			realOf, cleanup, stdinErr, err := readInputs(ctx, cmd.InOrStdin(), maxSizeFlag(cmd), args)
 			if err != nil {
 				return err
 			}
 			defer cleanup()
-			if err := checkRegularInputs(realOf, true, inPath); err != nil {
-				return err
-			}
 
 			asJSON := jsonMode(cmd)
 			errOut := cmd.ErrOrStderr()
-			doc, err := parseInput(ctx, realOf(inPath), inPath)
+			docs, err := parseOperands(cmd, ctx, realOf, operandErrors(true, stdinErr, inPath), inPath)
 			if err != nil {
-				// Human: per-file error line; JSON: raw error to dispatch.
-				if asJSON {
-					return err
-				}
-				perFileError(errOut, inPath, err)
-				return alreadyRendered(err)
+				return err
 			}
+			doc := docs[0]
 
 			pic, err := resolveExportPicture(selector, doc.Pictures())
 			if err != nil {
@@ -175,7 +168,7 @@ func toJSONExportPicture(inPath, output string, p wl.Picture) jsonExportPicture 
 	return jsonExportPicture{
 		SchemaVersion: schemaVersion,
 		File:          jsonFileName(inPath),
-		Output:        output,
+		Output:        jsonFileName(output),
 		Picture: jsonPicture{
 			Type:        p.Type.String(),
 			MIME:        p.MIME,

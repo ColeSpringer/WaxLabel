@@ -102,7 +102,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		if vals, ok := ts.Get(k); ok {
 			for _, v := range vals {
 				if core.IsTranscoderStamp(v) {
-					warnings = core.Warn(warnings, core.WarnInheritedEncoder, "inherited encoder stamp: "+core.WarnSnippet(v))
+					warnings = core.WarnKeyed(warnings, core.WarnInheritedEncoder, "inherited encoder stamp: "+core.WarnSnippet(v), k)
 				}
 			}
 		}

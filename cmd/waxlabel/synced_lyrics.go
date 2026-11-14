@@ -34,16 +34,15 @@ func splitSyncedLyric(s string) (wl.SyncedLine, error) {
 // parse. Nil when neither authoring flag is set. droppedLines are 1-based LRC
 // lines dropped (no timed lyric / unrecognized), for a per-file warning.
 func (e *editFlags) syncedLyricsAdds() (sets []wl.SyncedLyrics, droppedLines []int, err error) {
-	// Validate language once for the run, only when authoring: bare
-	// --synced-lyrics-lang with --clear-synced-lyrics tags nothing. ISO-639-2 is
-	// three letters; SYLT is three bytes, so other lengths would pad/truncate.
-	authoring := e.syncedLyricsFile != "" || len(e.addSyncedLyric) > 0
-	if authoring && e.syncedLyricsLang != "" && !validLanguageCode(e.syncedLyricsLang) {
+	// Validated once for the run, authoring or not: a valid code with nothing to label
+	// is tolerated, a malformed one never is. ISO-639-2 is three letters; SYLT is three
+	// bytes, so other lengths would pad/truncate.
+	if e.syncedLyricsLang != "" && !validLanguageCode(e.syncedLyricsLang) {
 		return nil, nil, usagef("--synced-lyrics-lang %q must be 3 ASCII letters (e.g. eng)", e.syncedLyricsLang)
 	}
 	var lines []wl.SyncedLine
 	if e.syncedLyricsFile != "" {
-		if err := checkRegularFile(e.syncedLyricsFile, false); err != nil {
+		if err := checkRegularFile(e.syncedLyricsFile); err != nil {
 			return nil, nil, fmt.Errorf("--synced-lyrics-file: %w", err)
 		}
 		data, err := os.ReadFile(e.syncedLyricsFile)

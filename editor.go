@@ -962,7 +962,8 @@ func appendTextQualifierWarnings(ws []core.Warning, caps core.Capabilities, key 
 		return core.WarnKeyed(ws, core.WarnValueReduced, fmt.Sprintf("%s: %s", key, reason), key)
 	}
 	if qualifier, want, got, differs := core.QualifierStoredAs(authored, stored, loss); differs {
-		ws = core.WarnKeyed(ws, core.WarnValueReduced, fmt.Sprintf("%s: %s %q reads back as %q", key, qualifier, want, got), key)
+		ws = core.WarnKeyed(ws, core.WarnValueReduced,
+			fmt.Sprintf("%s: %s %q reads back as %q", key, qualifier, tag.ElideSnippet(want), tag.ElideSnippet(got)), key)
 	}
 	return ws
 }
@@ -1318,7 +1319,8 @@ func rebaseR128Gains(ts *tag.TagSet, patch tag.TagPatch, delta int, keep bool) (
 // splitNumberPairs turns an edit-introduced "n/total" on TRACKNUMBER/DISCNUMBER
 // into the number+total pair every format stores. Only touched number keys;
 // explicit total in the same edit wins. Multi-valued numbers are left alone.
-// Returns conflict warnings when an explicit total disagrees with the slash side.
+// Returns conflict warnings when the explicit total disagrees with the slash side, or is
+// cleared or set empty beside one.
 func splitNumberPairs(ts *tag.TagSet, patch tag.TagPatch) []core.Warning {
 	var ws []core.Warning
 	for _, numKey := range []tag.Key{tag.TrackNumber, tag.DiscNumber} {
@@ -1335,11 +1337,22 @@ func splitNumberPairs(ts *tag.TagSet, patch tag.TagPatch) []core.Warning {
 		// with the slash-derived one. A leading-zero-only difference ("1/07" +
 		// TRACKTOTAL=7) is not a conflict. A malformed number derives no total.
 		_, derived, split := tag.NumberTotalSplit(numKey, vals[0])
-		explicit, _ := ts.First(totKey)
-		if touchesTotal && split && derived != "" && explicit != "" && !sameTotal(explicit, derived) {
-			ws = core.WarnKeyed(ws, core.WarnNumberTotalConflict,
-				fmt.Sprintf("%s %s overrides the total %s derived from %s %q",
-					totKey, explicit, derived, numKey, vals[0]), totKey, numKey)
+		if touchesTotal && split && derived != "" {
+			explicit, present := ts.Get(totKey)
+			switch {
+			case len(explicit) == 0 || explicit[0] == "":
+				state := "cleared"
+				if present {
+					state = "set empty"
+				}
+				ws = core.WarnKeyed(ws, core.WarnNumberTotalConflict,
+					fmt.Sprintf("%s is %s in the same edit, so the total %s in %s %q is not stored",
+						totKey, state, derived, numKey, vals[0]), totKey, numKey)
+			case !sameTotal(explicit[0], derived):
+				ws = core.WarnKeyed(ws, core.WarnNumberTotalConflict,
+					fmt.Sprintf("%s %s overrides the total %s derived from %s %q",
+						totKey, explicit[0], derived, numKey, vals[0]), totKey, numKey)
+			}
 		}
 		// The shared helper ([tag.NormalizeNumberPairs] uses it too) leaves a value with
 		// no slash or a malformed pair ("abc/1", "1/2/3") verbatim; the set-time note

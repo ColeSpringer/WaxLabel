@@ -37,17 +37,21 @@ func newPlanCmd() *cobra.Command {
 			if err := rejectEmptyScalarFlags(cmd); err != nil {
 				return err
 			}
+			// As set refuses it; a plan writes nothing, so it does not say so.
+			if err := refuseUnquotedValue(cmd, args, false); err != nil {
+				return err
+			}
 			ce, err := ef.compile()
 			if err != nil {
 				return err
 			}
 			asJSON := jsonMode(cmd)
-			realOf, cleanup, err := readInputs(cmd.InOrStdin(), maxSizeFlag(cmd), args)
+			realOf, cleanup, stdinErr, err := readInputs(cmd.Context(), cmd.InOrStdin(), maxSizeFlag(cmd), args)
 			if err != nil {
 				return err
 			}
 			defer cleanup()
-			paths, skipped, leftovers, pathErrors, err := expandPaths(args, recursive)
+			paths, skipped, leftovers, pathErrors, err := expandPaths(args, recursive, stdinErr)
 			if err != nil {
 				return err
 			}
@@ -55,11 +59,6 @@ func newPlanCmd() *cobra.Command {
 			noteSkipped(cmd.ErrOrStderr(), skipped, asJSON)
 			noteLeftovers(cmd.ErrOrStderr(), leftovers, asJSON)
 			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, pathErrors, asJSON); err != nil {
-				return err
-			}
-			// Unquoted spaces (--set TITLE=Two Words) leave a stray positional; refuse up
-			// front (exit 2) like set. writes=false: bare hint, no "; nothing was written".
-			if err := refuseUnquotedValue(&ef, realOf, args, false); err != nil {
 				return err
 			}
 			gate := newStrictWarningGate(ef.strict)

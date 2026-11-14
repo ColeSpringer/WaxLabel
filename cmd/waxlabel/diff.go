@@ -41,7 +41,8 @@ func newDiffCmd() *cobra.Command {
 			"written without one.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
+			// The answer is the exit status, so the comparison finishes whoever is reading.
+			ctx := mutationContext(cmd.Context())
 			// --json overrides --quiet (same as verify/set).
 			quiet = quiet && !jsonMode(cmd)
 			if err := checkEmptyOperands(args...); err != nil {
@@ -50,42 +51,22 @@ func newDiffCmd() *cobra.Command {
 			if args[0] == stdinArg && args[1] == stdinArg {
 				return usagef("only one operand may be read from standard input (%q)", stdinArg)
 			}
-			realOf, cleanup, err := readInputs(cmd.InOrStdin(), maxSizeFlag(cmd), args)
+			realOf, cleanup, stdinErr, err := readInputs(ctx, cmd.InOrStdin(), maxSizeFlag(cmd), args)
 			if err != nil {
 				return err
 			}
 			defer cleanup()
-			if err := checkRegularInputs(realOf, true, args...); err != nil {
-				return err
-			}
-			asJSON := jsonMode(cmd)
-			errOut := cmd.ErrOrStderr()
-			// Human mode: per-file error prefix. JSON unchanged (dispatch envelope).
-			parse := func(arg string) (*wl.Document, error) {
-				doc, err := parseInput(ctx, realOf(arg), arg)
-				if err != nil {
-					if asJSON {
-						return nil, err
-					}
-					perFileError(errOut, arg, err)
-					return nil, alreadyRendered(err)
-				}
-				return doc, nil
-			}
-			aDoc, err := parse(args[0])
-			if err != nil {
-				return err
-			}
-			bDoc, err := parse(args[1])
+			docs, err := parseOperands(cmd, ctx, realOf, operandErrors(true, stdinErr, args...), args...)
 			if err != nil {
 				return err
 			}
 
-			d := computeDiff(aDoc, bDoc)
+			d := computeDiff(docs[0], docs[1])
 			if !quiet {
 				out := cmd.OutOrStdout()
-				if asJSON {
-					if err := writeJSON(out, toJSONDiff(args[0], args[1], d)); err != nil {
+				if jsonMode(cmd) {
+					// A failed write (a closed pipe) does not make differing files identical.
+					if err := writeJSON(out, toJSONDiff(args[0], args[1], d)); err != nil && d.identical() {
 						return err
 					}
 				} else {

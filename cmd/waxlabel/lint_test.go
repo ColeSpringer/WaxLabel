@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -328,5 +330,17 @@ func TestLintJSONFindingFixable(t *testing.T) {
 	}
 	if !seen["inherited-encoder"] || !seen["custom-key"] {
 		t.Errorf("fixture should lint both codes; saw %v", seen)
+	}
+}
+
+// TestLintFixRefusesStandardInput: --fix has nowhere to write a stream back to, and says so
+// without reading it.
+func TestLintFixRefusesStandardInput(t *testing.T) {
+	t.Parallel()
+	stdin := &scriptedReader{reads: []string{"data"}}
+	var out, errb bytes.Buffer
+	code := dispatch(context.Background(), []string{"lint", "--fix", sampleFLAC, "-"}, stdin, &out, &errb)
+	if code != 2 || !strings.Contains(errb.String(), "cannot fix standard input") || stdin.calls != 0 {
+		t.Errorf("exit %d, stderr %q, %d reads of the stream; want the usage error and none", code, errb.String(), stdin.calls)
 	}
 }

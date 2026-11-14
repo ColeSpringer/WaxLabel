@@ -44,7 +44,9 @@ func newSetCmd() *cobra.Command {
 			"directory arguments are walked for audio files. Because each file commits\n" +
 			"on its own, a failure partway through a bulk or --recursive run leaves the\n" +
 			"files already saved in place (it is not one transaction) - preview a bulk\n" +
-			"edit with 'plan --recursive' first. A single \"-\" reads from standard input\n" +
+			"edit with 'plan --recursive' first. A closed output pipe (set ... | head)\n" +
+			"does not stop the edits: every file is still written, and the exit status\n" +
+			"is the one the writes earned. A single \"-\" reads from standard input\n" +
 			"and requires -o (editing standard input in place is meaningless). The plan\n" +
 			"is printed before each outcome. Its warnings describe the write plan: what\n" +
 			"the write changes, downgrades, or drops. Run 'lint' on the saved file to\n" +
@@ -82,6 +84,10 @@ func newSetCmd() *cobra.Command {
 				fmt.Fprintln(cmd.ErrOrStderr(), "note: --preserve-mtime has no effect on standard input; the output gets the write time")
 				preserveMtime = false
 			}
+			// Before compile reads a cover or lyrics file the split value may have cut short.
+			if err := refuseUnquotedValue(cmd, args, true); err != nil {
+				return err
+			}
 			var extra []wl.WriteOption
 			if verify {
 				extra = append(extra, wl.WithVerifyEssence())
@@ -93,13 +99,13 @@ func newSetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			realOf, cleanup, err := readInputs(cmd.InOrStdin(), maxSizeFlag(cmd), args)
+			realOf, cleanup, stdinErr, err := readInputs(mutationContext(cmd.Context()), cmd.InOrStdin(), maxSizeFlag(cmd), args)
 			if err != nil {
 				return err
 			}
 			defer cleanup()
 
-			paths, skipped, leftovers, pathErrors, err := expandPaths(args, recursive)
+			paths, skipped, leftovers, pathErrors, err := expandPaths(args, recursive, stdinErr)
 			if err != nil {
 				return err
 			}
@@ -124,11 +130,6 @@ func newSetCmd() *cobra.Command {
 			}
 			// Defer notes until a path exists; avoids claiming a write on an abort.
 			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, pathErrors, jsonMode(cmd)); err != nil {
-				return err
-			}
-			// Unquoted value (--set TITLE=Two Words) leaves a stray positional; refuse the
-			// run so a script cannot treat partial writes as success.
-			if err := refuseUnquotedValue(&ef, realOf, args, true); err != nil {
 				return err
 			}
 			return runSet(cmd, paths, pathErrors, realOf, ce, output, ef.strict, quiet, verify)
@@ -277,6 +278,7 @@ func checkSetStdin(args []string, output string) error {
 // worstError sets exit class; batch continues. quiet hides per-file text on success.
 func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, realOf func(string) string, ce *compiledEdit, output string, strict, quiet, verify bool) error {
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
+	ctx := mutationContext(cmd.Context())
 	asJSON := jsonMode(cmd)
 	quiet = quiet && !asJSON // text-mode only; JSON shape is fixed
 	// --recursive walk matched nothing: advisory, exit 0 (matches plan).
@@ -312,7 +314,7 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 			fail(path, e)
 			continue
 		}
-		doc, plan, err := ce.prepare(cmd.Context(), realOf(path), path, lockWaitNote(errOut, path))
+		doc, plan, err := ce.prepare(ctx, realOf(path), path, lockWaitNote(errOut, path))
 		if err != nil {
 			fail(path, err)
 			continue
@@ -345,7 +347,7 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 			}
 			dst = wl.SaveAsFile(output)
 		}
-		_, res, err := plan.Execute(cmd.Context(), dst)
+		_, res, err := plan.Execute(ctx, dst)
 		// Outcome follows res.Committed, not err (post-commit failure != writeFailed).
 		if writeFailed(res, err) {
 			if output != "" {
@@ -378,7 +380,8 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 	}
 
 	if asJSON {
-		if err := emitJSONList(out, items); err != nil {
+		// A write that fails (a closed pipe) does not outrank what the files earned.
+		if err := emitJSONList(out, items); err != nil && worstErr == nil {
 			return err
 		}
 	} else if len(paths) > 1 {
@@ -401,12 +404,13 @@ func warnExtensionMismatch(w io.Writer, output string, f wl.Format) {
 	if len(exts) == 0 || slices.Contains(exts, ext) {
 		return
 	}
-	fmt.Fprintf(w, "waxlabel: warning: writing %s data to %s; WaxLabel does not transcode\n", f, output)
+	fmt.Fprintf(w, "waxlabel: warning: writing %s data to %s; WaxLabel does not transcode\n", f, displayName(output))
 }
 
 // renderSaveOutcome reports where bytes went. noOp/discarded only affect -o copy lines.
 // discarded uses the same predicate as the plan line above.
 func renderSaveOutcome(w io.Writer, path, output string, res wl.SaveResult, noOp, discarded bool) {
+	path, output = displayName(path), displayName(output)
 	switch {
 	case output != "" && noOp && discarded:
 		fmt.Fprintf(w, "Edit discarded; wrote a verbatim copy to %s (%s)\n", output, wl.HumanBytes(res.Dest.Size))
@@ -437,7 +441,7 @@ func toJSONSetResult(path, output string, plan *wl.Plan, res wl.SaveResult, veri
 	r := jsonSetResult{
 		jsonReport: toJSONReport(path, plan),
 		Committed:  res.Committed,
-		Output:     output,
+		Output:     jsonFileName(output),
 		Size:       res.Dest.Size,
 	}
 	r.setPostWrite(postWrite)

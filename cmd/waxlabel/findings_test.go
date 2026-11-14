@@ -698,7 +698,8 @@ func TestReadCommandsRejectRepeatedStdin(t *testing.T) {
 // Empty scalar flags are usage errors, not treated as unset.
 func TestRejectEmptyScalarFlags(t *testing.T) {
 	file := copyFixture(t, sampleFLAC)
-	for _, flag := range []string{"--preset", "--legacy", "--padding", "--synced-lyrics-file"} {
+	for _, flag := range []string{"--preset", "--legacy", "--padding", "--synced-lyrics-file",
+		"--output-gain", "--synced-lyrics-lang", "--picture-description"} {
 		_, stderr, code := runCLI(t, "set", file, "--set", "TITLE=X", flag, "")
 		if code != 2 || !strings.Contains(stderr, "cannot be empty") {
 			t.Errorf("set %s '': code %d, stderr %q; want exit 2 'cannot be empty'", flag, code, stderr)
@@ -731,6 +732,16 @@ func TestEmptyWalkNoteNotAFailure(t *testing.T) {
 	}
 	if strings.Contains(stderr, "waxlabel: no audio") {
 		t.Errorf("the exit-0 note should not wear the 'waxlabel:' failure prefix; got %q", stderr)
+	}
+}
+
+// A directory named twice is walked twice, as a file named twice is read twice.
+func TestRecursiveWalkOfARepeatedDirectory(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Dir(copyFixture(t, sampleFLAC))
+	out, errb, code := runCLI(t, "--json", "dump", "--recursive", dir, dir)
+	if docs := decodeJSONList[jsonDocument](t, out); code != 0 || len(docs) != 2 || docs[0].Error != nil || docs[1].Error != nil {
+		t.Errorf("exit %d, %d elements, stderr %q; want the file dumped twice", code, len(docs), errb)
 	}
 }
 
@@ -885,6 +896,62 @@ func TestUnquotedValueHint(t *testing.T) {
 	}
 	if strings.Contains(stderr, "must be quoted") {
 		t.Errorf("no bare word, so no quoting hint expected; got:\n%s", stderr)
+	}
+
+	// Every flag that takes free text or a path loses the rest of an unquoted value the same way.
+	if before, err = os.ReadFile(file); err != nil {
+		t.Fatal(err)
+	}
+	cover := writeTempImage(t, "My", testfile.PNG())
+	lrc := filepath.Join(t.TempDir(), "My")
+	if err := os.WriteFile(lrc, []byte("[00:01.00]Hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		args []string
+	}{
+		{"--add", []string{"--add", "ARTIST=Two", "Part"}},
+		{"several words", []string{"--set", "TITLE=One", "Part", "Three"}},
+		{"--add-chapter", []string{"--add-chapter", "0:00.5=Intro", "Part"}},
+		{"--add-synced-lyric", []string{"--add-synced-lyric", "0:01=Hello", "Part"}},
+		{"--picture-description", []string{"--add-cover", cover, "--picture-description", "Front", "Part"}},
+		{"--add-cover", []string{"--add-cover", cover, "Part.png"}},
+		{"--add-cover, no such file", []string{"--add-cover", "No", "Part.png"}},
+		{"--add-picture", []string{"--add-picture", "back-cover=" + cover, "Part.png"}},
+		{"--synced-lyrics-file", []string{"--synced-lyrics-file", lrc, "Part.lrc"}},
+		{"--comment-desc", []string{"--set", "COMMENT=c", "--comment-desc", "Two", "Part"}},
+		{"--lyrics-desc", []string{"--set", "LYRICS=l", "--lyrics-desc", "Two", "Part"}},
+		{"--clear", []string{"--clear", "MY", "Part"}},
+		{"--padding", []string{"--padding", "8", "Part"}},
+		{"--output-gain", []string{"--output-gain", "-3", "Part"}},
+		{"--max-size", []string{"--strip-encoder", "--max-size", "2", "Part"}},
+		{"--remove-picture", []string{"--remove-picture", "front", "Part"}},
+	} {
+		for _, cmd := range []string{"set", "plan"} {
+			_, stderr, code := runCLI(t, append([]string{cmd, file}, c.args...)...)
+			if code != 2 || !strings.Contains(stderr, "must be quoted") || !strings.Contains(stderr, `waxlabel: "Part`) {
+				t.Errorf("%s %s: exit %d, stderr %q; want 2 and the quoting hint naming the stray word", cmd, c.name, code, stderr)
+			}
+			if wrote := strings.Contains(stderr, "nothing was written"); wrote != (cmd == "set") {
+				t.Errorf("%s %s: \"nothing was written\" belongs to set only: %q", cmd, c.name, stderr)
+			}
+		}
+		if after, _ := os.ReadFile(file); !bytes.Equal(before, after) {
+			t.Fatalf("%s: the refused run modified the file", c.name)
+		}
+	}
+	// A flag that takes no value gives no reason to read a missing operand as one's tail.
+	if _, stderr, code := runCLI(t, "plan", file, "Part", "--strip-encoder"); code != 6 || strings.Contains(stderr, "must be quoted") {
+		t.Errorf("--strip-encoder with a missing operand: exit %d, stderr %q; want the not-found, no quoting hint", code, stderr)
+	}
+	// A missing bare word with no file beside it is a path that was not found.
+	if _, stderr, code := runCLI(t, "plan", "Part", "--set", "TITLE=x"); code != 6 || strings.Contains(stderr, "must be quoted") {
+		t.Errorf("a lone missing operand: exit %d, stderr %q; want the not-found, no quoting hint", code, stderr)
+	}
+	// An empty operand is its own error.
+	if _, stderr, code := runCLI(t, "plan", file, "", "--set", "TITLE=x"); code != 2 || !strings.Contains(stderr, "input filename is empty") {
+		t.Errorf("empty operand: exit %d, stderr %q", code, stderr)
 	}
 
 	// Extensionless audio file resolves; not refused as stray word.
@@ -1051,5 +1118,124 @@ func TestRecursiveWalkNotesLeftoverTemps(t *testing.T) {
 	outJSON, errJSON, _ := runCLI(t, "--json", "dump", "--recursive", dir)
 	if strings.Contains(outJSON, "leftover") || strings.Contains(errJSON, "leftover") {
 		t.Errorf("the note must stay out of --json output: stdout %q stderr %q", outJSON, errJSON)
+	}
+}
+
+// TestDiffAndCopyReportBothOperands: neither command stops at its first bad operand, so the
+// exit class does not depend on the order they are given in.
+func TestDiffAndCopyReportBothOperands(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	corrupt := filepath.Join(dir, "corrupt.flac")
+	if err := os.WriteFile(corrupt, data[:300], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "missing.flac")
+
+	for _, cmd := range []string{"diff", "copy"} {
+		for _, operands := range [][]string{{missing, corrupt}, {corrupt, missing}} {
+			args := append([]string{cmd}, operands...)
+			_, errb, code := runCLI(t, args...)
+			if code != 4 {
+				t.Errorf("%v: exit %d, want 4 (invalid-data outranks not-found)", args, code)
+			}
+			if !strings.Contains(errb, "waxlabel: "+missing+": no such file or directory\n") ||
+				!strings.Contains(errb, "waxlabel: "+corrupt+": ") {
+				t.Errorf("%v: stderr should carry a line per operand:\n%s", args, errb)
+			}
+
+			out, errb, code := runCLI(t, append([]string{"--json"}, args...)...)
+			var env jsonError
+			if err := json.Unmarshal([]byte(out), &env); err != nil {
+				t.Fatalf("%v --json: %v\n%s", args, err, out)
+			}
+			if errb != "" {
+				t.Errorf("%v --json: stderr %q, want the envelope alone", args, errb)
+			}
+			if code != 4 || env.Error.Code != "invalid-data" || !strings.HasPrefix(env.Error.Message, corrupt+": ") {
+				t.Errorf("%v --json: exit %d, error %+v; want the corrupt operand's invalid-data, named", args, code, env.Error)
+			}
+		}
+	}
+
+	// One bad operand keeps its own class and line.
+	out, _, code := runCLI(t, "--json", "diff", missing, sampleFLAC)
+	var env jsonError
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatal(err)
+	}
+	if code != 6 || env.Error.Code != "not-found" || env.Error.Message != missing+": no such file or directory" {
+		t.Errorf("one missing operand: exit %d, error %+v", code, env.Error)
+	}
+}
+
+// TestRemovePictureSelectorValidatedOnce: a selector that is neither a role nor an index is
+// one usage error for the run, ahead of any file. An index a file does not have stays that
+// file's own.
+func TestRemovePictureSelectorValidatedOnce(t *testing.T) {
+	t.Parallel()
+	a, b := twoCopies(t, sampleFLAC)
+	before, err := os.ReadFile(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing.flac")
+
+	for _, sel := range []string{"bogus", "0", "-1", ""} {
+		out, errb, code := runCLI(t, "set", a, b, missing, "--set", "TITLE=x", "--remove-picture", sel)
+		if code != 2 || strings.Count(errb, "--remove-picture") != 1 || strings.Contains(errb, "missing.flac") {
+			t.Errorf("--remove-picture %q: exit %d, stderr %q; want one usage error", sel, code, errb)
+		}
+		if strings.Contains(out, "failed") {
+			t.Errorf("--remove-picture %q: no file should be reached:\n%s", sel, out)
+		}
+		if _, _, code := runCLI(t, "plan", a, "--remove-picture", sel); code != 2 {
+			t.Errorf("plan --remove-picture %q: exit %d, want 2", sel, code)
+		}
+	}
+	for _, p := range []string{a, b} {
+		if after, _ := os.ReadFile(p); !bytes.Equal(before, after) {
+			t.Errorf("%s was written", filepath.Base(p))
+		}
+	}
+
+	// File a gets a picture; index 1 is then out of range for b alone.
+	if _, errb, code := runCLI(t, "set", a, "--add-cover", writeTempImage(t, "c.png", testfile.PNG())); code != 0 {
+		t.Fatalf("seed: exit %d: %s", code, errb)
+	}
+	out, errb, code := runCLI(t, "set", a, b, "--remove-picture", "1")
+	if code != 2 || !strings.Contains(out, "1 changed, 0 unchanged, 1 failed") ||
+		!strings.Contains(errb, "waxlabel: "+b+": --remove-picture index 1 is out of range") {
+		t.Errorf("index out of range for one file: exit %d\n%s%s", code, out, errb)
+	}
+}
+
+// TestClearedTotalBesideSlashNumberWarns: a total the same edit clears wins over the one in
+// "3/10", and the plan says the /10 went nowhere.
+func TestClearedTotalBesideSlashNumberWarns(t *testing.T) {
+	t.Parallel()
+	conflict := func(args ...string) (jsonReport, bool) {
+		t.Helper()
+		out, errb, code := runCLI(t, append([]string{"--json", "plan", sampleFLAC}, args...)...)
+		if code != 0 {
+			t.Fatalf("%v: exit %d: %s", args, code, errb)
+		}
+		r := decodeJSONOne[jsonReport](t, out)
+		return r, slices.ContainsFunc(r.Warnings, func(w jsonWarning) bool { return w.Code == "number-total-conflict" })
+	}
+	r, warned := conflict("--set", "TRACKNUMBER=3/10", "--clear", "TRACKTOTAL")
+	if !warned || len(r.Changes) != 1 || r.Changes[0].Key != "TRACKNUMBER" || !slices.Equal(r.Changes[0].New, []string{"3"}) {
+		t.Errorf("warnings %+v, changes %+v; want the conflict warning and TRACKNUMBER=3 alone", r.Warnings, r.Changes)
+	}
+	if _, warned := conflict("--set", "TRACKNUMBER=3", "--clear", "TRACKTOTAL"); warned {
+		t.Error("a plain number loses no total to the clear")
+	}
+	// Not an edit --strict refuses: the clear was asked for.
+	if _, _, code := runCLI(t, "plan", "--strict", sampleFLAC, "--set", "TRACKNUMBER=3/10", "--clear", "TRACKTOTAL"); code != 0 {
+		t.Errorf("--strict: exit %d, want 0", code)
 	}
 }

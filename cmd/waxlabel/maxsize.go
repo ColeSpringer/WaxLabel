@@ -2,8 +2,7 @@ package main
 
 import (
 	"fmt"
-	"math"
-	"strconv"
+	"math/big"
 	"strings"
 
 	wl "github.com/colespringer/waxlabel"
@@ -38,23 +37,9 @@ func (v *byteSizeValue) Type() string { return "size" }
 // KiB/MiB/GiB/TiB and bare K/M/G/T are binary (1024^n), case-insensitive, optional
 // space before the unit. Bare letters are binary so values round-trip with
 // HumanBytes. "0" means unlimited. Leading '+' allowed; negative/empty/unparseable
-// rejected.
+// rejected, and so is a size that is not a whole number of bytes ("0.4", "1.9KiB"):
+// truncated, 0.4 would read as unlimited. "1.5KiB" (1536) passes.
 func parseByteSize(s string) (int64, error) {
-	total, err := byteSizeFloat(s)
-	if err != nil {
-		return 0, err
-	}
-	// float64(MaxInt64) rounds up to 2^63; reject that too so int64(total) cannot
-	// wrap to a negative "unlimited".
-	if total >= float64(math.MaxInt64) {
-		return 0, fmt.Errorf("invalid size %q: too large", s)
-	}
-	return int64(total), nil
-}
-
-// byteSizeFloat is the numeric half of parseByteSize before int64 truncation, so
-// callers that must reject a fractional result can see one.
-func byteSizeFloat(s string) (float64, error) {
 	trimmed := strings.TrimSpace(s)
 	if trimmed == "" {
 		return 0, fmt.Errorf("empty size")
@@ -74,35 +59,23 @@ func byteSizeFloat(s string) (float64, error) {
 	if numPart == "" {
 		return 0, fmt.Errorf("invalid size %q: expected a leading number", s)
 	}
-	num, err := strconv.ParseFloat(numPart, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid size %q: %v", s, err)
-	}
-	if num < 0 {
-		return 0, fmt.Errorf("invalid size %q: must not be negative", s)
+	// Exact decimal arithmetic: in floating point 8.2 MB is not 8,200,000 bytes.
+	total, ok := new(big.Rat).SetString(numPart)
+	if !ok {
+		return 0, fmt.Errorf("invalid size %q: expected a number", s)
 	}
 	mult, err := unitMultiplier(unitPart)
 	if err != nil {
 		return 0, fmt.Errorf("invalid size %q: %v", s, err)
 	}
-	return num * float64(mult), nil
-}
-
-// parseByteSizeExact rejects sizes that would truncate to a whole byte
-// (e.g. "0.4", "1.9KiB"). "1.5KiB" (1536) passes.
-func parseByteSizeExact(s string) (int64, error) {
-	n, err := parseByteSize(s)
-	if err != nil {
-		return 0, err
-	}
-	total, err := byteSizeFloat(s)
-	if err != nil {
-		return 0, err
-	}
-	if total != math.Trunc(total) {
+	total.Mul(total, new(big.Rat).SetInt64(mult))
+	if !total.IsInt() {
 		return 0, fmt.Errorf("invalid size %q: must be a whole number of bytes", s)
 	}
-	return n, nil
+	if !total.Num().IsInt64() {
+		return 0, fmt.Errorf("invalid size %q: too large", s)
+	}
+	return total.Num().Int64(), nil
 }
 
 // unitMultiplier maps a size unit suffix to its byte multiplier. Empty/"B" = 1;

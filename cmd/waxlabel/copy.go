@@ -51,33 +51,15 @@ func newCopyCmd() *cobra.Command {
 				return err
 			}
 
-			ctx := cmd.Context()
+			ctx := mutationContext(cmd.Context())
 			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 			asJSON := jsonMode(cmd)
-			// Human mode: per-file error line, not bare classifier. JSON uses dispatch envelope.
-			parse := func(path string) (*wl.Document, error) {
-				doc, err := wl.ParseFile(ctx, path)
-				if err != nil {
-					if asJSON {
-						return nil, err
-					}
-					perFileError(errOut, path, err)
-					return nil, alreadyRendered(err)
-				}
-				return doc, nil
-			}
-			// Non-regular paths exit 2. acceptsStdin false (no "-" hint). Missing paths fall through to parse.
-			if err := checkRegularInputs(func(p string) string { return p }, false, srcPath, dstPath); err != nil {
-				return err
-			}
-			srcDoc, err := parse(srcPath)
+			// acceptsStdin false: copy takes no "-", so a FIFO's hint does not offer it.
+			docs, err := parseOperands(cmd, ctx, func(p string) string { return p }, operandErrors(false, nil, args...), args...)
 			if err != nil {
 				return err
 			}
-			dstDoc, err := parse(dstPath)
-			if err != nil {
-				return err
-			}
+			srcDoc, dstDoc := docs[0], docs[1]
 
 			plan, report, err := srcDoc.PrepareTransfer(dstDoc, append(opts, lockWaitNote(errOut, dstPath))...)
 			// Labels distinguish WebM from Matroska (same Format).
@@ -88,8 +70,9 @@ func newCopyCmd() *cobra.Command {
 			fail := func(plan *wl.Plan, err error) error {
 				if !asJSON {
 					perFileError(errOut, dstPath, err)
-				} else if jerr := writeJSON(out, toJSONCopyError(srcPath, dstPath, report, plan, err)); jerr != nil {
-					return jerr
+				} else {
+					// A failed write of the envelope (a closed pipe) leaves the failure standing.
+					_ = writeJSON(out, toJSONCopyError(srcPath, dstPath, report, plan, err))
 				}
 				return alreadyRendered(err)
 			}
@@ -120,9 +103,7 @@ func newCopyCmd() *cobra.Command {
 					if !asJSON {
 						return err
 					}
-					if jerr := writeJSON(out, toJSONCopyError(srcPath, dstPath, report, nil, err)); jerr != nil {
-						return jerr
-					}
+					_ = writeJSON(out, toJSONCopyError(srcPath, dstPath, report, nil, err))
 					return alreadyRendered(err)
 				}
 			}
@@ -130,7 +111,7 @@ func newCopyCmd() *cobra.Command {
 				if asJSON {
 					return writeJSON(out, toJSONCopy(srcPath, dstPath, report, plan, true, false, nil))
 				}
-				fmt.Fprintf(out, "\nDry run; %s left untouched\n", dstPath)
+				fmt.Fprintf(out, "\nDry run; %s left untouched\n", displayName(dstPath))
 				return nil
 			}
 
@@ -176,7 +157,7 @@ func transferLabel(it wl.TransferItem) string {
 		return fmt.Sprintf("synced lyrics (%d)", it.Count)
 	default:
 		// Sanitize unvalidated field names (control bytes, newlines).
-		return tag.SanitizeLine(string(it.Key))
+		return tag.SanitizeLine(tag.ElideKey(it.Key))
 	}
 }
 
@@ -250,14 +231,14 @@ type jsonTransferItem struct {
 func toJSONCopyError(src, dst string, r wl.TransferReport, plan *wl.Plan, err error) jsonCopy {
 	jc := toJSONCopy(src, dst, r, plan, false, false, nil)
 	c := classifyError(err)
-	jc.Error = &jsonErrBody{Code: c.code, Message: perFileReason(err), Hint: c.hint}
+	jc.Error = &jsonErrBody{Code: c.code, Message: jsonText(perFileReason(err)), Hint: c.hint}
 	return jc
 }
 
 func toJSONCopy(src, dst string, r wl.TransferReport, plan *wl.Plan, dryRun, committed bool, postWrite error) jsonCopy {
 	jc := jsonCopy{
 		jsonReport:   toJSONReport(dst, plan),
-		Source:       src,
+		Source:       jsonFileName(src),
 		SourceFormat: r.Source.String(),
 		DestFormat:   r.Dest.String(),
 		Transfer:     []jsonTransferItem{},

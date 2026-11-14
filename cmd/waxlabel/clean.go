@@ -100,6 +100,11 @@ func runClean(cmd *cobra.Command, dirs []string, recursive, remove, all bool) er
 	}
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	asJSON := jsonMode(cmd)
+	// A removal runs to its end; a listing nobody reads stops.
+	ctx := cmd.Context()
+	if remove {
+		ctx = mutationContext(ctx)
+	}
 	var items []any
 	var worstErr error
 	found, removed := 0, 0
@@ -119,11 +124,14 @@ func runClean(cmd *cobra.Command, dirs []string, recursive, remove, all bool) er
 			report(dir, err)
 			continue
 		}
-		temps, unreadable, err := scanLeftovers(cmd.Context(), dir, recursive, all)
+		temps, unreadable, err := scanLeftovers(ctx, dir, recursive, all)
 		for _, uerr := range unreadable {
 			report(errorPath(uerr, dir), uerr)
 		}
 		if err != nil {
+			if outputClosed(cmd.Context()) && isPipeClose(err) {
+				break
+			}
 			report(dir, err)
 			continue
 		}
@@ -136,7 +144,7 @@ func runClean(cmd *cobra.Command, dirs []string, recursive, remove, all bool) er
 						worstErr = rerr
 					}
 					if asJSON {
-						jc.Error = &jsonErrBody{Code: classifyError(rerr).code, Message: perFileReason(rerr)}
+						jc.Error = &jsonErrBody{Code: classifyError(rerr).code, Message: jsonText(perFileReason(rerr))}
 					} else {
 						perFileError(errOut, t.path, rerr)
 					}

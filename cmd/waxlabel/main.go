@@ -31,19 +31,17 @@ import (
 )
 
 func main() {
+	ctx, interrupt, pipeClosed := newRunContext(context.Background())
+
 	// First signal cancels in-flight work; a second forces exit for ops that cannot
 	// observe cancellation (e.g. blocked in fsync). Own goroutine so the second
 	// signal is still handled if main is stuck. os.Exit skips defers, so the forced path
 	// drains the cleanup registry itself.
-	//
-	// A canceled op always returns context.Canceled; only the cancel cause separates
-	// a benign closed pipe (exit 0) from Ctrl-C (exit 130).
-	ctx, cancel := context.WithCancelCause(context.Background())
 	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sig
-		cancel(nil) // nil cause -> context.Canceled: interrupt, exit 130
+		interrupt()
 		<-sig
 		runCleanups()
 		os.Exit(130)
@@ -56,14 +54,40 @@ func main() {
 	signal.Notify(pipe, syscall.SIGPIPE)
 	go func() {
 		<-pipe
-		cancel(errBrokenPipe)
+		pipeClosed()
 	}()
 
 	code := dispatch(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	signal.Stop(sig)
 	signal.Stop(pipe)
-	cancel(nil)
+	interrupt()
 	os.Exit(code)
+}
+
+// interruptKey holds the context only an interrupt cancels.
+type interruptKey struct{}
+
+// newRunContext returns the context a command runs under and its two cancels. interrupt
+// (SIGINT, SIGTERM) cancels everything. pipeClosed (SIGPIPE) cancels ctx alone, so reads and
+// listings stop while a write goes on under [mutationContext].
+func newRunContext(parent context.Context) (ctx context.Context, interrupt, pipeClosed func()) {
+	sigCtx, interrupt := context.WithCancel(parent)
+	pipeCtx, cancelPipe := context.WithCancelCause(context.WithValue(sigCtx, interruptKey{}, sigCtx))
+	return pipeCtx, interrupt, func() { cancelPipe(errBrokenPipe) }
+}
+
+// mutationContext is the context a write runs under: an interrupt cancels it, a closed
+// output pipe does not. A context newRunContext did not make is its own.
+func mutationContext(ctx context.Context) context.Context {
+	if sigCtx, ok := ctx.Value(interruptKey{}).(context.Context); ok {
+		return sigCtx
+	}
+	return ctx
+}
+
+// outputClosed reports that ctx ended because the output pipe closed and no interrupt followed.
+func outputClosed(ctx context.Context) bool {
+	return errors.Is(context.Cause(ctx), errBrokenPipe) && mutationContext(ctx).Err() == nil
 }
 
 // dispatch builds and runs the root command and returns the process exit code.
@@ -89,10 +113,9 @@ func dispatch(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return 0
 	}
 	// Closed output pipe is benign (exit 0, silent). Synchronous errno from the write
-	// is definitive and is not gated on cancel cause (SIGPIPE goroutine may lag).
-	// context.Canceled is gated on the cause so Ctrl-C stays exit 130.
-	if isBrokenPipe(err) ||
-		(errors.Is(err, context.Canceled) && errors.Is(context.Cause(ctx), errBrokenPipe)) {
+	// is definitive and is not gated on the cancel (SIGPIPE goroutine may lag).
+	// context.Canceled is gated on it so Ctrl-C stays exit 130.
+	if isBrokenPipe(err) || (errors.Is(err, context.Canceled) && outputClosed(ctx)) {
 		err = errBrokenPipe
 	}
 	// Already-written output keeps its exit class but is not rendered twice.

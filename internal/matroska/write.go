@@ -129,9 +129,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if !ch.any() {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
-	if d.wb.unreadFrom > 0 {
-		return nil, fmt.Errorf("%w: the read of the Segment stops at offset %d, at bytes that are no element, so the file cannot be rewritten safely",
-			waxerr.ErrInvalidData, d.wb.unreadFrom)
+	if err := d.refuseWrite(); err != nil {
+		return nil, err
 	}
 
 	// Per-tag outcomes for preservation, covered-set, and group render (cross-scope).
@@ -158,13 +157,6 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			waxerr.ErrUnsupportedTag)
 	}
 
-	// Uncapturable SeekHead/Cues: refuse rather than corrupt indexes on move.
-	if err := checkIndexCaptured(d.wb); err != nil {
-		return nil, err
-	}
-	if err := checkSegmentCRCCaptured(d.wb); err != nil {
-		return nil, err
-	}
 	if err := checkPreservable(d, ch, ed); err != nil {
 		return nil, err
 	}
@@ -305,6 +297,20 @@ func detectChanges(base, edited *core.Media) changes {
 
 // isWebM reports whether the EBML DocType is WebM, case-insensitively like containerName.
 func isWebM(docType string) bool { return strings.EqualFold(docType, "webm") }
+
+// refuseWrite is why d cannot be rewritten at all, whatever the edit: Plan refuses with it and
+// the capabilities report it.
+func (d *doc) refuseWrite() error {
+	if d.wb.unreadFrom > 0 {
+		return fmt.Errorf("%w: the read of the Segment stops at offset %d, at bytes that are no element, so the file cannot be rewritten safely",
+			waxerr.ErrInvalidData, d.wb.unreadFrom)
+	}
+	// Uncapturable SeekHead/Cues: refuse rather than corrupt indexes on move.
+	if err := checkIndexCaptured(d.wb); err != nil {
+		return err
+	}
+	return checkSegmentCRCCaptured(d.wb)
+}
 
 // checkIndexCaptured refuses the edit when a SeekHead/Cues element cannot be
 // rewritten: more than one is present (a linked index; only the last is captured, so

@@ -151,7 +151,8 @@ func InvalidUTF8Warnings(t *Tag) []core.Warning {
 	return ws
 }
 
-// EncoderNoise: inherited Lavf/... stamp (same as Vorbis/ID3 checks).
+// EncoderNoise: inherited Lavf/... stamp (same as Vorbis/ID3 checks), keyed by the field the
+// item reads as.
 func EncoderNoise(items []Item) []core.Warning {
 	var ws []core.Warning
 	for _, it := range items {
@@ -164,7 +165,8 @@ func EncoderNoise(items []Item) []core.Warning {
 			continue
 		}
 		if core.IsTranscoderStamp(it.Value) {
-			ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder item: "+core.WarnSnippet(it.Value))
+			key, _ := mapping.CanonicalAPE(it.Key)
+			ws = core.WarnKeyed(ws, core.WarnInheritedEncoder, "inherited encoder item: "+core.WarnSnippet(it.Value), key)
 		}
 	}
 	return ws

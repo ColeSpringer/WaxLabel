@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -272,5 +274,92 @@ func TestParseFormat(t *testing.T) {
 	// "ogg" as a format name means Vorbis despite shared .ogg extension.
 	if f, _, _, err := parseFormat("ogg"); err != nil || f.String() != "Ogg Vorbis" {
 		t.Errorf(`parseFormat("ogg") = %v, %v; want Ogg Vorbis`, f, err)
+	}
+}
+
+// TestCapsReportsEveryOperand: a directory or a missing path fails alone; the files beside it
+// are still described.
+func TestCapsReportsEveryOperand(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.flac")
+
+	out, errb, code := runCLI(t, "caps", sampleFLAC, missing, dir)
+	if code != 6 {
+		t.Errorf("exit %d, want 6 (not-found outranks the directory's usage error)", code)
+	}
+	if !strings.Contains(out, "editable keys") {
+		t.Errorf("the file should still be described:\n%s", out)
+	}
+	for _, want := range []string{
+		"waxlabel: " + missing + ": no such file or directory\n",
+		"waxlabel: " + dir + ": is a directory, not a file\n",
+	} {
+		if !strings.Contains(errb, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, errb)
+		}
+	}
+
+	out, _, code = runCLI(t, "--json", "caps", sampleFLAC, missing, dir)
+	got := decodeJSONList[jsonCaps](t, out)
+	if code != 6 || len(got) != 3 {
+		t.Fatalf("--json: exit %d, %d elements; want 6 and 3\n%s", code, len(got), out)
+	}
+	if got[0].Error != nil || got[0].Format != "FLAC" {
+		t.Errorf("element 0 = %+v, want the FLAC report", got[0])
+	}
+	if got[1].Error == nil || got[1].Error.Code != "not-found" || got[2].Error == nil || got[2].Error.Code != "usage" {
+		t.Errorf("errors = %+v, %+v; want not-found and usage", got[1].Error, got[2].Error)
+	}
+}
+
+// TestParseFormatTakesPrintedNames: every name caps, dump and the README print for a format
+// or container is accepted back, in any case and with or without its punctuation.
+func TestParseFormatTakesPrintedNames(t *testing.T) {
+	t.Parallel()
+	for _, f := range wl.Formats() {
+		name := f.String()
+		for _, in := range []string{name, strings.ToUpper(name), strings.ToLower(name), strings.ReplaceAll(name, " ", "")} {
+			// A WMA file has one container, and reports it.
+			want := map[wl.Format]string{wl.FormatWMA: "ASF"}[f]
+			if got, _, container, err := parseFormat(in); err != nil || got != f || container != want {
+				t.Errorf("parseFormat(%q) = %v, %q, %v; want %v, %q", in, got, container, err, f, want)
+			}
+		}
+	}
+	for in, want := range map[string]struct {
+		format    wl.Format
+		container string
+	}{
+		"rf64": {wl.FormatWAV, "RF64"}, "BW64": {wl.FormatWAV, "BW64"}, "aifc": {wl.FormatAIFF, "AIFC"},
+		"AIFF-C": {wl.FormatAIFF, "AIFC"}, "WebM": {wl.FormatMatroska, "WebM"}, "asf": {wl.FormatWMA, "ASF"},
+	} {
+		if got, _, container, err := parseFormat(in); err != nil || got != want.format || container != want.container {
+			t.Errorf("parseFormat(%q) = %v, %q, %v; want %v, %q", in, got, container, err, want.format, want.container)
+		}
+	}
+	for _, bad := range []string{"", " ", "()", "ogg (vorbis)x", "monkey"} {
+		if _, _, _, err := parseFormat(bad); err == nil {
+			t.Errorf("parseFormat(%q) should fail", bad)
+		}
+	}
+
+	out, _, code := runCLI(t, "caps", "--format", "AAC (ADTS)")
+	if code != 0 || !strings.Contains(out, "format:        AAC (ADTS)") {
+		t.Errorf("caps --format 'AAC (ADTS)': exit %d\n%s", code, out)
+	}
+	out, _, code = runCLI(t, "--json", "caps", "--format", "rf64")
+	var jc jsonCaps
+	if err := json.Unmarshal([]byte(out), &jc); err != nil || code != 0 || jc.Format != "WAV" || jc.Subformat != "RF64" {
+		t.Errorf("caps --format rf64 --json: exit %d, format %q, subformat %q (%v)", code, jc.Format, jc.Subformat, err)
+	}
+	// A format named with no file reports the subformat a file of it does.
+	for name, fixture := range map[string]string{"aifc": "sample.aifc", "wma": "sample.wma", "asf": "sample.wma", "rf64": "sample-rf64.wav", "flac": "sample.flac"} {
+		out, _, _ = runCLI(t, "--json", "caps", td(fixture))
+		file := decodeJSONOne[jsonCaps](t, out)
+		out, _, _ = runCLI(t, "--json", "caps", "--format", name)
+		if err := json.Unmarshal([]byte(out), &jc); err != nil || jc.Format != file.Format || jc.Subformat != file.Subformat {
+			t.Errorf("caps --format %s: format %q, subformat %q (%v); %s gives %q, %q", name, jc.Format, jc.Subformat, err, fixture, file.Format, file.Subformat)
+		}
 	}
 }

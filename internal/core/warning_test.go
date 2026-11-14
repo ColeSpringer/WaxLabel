@@ -79,3 +79,24 @@ func TestAppendDuplicateBlockDropped(t *testing.T) {
 		t.Errorf("warnings %v, want twelve kinds listed and the other eight counted", ws)
 	}
 }
+
+// A warning's line holds a key it names to the length a key is shown at; Message keeps it whole.
+func TestWarningTextElidesItsKeys(t *testing.T) {
+	long := tag.Key(strings.Repeat("K", 5000))
+	w := Warning{Code: WarnMP4MultiValue, Message: string(long) + " has 2 values; " + string(long) + " again, beside TITLE", Keys: []tag.Key{long, tag.Title}}
+	want := tag.ElideKey(long) + " has 2 values; " + tag.ElideKey(long) + " again, beside TITLE"
+	if got := w.Text(); got != want {
+		t.Errorf("Text = %.150q (%d bytes), want %.150q", got, len(got), want)
+	}
+	if got := w.String(); got != "[mp4-multi-value] "+want {
+		t.Errorf("String = %.150q (%d bytes)", got, len(got))
+	}
+	if !strings.Contains(w.Message, string(long)) {
+		t.Error("Message lost the key")
+	}
+	// A key within the bound, and a warning that names none, read as written.
+	short := Warning{Code: WarnValueDropped, Message: "TITLE value dropped", Keys: []tag.Key{tag.Title}}
+	if short.Text() != short.Message || (Warning{Message: "plain"}).Text() != "plain" {
+		t.Errorf("Text changed a message with no long key: %q", short.Text())
+	}
+}

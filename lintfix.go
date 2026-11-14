@@ -1,9 +1,6 @@
 package waxlabel
 
-import (
-	"github.com/colespringer/waxlabel/internal/core"
-	"github.com/colespringer/waxlabel/tag"
-)
+import "github.com/colespringer/waxlabel/tag"
 
 // LintFix is the safe remediation from lint findings: tag patch and write
 // options that clear what can be cleared without data loss. Only the encoder
@@ -16,52 +13,38 @@ type LintFix struct {
 // PlanLintFix maps lint findings to safe remediation:
 //
 //   - inherited-encoder: remove transcoder-stamp values from ENCODER
-//     ([tag.Encoder]), clearing only when every value is a stamp; neutralize
-//     vendor string / WAV ISFT via [WithStripEncoderStamp].
+//     ([tag.Encoder]), keeping its other values and any name another store of
+//     the format's own holds, and clearing only when no such value is left;
+//     neutralize vendor string / WAV ISFT via [WithStripEncoderStamp].
 //   - stray-leading-id3 / trailing-id3v1 / legacy-ape: strip legacy containers
 //     ([WithLegacyPolicy] [LegacyStrip]) only when fully redundant with the
-//     canonical set ([Finding.Fixable]).
+//     canonical set: a key, a value under a shared key, or opaque content that
+//     only a legacy container holds keeps it. An explicit [LegacyStrip] strips
+//     unconditionally with a warning; this plan never triggers it.
 //
-// Encoder remediation is not gated on Fixable: the option is always safe and
-// reaches a vendor string no document-level predicate sees. Legacy strip is
-// gated on Fixable: unique legacy tags or opaque legacy content keep the
-// container. An explicit [LegacyStrip] strips unconditionally with a warning;
-// this plan never triggers it.
+// The fix is planned for a file that refuses every write too, so that preparing
+// it reports the refusal; [Finding.Fixable] is false there.
 //
 // No other findings are acted on. Derived from the parsed document only.
 func (d *Document) PlanLintFix() LintFix {
-	var fix LintFix
-	encoderCleared, legacyStripped := false, false
-	for _, f := range d.Lint() {
-		switch f.Code {
-		case "inherited-encoder":
-			if !encoderCleared {
-				// Keep clean ENCODER values; clear when all are stamps. Always
-				// attach WithStripEncoderStamp for vendor/ISFT.
-				if v, ok := d.Get(tag.Encoder); ok {
-					clean := make([]string, 0, len(v))
-					for _, s := range v {
-						if !core.IsTranscoderStamp(s) {
-							clean = append(clean, s)
-						}
-					}
-					if len(clean) < len(v) { // at least one stamp value to remove
-						if len(clean) == 0 {
-							fix.Patch.Clear(tag.Encoder)
-						} else {
-							fix.Patch.Set(tag.Encoder, clean...)
-						}
-					}
-				}
-				fix.Options = append(fix.Options, WithStripEncoderStamp())
-				encoderCleared = true
-			}
-		case "stray-leading-id3", "trailing-id3v1", "legacy-ape":
-			if !legacyStripped && f.Fixable {
-				fix.Options = append(fix.Options, WithLegacyPolicy(LegacyStrip))
-				legacyStripped = true
-			}
-		}
+	var out LintFix
+	if d.zero() {
+		return out
 	}
-	return fix
+	fix := d.safeFix(d.findings())
+	if fix.encoder {
+		// Keep clean ENCODER values; clear when all are stamps.
+		switch {
+		case !fix.stamped:
+		case len(fix.left) == 0:
+			out.Patch.Clear(tag.Encoder)
+		default:
+			out.Patch.Set(tag.Encoder, fix.left...)
+		}
+		out.Options = append(out.Options, WithStripEncoderStamp())
+	}
+	if fix.stripLegacy {
+		out.Options = append(out.Options, WithLegacyPolicy(LegacyStrip))
+	}
+	return out
 }

@@ -97,7 +97,7 @@ waxlabel export-picture track.flac -o cover.jpg
 | `lint <file>...` | Report metadata issues. `--fix` applies safe, non-destructive fixes; a legacy container is stripped only when fully redundant with canonical tags. |
 | `verify <file>...` | Tag-independent audio-essence digests. `--whole-file` hashes every byte. |
 | `clean <dir>...` | List `.waxlabel-*.tmp` leftovers from interrupted writes; `--remove` deletes them, `--all` includes files newer than an hour. |
-| `caps <file>` or `caps --format <name>` | What a file or format can store and edit. |
+| `caps <file>...` or `caps --format <name>` | What a file or format can store and edit. `--format` takes an extension or any name `caps` prints. |
 | `keys` | Canonical tag vocabulary and cardinality. |
 | `copy <source> <dest>` | Overlay source metadata onto dest; report what carries, downgrades, or drops. `--strict` refuses a non-lossless transfer. |
 | `diff <a> <b>` | Compare canonical tags, pictures, chapters, and synced lyrics, and comment and lyrics descriptions and languages where both formats store them. |
@@ -127,9 +127,12 @@ skipped recursively but works when named directly. An unreadable directory is an
 accept `--json`. `-o` writes atomically and refuses an existing target unless
 `--overwrite`.
 
-`lint --json` findings include `code`, `severity`, and `fixable` (whether
-`--fix` acts). Exit code reflects the highest-precedence result. Finding codes
-are in `waxlabel <command> --help` and package docs.
+`lint --json` findings include `code`, `severity`, and `fixable`: true for what
+`--fix` is for and removes (an inherited encoder stamp, a redundant legacy
+container, and a conflict or extra `ENCODER` value that goes with either), false
+on a file that cannot be written. A rewrite can clear other findings on its way,
+such as a duplicate tag block it drops. Exit code reflects the highest-precedence
+result. Finding codes are in `waxlabel <command> --help` and package docs.
 
 ### Exit codes
 
@@ -155,6 +158,10 @@ Multi-file runs exit with the most-severe class (not numeric max):
 `picture-too-large`/`content-too-large` > `io` > `not-found` >
 `usage`/`invalid-key`/`needs-file` > `error` > `broken-pipe`.
 A corrupt file (exit 4) outranks a mistyped path (exit 6).
+
+A closed output pipe ends a read early. It never stops a write: `set`, `copy`,
+`lint --fix`, `clean --remove` and `export-picture` finish, and exit with the
+status the work earned.
 
 ## Format Support
 
@@ -217,9 +224,15 @@ warn about them.
 
 Input is untrusted: bounded allocation and recursion, fuzz coverage, and human
 output that sanitizes terminal-control bytes and invisible/reordering Unicode
-(bidi controls, ZWSP, word joiner, BOM, line/paragraph separators). Line breaks
+(bidi controls, ZWSP, word joiner, BOM, line/paragraph separators, invisible
+operators, interlinear annotation marks, tag characters, soft hyphen, Hangul
+fillers; joiners and variation selectors print, as emoji need them, so only the
+flags spelled with tag characters, such as Scotland's, show as escapes). Line breaks
 print as indented continuations only for LYRICS, COMMENT, DESCRIPTION, and
-LONGDESCRIPTION; elsewhere as `\x0a` (JSON keeps exact values).
+LONGDESCRIPTION; elsewhere as `\x0a`. A key over 96 bytes and a value over 4 KiB
+are elided, and no line runs past 16 KiB (JSON keeps exact values). A file name
+that is not UTF-8 shows each invalid byte as `\xNN`, in JSON `file`, `output`,
+`source`, `a` and `b` too.
 
 Save-back: temp file in the target directory, fsync, rename. SIGKILL mid-write can
 leave the temp; recursive commands note leftovers and `waxlabel clean` lists or

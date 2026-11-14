@@ -134,7 +134,7 @@ func TestFifoInBatchIsPerElementError(t *testing.T) {
 }
 
 // TestFifoRejectedByNonExpandingCommands: caps and diff (no expandPaths) still reject
-// a FIFO via checkRegularInputs before any blocking open.
+// a FIFO through operandErrors before any blocking open.
 func TestFifoRejectedByNonExpandingCommands(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -184,5 +184,56 @@ func TestCopyFifoHintOmitsDash(t *testing.T) {
 	}
 	if !strings.Contains(errb, "regular file path") {
 		t.Errorf("copy hint should point at a regular file path: %q", errb)
+	}
+}
+
+// TestFifoErrorNamesThePathOnce: the per-file line of a FIFO carries the path as its prefix
+// only, escaped.
+func TestFifoErrorNamesThePathOnce(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "pipe"+forgeMark+".flac")
+	mkfifo(t, fifo)
+	good := filepath.Join(dir, "good.flac")
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(good, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"dump", fifo},
+		{"set", fifo, "--set", "TITLE=x"},
+		{"caps", fifo, good},
+		{"diff", fifo, good},
+		{"copy", fifo, good},
+		{"export-picture", fifo, "-o", filepath.Join(dir, "out.png")},
+	} {
+		_, stderr, code := runCLIBounded(t, 10*time.Second, args...)
+		if code != 2 {
+			t.Errorf("%s: exit %d, want 2; stderr %q", args[0], code, stderr)
+		}
+		assertNoForgedLine(t, args[0], stderr)
+		if n := strings.Count(stderr, "!INJECTED!"); n != 1 {
+			t.Errorf("%s: the path appears %d times, want once: %q", args[0], n, stderr)
+		}
+		if !strings.Contains(stderr, "is not a regular file") {
+			t.Errorf("%s: stderr should say why: %q", args[0], stderr)
+		}
+	}
+}
+
+// TestFifoNamedByAFlagHasNoStdinHint: a cover or lyrics file cannot come from standard input,
+// so a FIFO named there is not told to pipe one in.
+func TestFifoNamedByAFlagHasNoStdinHint(t *testing.T) {
+	t.Parallel()
+	fifo := filepath.Join(t.TempDir(), "pipe.png")
+	mkfifo(t, fifo)
+	for _, flag := range [][]string{{"--add-cover", fifo}, {"--add-picture", "back-cover=" + fifo}, {"--synced-lyrics-file", fifo}} {
+		_, errb, code := runCLIBounded(t, 10*time.Second, append([]string{"plan", sampleFLAC}, flag...)...)
+		if code != 2 || !strings.Contains(errb, "pass a regular file path") || strings.Contains(errb, "pipe a stream") {
+			t.Errorf("%s: exit %d, stderr %q", flag[0], code, errb)
+		}
 	}
 }

@@ -37,12 +37,12 @@ func newVerifyCmd() *cobra.Command {
 			"reads from standard input.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			realOf, cleanup, err := readInputs(cmd.InOrStdin(), maxSizeFlag(cmd), args)
+			realOf, cleanup, stdinErr, err := readInputs(cmd.Context(), cmd.InOrStdin(), maxSizeFlag(cmd), args)
 			if err != nil {
 				return err
 			}
 			defer cleanup()
-			paths, skipped, leftovers, pathErrors, err := expandPaths(args, recursive)
+			paths, skipped, leftovers, pathErrors, err := expandPaths(args, recursive, stdinErr)
 			if err != nil {
 				return err
 			}

@@ -117,9 +117,17 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		chapters.Constraints = append(chapters.Constraints,
 			"a hidden or disabled chapter is written visible and enabled, and a new edition carries no default flag: the WebM subset has none of the three")
 	}
-	return core.NewCapabilities(core.FormatMatroska, false, fields, pictures, chapters, core.AccessNone, nil).
+	// ReadOnly from the same refuseWrite Plan uses.
+	var refusal error
+	if m != nil {
+		if d, ok := m.Native.(*doc); ok && d != nil && d.wb != nil {
+			refusal = d.refuseWrite()
+		}
+	}
+	return core.NewCapabilities(core.FormatMatroska, refusal != nil, fields, pictures, chapters, core.AccessNone, nil).
 		WithTextQualifiers(core.TextLossDescription, "").
-		WithFieldClassifier(TransferClassifier)
+		WithFieldClassifier(TransferClassifier).
+		WithReadOnlyReason(refusal)
 }
 
 // EssenceExtent: matroska-clusters-v2 + first-track CodecID/geometry, then

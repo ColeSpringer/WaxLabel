@@ -106,11 +106,12 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		rendered.Delete(k)
 	}
 	for _, dv := range itunesDroppedValues(rendered, itunesAtoms) {
-		msg := fmt.Sprintf("%s value %q cannot be represented in this format and was dropped", dv.Key, dv.Value)
+		value := tag.ElideSnippet(dv.Value)
+		msg := fmt.Sprintf("%s value %q cannot be represented in this format and was dropped", dv.Key, value)
 		if dv.ZeroUnset {
 			// The 0 bytes are written (0/N), but decodePair treats a 0 slot as unset and reads
 			// it back as absent: a round-trip loss, not an unrepresentable value.
-			msg = fmt.Sprintf("%s value %q is treated as unset in this format and reads back as absent", dv.Key, dv.Value)
+			msg = fmt.Sprintf("%s value %q is treated as unset in this format and reads back as absent", dv.Key, value)
 		}
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped, msg, dv.Key)
 	}
@@ -118,17 +119,17 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		// The boolean atoms (cpil, pgap, shwm) each hold a single byte, so a non-boolean is
 		// stored as 0 (false), not dropped.
 		var msg string
-		if tag.IsBooleanKey(cv.Key) {
-			msg = fmt.Sprintf("%s value %q is not a valid boolean and was stored as 0 (false)", cv.Key, cv.Value)
+		if value := tag.ElideSnippet(cv.Value); tag.IsBooleanKey(cv.Key) {
+			msg = fmt.Sprintf("%s value %q is not a valid boolean and was stored as 0 (false)", cv.Key, value)
 		} else {
-			msg = fmt.Sprintf("%s value %q is not an integer and was rounded to %s", cv.Key, cv.Value, cv.Stored)
+			msg = fmt.Sprintf("%s value %q is not an integer and was rounded to %s", cv.Key, value, cv.Stored)
 		}
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueCoerced, msg, cv.Key)
 	}
 	// A structured single-atom key given more than one value stores only the first.
 	for _, ev := range itunesExtraStructuredValues(rendered, itunesAtoms) {
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped,
-			fmt.Sprintf("%s holds multiple values but its MP4 atom stores only the first; dropped %q", ev.Key, ev.Value), ev.Key)
+			fmt.Sprintf("%s holds multiple values but its MP4 atom stores only the first; dropped %q", ev.Key, tag.ElideSnippet(ev.Value)), ev.Key)
 	}
 	// Warn for each multi-valued field this edit wrote. The ilst stores it as several data
 	// atoms under one item; WaxLabel round-trips them, but many readers show only the first.

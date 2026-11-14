@@ -39,15 +39,16 @@ type Finding struct {
 	Code     string
 	Message  string
 	Key      tag.Key // the field involved, or "" if not field-specific
-	// Fixable means [Document.PlanLintFix] acts on this finding.
+	// Fixable means the fix [Document.PlanLintFix] plans removes this finding, and the file
+	// can be written.
 	Fixable bool
 }
 
-// String renders "[severity] code: message (key)". Message and key are sanitized.
+// String renders "[severity] code: message (key)". Message and key are sanitized, a long key elided.
 func (f Finding) String() string {
 	msg := tag.SanitizeLine(f.Message)
 	if f.Key != "" {
-		return fmt.Sprintf("[%s] %s: %s (%s)", f.Severity, f.Code, msg, tag.SanitizeLine(string(f.Key)))
+		return fmt.Sprintf("[%s] %s: %s (%s)", f.Severity, f.Code, msg, tag.SanitizeLine(tag.ElideKey(f.Key)))
 	}
 	return fmt.Sprintf("[%s] %s: %s", f.Severity, f.Code, msg)
 }
@@ -58,11 +59,16 @@ func (d *Document) Lint() []Finding {
 	if d.zero() {
 		return nil
 	}
-	var out []Finding
+	out, legacyOnly := d.findings()
+	d.markFixable(out, d.safeFix(out, legacyOnly))
+	return out
+}
 
+// findings is Lint before the fixable marks, with the legacy-only keys it computed on the way.
+func (d *Document) findings() (out []Finding, legacyOnly []tag.Key) {
 	out = append(out, lintWarnings(d.media.Warnings)...)
 	out = append(out, lintFamilies(d.media.Families)...)
-	legacyOnly := d.LegacyOnlyKeys()
+	legacyOnly = d.LegacyOnlyKeys()
 	out = append(out, lintLegacyOnly(legacyOnly)...)
 	out = append(out, lintOpaqueLegacy(d.media.LegacyOpaqueContent)...)
 	out = append(out, lintPictures(core.ProjectPictures(d.media.Pictures))...)
@@ -71,58 +77,144 @@ func (d *Document) Lint() []Finding {
 	out = append(out, lintNegativeNumbers(d.media.Tags)...)
 	out = append(out, lintCardinality(d.media)...)
 	out = append(out, lintCustomKeys(d.media.Tags)...)
-	d.markFixable(out, legacyOnly)
-	return out
+	return out, legacyOnly
 }
 
-// markFixable sets Fixable from the gates PlanLintFix applies, so the marker and the fix
-// cannot disagree. legacyOnly is the key list [Document.Lint] already computed.
-func (d *Document) markFixable(fs []Finding, legacyOnly []tag.Key) {
-	legacyRedundant := len(legacyOnly) == 0 && !d.HasOpaqueLegacyContent()
-	encoderReachable := d.encoderStampReachable()
+// safeFix is what the lint fix does to a file. [Document.PlanLintFix] builds the edit from it
+// and markFixable the marks, so the two cannot disagree.
+type safeFix struct {
+	// stripLegacy: the legacy containers hold no key, value or content of their own, and go.
+	stripLegacy bool
+	// encoder: a transcoder stamp was found; a vendor string or WAV ISFT item loses it.
+	encoder bool
+	// stamped: ENCODER held one too, and is written as left: its other values, then the
+	// names other stores of the format's own hold.
+	stamped bool
+	left    []string
+}
+
+func (d *Document) safeFix(fs []Finding, legacyOnly []tag.Key) safeFix {
+	var fix safeFix
+	for _, f := range fs {
+		switch f.Code {
+		case "inherited-encoder":
+			fix.encoder = true
+		case "stray-leading-id3", "trailing-id3v1", "legacy-ape":
+			fix.stripLegacy = len(legacyOnly) == 0 && !d.HasOpaqueLegacyContent() && !legacyValueOfItsOwn(d.media.Families)
+		}
+	}
+	if fix.encoder {
+		vals, _ := d.Get(tag.Encoder)
+		for _, v := range vals {
+			if core.IsTranscoderStamp(v) {
+				fix.stamped = true
+			} else {
+				fix.left = append(fix.left, v)
+			}
+		}
+	}
+	if fix.stamped {
+		// The edit reaches every store of the format's own, so a name one of them holds that
+		// ENCODER does not read with (a WAV ISFT item under a stamped TSSE) is written too,
+		// not cleared with the stamp.
+		for _, f := range d.media.Families {
+			if f.Key != tag.Encoder || f.Legacy || f.Targeted {
+				continue
+			}
+			for _, v := range f.Values {
+				held := slices.ContainsFunc(fix.left, func(l string) bool { return core.EqualFoldValue(l, v) })
+				if !held && !core.IsTranscoderStamp(v) {
+					fix.left = append(fix.left, v)
+				}
+			}
+		}
+	}
+	return fix
+}
+
+// legacyValueOfItsOwn reports a legacy container holding, under a key the tags hold too, a
+// value they do not. A transcoder stamp is no such value: the fix exists to remove those.
+func legacyValueOfItsOwn(fams []core.FamilyValue) bool {
+	return slices.ContainsFunc(fams, func(f core.FamilyValue) bool {
+		return f.Legacy && !f.Selected && !(f.Key == tag.Encoder && !slices.ContainsFunc(f.Values, isNoStamp))
+	})
+}
+
+// markFixable sets Fixable on the findings fix removes. On a file no edit can be saved to (a
+// read-only format or stream, no audio) that is none.
+func (d *Document) markFixable(fs []Finding, fix safeFix) {
+	writable := !d.Capabilities().ReadOnly && !hasNoAudioWarning(d.media)
 	for i := range fs {
 		switch fs[i].Code {
 		case "inherited-encoder":
-			fs[i].Fixable = encoderReachable
+			// lintWarnings marked the stamps the fix reaches.
+			fs[i].Fixable = fs[i].Fixable && writable
 		case "stray-leading-id3", "trailing-id3v1", "legacy-ape":
-			fs[i].Fixable = legacyRedundant
+			fs[i].Fixable = writable && fix.stripLegacy
+		case "conflicting-families":
+			fs[i].Fixable = writable && fix.settles(d.media.Families, fs[i].Key)
+		case "single-valued-multi":
+			// ENCODER is written less its stamps; a legacy container's values are no tags.
+			fs[i].Fixable = writable && fs[i].Key == tag.Encoder && fix.stamped && len(fix.left) <= 1
 		}
 	}
 }
 
-// encoderStampReachable is true when PlanLintFix can reach a stamp: ENCODER or
-// vendor/ISFT via WithStripEncoderStamp. ENCODEDBY-only stamps are unreachable.
-func (d *Document) encoderStampReachable() bool {
-	return hasTranscoderStamp(d, tag.Encoder) || !hasTranscoderStamp(d, tag.EncodedBy)
-}
-
-// hasTranscoderStamp reports whether any value under key is an inherited transcoder stamp,
-// by the same test the linter and the fix use.
-func hasTranscoderStamp(d *Document, key tag.Key) bool {
-	vals, ok := d.Get(key)
-	if !ok {
-		return false
+// settles reports whether the fix leaves no entry of key in conflict.
+func (fix safeFix) settles(fams []core.FamilyValue, key tag.Key) bool {
+	// The edit of ENCODER is written to every store of the format's own.
+	rewritten := key == tag.Encoder && fix.stamped
+	written := tag.NewTagSet()
+	if len(fix.left) > 0 {
+		written.Set(tag.Encoder, fix.left...)
 	}
-	return slices.ContainsFunc(vals, core.IsTranscoderStamp)
+	for _, f := range fams {
+		switch {
+		case f.Key != key, rewritten && !f.Legacy, f.Legacy && fix.stripLegacy:
+		case rewritten:
+			// A legacy container the fix keeps is judged against the values written, as a
+			// parse judges it: with none written it conflicts with nothing.
+			if !core.FamilySelected(written, key, f.Values[0]) {
+				return false
+			}
+		case key == tag.Encoder && fix.encoder && !f.Legacy && !slices.ContainsFunc(f.Values, isNoStamp):
+			// A stamp outside the tags that read as ENCODER (a WAV ISFT item under another
+			// TSSE) goes with no edit of the key.
+		case !f.Selected:
+			return false
+		}
+	}
+	return true
 }
 
-// lintWarnings promotes actionable parse warnings (same code strings as dump).
+func isNoStamp(v string) bool { return !core.IsTranscoderStamp(v) }
+
+// lintWarnings promotes actionable parse warnings (same code strings as dump). A finding's
+// message is the warning's display text, a key it names held to the length a key is shown at.
 func lintWarnings(ws []core.Warning) []Finding {
 	var out []Finding
 	for _, w := range ws {
+		f := Finding{Code: w.Code.String(), Message: w.Text()}
 		switch w.Code {
+		case core.WarnInheritedEncoder:
+			// The fix reaches a stamp under ENCODER and one outside the tags (a vendor string,
+			// a WAV ISFT item), which carries no key. One under ENCODEDBY it leaves.
+			f.Severity, f.Fixable = LintWarning, len(w.Keys) == 0 || slices.Contains(w.Keys, tag.Encoder)
 		case core.WarnStrayLeadingID3, core.WarnTrailingID3v1, core.WarnLegacyAPE,
-			core.WarnInheritedEncoder, core.WarnInvalidPicture, core.WarnTruncatedAudio,
+			core.WarnInvalidPicture, core.WarnTruncatedAudio,
 			core.WarnInvalidTagKey, core.WarnChainedStream, core.WarnTrailingBytes,
 			core.WarnOversizedChunk, core.WarnMalformedTagEntry, core.WarnTrailingLyrics3,
 			core.WarnLeadingBytes, core.WarnPageGap, core.WarnInvalidText:
-			out = append(out, Finding{Severity: LintWarning, Code: w.Code.String(), Message: w.Message})
+			f.Severity = LintWarning
 		case core.WarnMultipleVorbisComment, core.WarnDuplicateTagBlock, core.WarnNoAudioFrames:
-			out = append(out, Finding{Severity: LintError, Code: w.Code.String(), Message: w.Message})
+			f.Severity = LintError
 		case core.WarnNumericGenre, core.WarnUnknownChunkSize, core.WarnMultiplexedStream:
 			// Info only (README: dump+lint report; must not fail clean exit / piped WAV).
-			out = append(out, Finding{Severity: LintInfo, Code: w.Code.String(), Message: w.Message})
+			f.Severity = LintInfo
+		default:
+			continue
 		}
+		out = append(out, f)
 	}
 	return out
 }
@@ -277,7 +369,7 @@ func lintValues(ts tag.TagSet) []Finding {
 			if v != "" && !val.Valid(k, v) {
 				detail, _ := val.Details(k, v)
 				out = append(out, Finding{Severity: LintWarning, Code: val.LintCode,
-					Message: fmt.Sprintf("%q %s", v, detail), Key: k})
+					Message: fmt.Sprintf("%q %s", tag.ElideSnippet(v), detail), Key: k})
 			}
 		}
 	}
@@ -298,7 +390,7 @@ func lintNegativeNumbers(ts tag.TagSet) []Finding {
 		for _, v := range vals {
 			if v != "" && tag.NegativeNumericValue(k, v) {
 				out = append(out, Finding{Severity: LintInfo, Code: "negative-numeric",
-					Message: fmt.Sprintf("%q is negative (numbering is normally non-negative)", v), Key: k})
+					Message: fmt.Sprintf("%q is negative (numbering is normally non-negative)", tag.ElideSnippet(v)), Key: k})
 			}
 		}
 	}

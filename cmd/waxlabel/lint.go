@@ -55,7 +55,15 @@ func newLintCmd() *cobra.Command {
 			"\"-\" reads from standard input (read-only; not valid with --fix).",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths, skipped, leftovers, pathErrors, err := expandPaths(args, recursive)
+			if fix && slices.Contains(args, stdinArg) {
+				return usagef("cannot fix standard input; --fix writes changes back to a file")
+			}
+			realOf, cleanup, stdinErr, err := readInputs(cmd.Context(), cmd.InOrStdin(), maxSizeFlag(cmd), args)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			paths, skipped, leftovers, pathErrors, err := expandPaths(args, recursive, stdinErr)
 			if err != nil {
 				return err
 			}
@@ -67,12 +75,9 @@ func newLintCmd() *cobra.Command {
 			noteSkipped(cmd.ErrOrStderr(), skipped, jsonMode(cmd))
 			noteLeftovers(cmd.ErrOrStderr(), leftovers, jsonMode(cmd))
 			if fix {
-				if slices.Contains(paths, stdinArg) {
-					return usagef("cannot fix standard input; --fix writes changes back to a file")
-				}
 				return runLintFix(cmd, paths, pathErrors)
 			}
-			return runLint(cmd, paths, pathErrors)
+			return runLint(cmd, paths, pathErrors, realOf)
 		},
 	}
 	cmd.Flags().BoolVar(&fix, "fix", false, "apply the safe, non-destructive fixes and save in place")
@@ -80,11 +85,12 @@ func newLintCmd() *cobra.Command {
 	return markListCommand(cmd)
 }
 
-// lintLoop: shared per-file loop for runLint and runLintFix.
+// lintLoop: shared per-file loop for runLint and runLintFix; ctx is the one the work runs under.
 // Keeps most-severe structural error. Finding severity folds into worseError so exit 4
 // outranks another file's not-found (exit 6).
 func lintLoop[T any](
 	cmd *cobra.Command,
+	ctx context.Context,
 	paths []string,
 	compute func(ctx context.Context, path string) (T, error),
 	severity func(T) wl.LintSeverity,
@@ -98,10 +104,10 @@ func lintLoop[T any](
 	var maxSev wl.LintSeverity
 	rendered := 0
 	for _, path := range paths {
-		t, err := compute(cmd.Context(), path)
+		t, err := compute(ctx, path)
 		if err != nil {
 			// Broken pipe: stop silently. isPipeClose gates so a coincident file error still records.
-			if errors.Is(context.Cause(cmd.Context()), errBrokenPipe) && isPipeClose(err) {
+			if outputClosed(cmd.Context()) && isPipeClose(err) {
 				break
 			}
 			if worseError(worstErr, err) {
@@ -158,13 +164,8 @@ func worstFinding(findings []wl.Finding) wl.LintSeverity {
 }
 
 // runLint reports findings per file.
-func runLint(cmd *cobra.Command, paths []string, pathErrors map[string]error) error {
-	realOf, cleanup, err := readInputs(cmd.InOrStdin(), maxSizeFlag(cmd), paths)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-	return lintLoop(cmd, paths,
+func runLint(cmd *cobra.Command, paths []string, pathErrors map[string]error, realOf func(string) string) error {
+	return lintLoop(cmd, cmd.Context(), paths,
 		guardPathErrors(pathErrors, func(ctx context.Context, path string) ([]wl.Finding, error) {
 			doc, err := parseInput(ctx, realOf(path), path)
 			if err != nil {
@@ -200,7 +201,7 @@ func runLintFix(cmd *cobra.Command, paths []string, pathErrors map[string]error)
 		warnPostCommit(errOut, asJSON, path, o.postWrite)
 		return o, err
 	}
-	return lintLoop(cmd, paths,
+	return lintLoop(cmd, mutationContext(cmd.Context()), paths,
 		guardPathErrors(pathErrors, fixOne),
 		func(o fixOutcome) wl.LintSeverity { return worstFinding(o.remaining) },
 		func(path string, o fixOutcome) any { return toJSONLintFix(o) },

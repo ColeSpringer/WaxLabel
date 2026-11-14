@@ -15,18 +15,21 @@ import (
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/waxerr"
+	"github.com/spf13/cobra"
 )
 
 // stdinArg means "read standard input". Kept as the display name so buffered-stdin temp paths never appear in output.
 const stdinArg = "-"
 
 // bufferStdin copies stdin to a temp file (pipes lack ReaderAt/Size) and returns its path
-// plus cleanup. Consumes stdin; call at most once per run. maxSize > 0 caps disk use.
-func bufferStdin(stdin io.Reader, maxSize int64) (path string, cleanup func(), err error) {
+// plus cleanup. Consumes stdin; call at most once per run. maxSize > 0 caps disk use. A read
+// that blocks ends when ctx does.
+func bufferStdin(ctx context.Context, stdin io.Reader, maxSize int64) (path string, cleanup func(), err error) {
 	noop := func() {}
-	tmp, err := os.CreateTemp("", "waxlabel-stdin-*")
+	dir := os.TempDir()
+	tmp, err := os.CreateTemp(dir, "waxlabel-stdin-*")
 	if err != nil {
-		return "", noop, err
+		return "", noop, wl.NewTempCreateError(dir, err)
 	}
 	name := tmp.Name()
 	// Registered before io.Copy so forced exit mid-copy still deletes the temp file.
@@ -46,11 +49,11 @@ func bufferStdin(stdin io.Reader, maxSize int64) (path string, cleanup func(), e
 	if maxSize > 0 {
 		src = io.LimitReader(stdin, maxSize+1)
 	}
-	written, err := io.Copy(tmp, src)
+	written, err := copyUntil(ctx, tmp, src)
 	if err != nil {
 		_ = tmp.Close()
 		cleanup()
-		return "", noop, err
+		return "", noop, spoolError(dir, name, err)
 	}
 	if maxSize > 0 && written > maxSize {
 		_ = tmp.Close()
@@ -59,14 +62,47 @@ func bufferStdin(stdin io.Reader, maxSize int64) (path string, cleanup func(), e
 	}
 	if err = tmp.Close(); err != nil {
 		cleanup()
-		return "", noop, err
+		return "", noop, spoolError(dir, name, err)
 	}
 	return name, cleanup, nil
 }
 
+// spoolError names dir in place of the temp file name in a failure on that file. Any other
+// error (the stream's own) is returned as it is.
+func spoolError(dir, name string, err error) error {
+	if pe, ok := errors.AsType[*fs.PathError](err); ok && pe.Path == name {
+		return fmt.Errorf("buffer standard input in %s: %w", dir, os.NewSyscallError(pe.Op, pe.Err))
+	}
+	return err
+}
+
+// copyUntil is io.Copy that answers to ctx: once ctx ends it returns ctx's error, and a read of
+// src still blocked (a terminal, a pipe nobody writes to) is abandoned with its goroutine.
+func copyUntil(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	type result struct {
+		n   int64
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		n, err := io.Copy(dst, src)
+		done <- result{n, err}
+	}()
+	select {
+	case res := <-done:
+		return res.n, res.err
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+}
+
 // readInputs buffers "-" to one temp file (pipes are read-once). Second "-" is a usage error.
-// Returns realOf (arg to parse path), cleanup, and keeps orig args for display names.
-func readInputs(stdin io.Reader, maxSize int64, paths []string) (realOf func(string) string, cleanup func(), err error) {
+// Returns realOf (arg to parse path) and cleanup, and keeps orig args for display names. A
+// failure to buffer the stream is stdinErr: the "-" operand's own, not the run's.
+func readInputs(ctx context.Context, stdin io.Reader, maxSize int64, paths []string) (realOf func(string) string, cleanup func(), stdinErr, err error) {
 	cleanup = func() {}
 	seenStdin := false
 	for _, p := range paths {
@@ -74,17 +110,13 @@ func readInputs(stdin io.Reader, maxSize int64, paths []string) (realOf func(str
 			continue
 		}
 		if seenStdin {
-			return nil, cleanup, usagef("standard input (%q) cannot be specified more than once", stdinArg)
+			return nil, cleanup, nil, usagef("standard input (%q) cannot be specified more than once", stdinArg)
 		}
 		seenStdin = true
 	}
 	stdinReal := ""
 	if seenStdin {
-		real, cl, e := bufferStdin(stdin, maxSize)
-		if e != nil {
-			return nil, cleanup, e
-		}
-		stdinReal, cleanup = real, cl
+		stdinReal, cleanup, stdinErr = bufferStdin(ctx, stdin, maxSize)
 	}
 	// Non-empty iff "-" was buffered; avoids a separate bool.
 	realOf = func(p string) string {
@@ -93,64 +125,51 @@ func readInputs(stdin io.Reader, maxSize int64, paths []string) (realOf func(str
 		}
 		return p
 	}
-	return realOf, cleanup, nil
+	return realOf, cleanup, stdinErr, nil
 }
 
 // parseInput parses realPath but uses origPath in errors so temp stdin paths never leak.
 // WithSourceName gets the raw orig path (not displayName): %q escapes once; pre-sanitizing double-escapes tabs.
 // All read commands go through here.
 func parseInput(ctx context.Context, realPath, origPath string, extra ...wl.ParseOption) (*wl.Document, error) {
-	return wl.ParseFile(ctx, realPath, append(extra, wl.WithSourceName(jsonFileName(origPath)))...)
+	name := origPath
+	if s := stdinDisplay(origPath); s != "" {
+		name = s
+	}
+	return wl.ParseFile(ctx, realPath, append(extra, wl.WithSourceName(name))...)
 }
 
 // expandPaths with --recursive walks directories for known-audio extensions. Files and "-"
 // pass through in order. Without --recursive, directories and named FIFO/device/socket stay
-// in the list with errors in pathErrors. The caller checks pathErrors first: bad paths fail
-// per-element and good inputs still run. FIFOs are recorded, not opened: os.Open on a FIFO
-// blocks. Stat and walk failures are per-path; only invocation-level failures return err.
+// in the list with errors in pathErrors, as does "-" with stdinErr. The caller checks
+// pathErrors first: bad paths fail per-element and good inputs still run. FIFOs are recorded,
+// not opened: os.Open on a FIFO blocks. Stat and walk failures are per-path; only
+// invocation-level failures return err.
 //
 // skipped counts regular files with unknown extensions; leftovers counts stale temp files from
 // interrupted writes. Both are text-mode notes and zero without --recursive.
-func expandPaths(paths []string, recursive bool) (expanded []string, skipped, leftovers int, pathErrors map[string]error, err error) {
+func expandPaths(paths []string, recursive bool, stdinErr error) (expanded []string, skipped, leftovers int, pathErrors map[string]error, err error) {
 	// Exit 2 before stat so empty operands cannot become ErrInvalidData and outrank not-found.
 	if err := checkEmptyOperands(paths...); err != nil {
 		return nil, 0, 0, nil, err
 	}
-	pathErrors = map[string]error{}
+	pathErrors = operandErrors(true, stdinErr, paths...)
 	if !recursive {
-		for _, p := range paths {
-			if p == stdinArg {
-				continue
-			}
-			// One stat, reused below. Directory check wins; else checkRegularFileInfo catches FIFOs before parse would block.
-			// Per-path errors; batch continues.
-			info, statErr := os.Stat(p)
-			if statErr == nil && info.IsDir() {
-				// Callers add the "waxlabel: <path>: " prefix.
+		for p, e := range pathErrors {
+			if errors.Is(e, errIsDirectory) {
 				pathErrors[p] = usagef("is a directory; pass --recursive to walk it for audio files")
-				continue
-			}
-			if cerr := checkRegularFileInfo(p, info, statErr, true); cerr != nil {
-				pathErrors[p] = cerr
 			}
 		}
 		return paths, 0, 0, pathErrors, nil
 	}
 	var out []string
 	for _, p := range paths {
-		if p == stdinArg {
+		if !errors.Is(pathErrors[p], errIsDirectory) {
+			// A file, a missing path or a recorded FIFO: the per-file loop reports it.
 			out = append(out, p)
 			continue
 		}
-		info, err := os.Stat(p)
-		if err != nil || !info.IsDir() {
-			// Record FIFO/device/socket per path; regular or missing paths go to the per-file loop.
-			if cerr := checkRegularFileInfo(p, info, err, true); cerr != nil {
-				pathErrors[p] = cerr
-			}
-			out = append(out, p)
-			continue
-		}
+		// The directory's own entry stays behind: only the paths in out are looked up.
 		files, sk, lo, werrs := walkAudioFiles(p)
 		out = append(out, files...)
 		for path, e := range werrs {
@@ -197,46 +216,96 @@ func guardPathErrors[T any](pathErrors map[string]error, compute func(context.Co
 	}
 }
 
-// checkRegularFile: non-regular existing paths exit 2 with a precise message (before library exit 4).
-// Missing paths return nil so caller owns not-found. acceptsStdin tailors the FIFO hint.
-// FIFO matters: os.Open on read end blocks.
-func checkRegularFile(path string, acceptsStdin bool) error {
-	info, err := os.Stat(path)
-	return checkRegularFileInfo(path, info, err, acceptsStdin)
+// errIsDirectory is the usage error (exit 2) of a directory named where a file is read.
+var errIsDirectory = usagef("is a directory, not a file")
+
+// nonRegularError says why an existing path that is not a regular file cannot be read, without
+// naming it: the caller prints the path. Nil for a regular file. acceptsStdin tailors the hint.
+func nonRegularError(info fs.FileInfo, acceptsStdin bool) error {
+	switch {
+	case info.Mode().IsRegular():
+		return nil
+	case info.IsDir():
+		return errIsDirectory
+	case acceptsStdin:
+		return usagef("is not a regular file; pipe a stream in with %q instead", stdinArg)
+	}
+	return usagef("is not a regular file; pass a regular file path instead")
 }
 
-// checkRegularFileInfo: same as checkRegularFile but uses caller's stat (no double-stat TOCTOU).
-// Non-nil statErr returns nil; caller owns not-found.
-func checkRegularFileInfo(path string, info fs.FileInfo, statErr error, acceptsStdin bool) error {
-	if statErr != nil {
-		return nil // missing or unstattable: caller classifies not-found
-	}
-	if info.Mode().IsRegular() {
+// checkRegularFile is a usage error naming path when it exists and is not a regular file, for
+// a file a flag names. Missing paths return nil so the caller owns not-found.
+func checkRegularFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
 		return nil
 	}
-	if info.IsDir() {
-		return usagef("%s is a directory, not a file", path)
-	}
-	// FIFO, device, or socket.
-	if acceptsStdin {
-		return usagef("%s is not a regular file; pipe a stream in with %q instead", path, stdinArg)
-	}
-	return usagef("%s is not a regular file; pass a regular file path instead", path)
-}
-
-// checkRegularInputs: checkRegularFile on direct-operand commands (caps, diff, copy) that skip expandPaths.
-// Without this, FIFOs hit library exit 4 instead of exit 2. Checks resolved path ("-" -> buffered temp).
-// Missing paths pass through to parse. acceptsStdin: true for caps/diff; false for copy (rejects "-").
-func checkRegularInputs(realOf func(string) string, acceptsStdin bool, args ...string) error {
-	for _, a := range args {
-		if a == stdinArg {
-			continue
-		}
-		if err := checkRegularFile(realOf(a), acceptsStdin); err != nil {
-			return err
-		}
+	if nerr := nonRegularError(info, false); nerr != nil {
+		return usagef("%s %s", path, nerr)
 	}
 	return nil
+}
+
+// operandErrors records each operand that cannot be read before any is opened, so it fails
+// alone: a named path that is not a regular file (opening a FIFO would block) and "-" when
+// buffering it failed with stdinErr. A missing path is left for the parse to report.
+func operandErrors(acceptsStdin bool, stdinErr error, operands ...string) map[string]error {
+	errs := map[string]error{}
+	for _, p := range operands {
+		if p == stdinArg {
+			if stdinErr != nil {
+				errs[p] = stdinErr
+			}
+			continue
+		}
+		if info, err := os.Stat(p); err == nil {
+			if nerr := nonRegularError(info, acceptsStdin); nerr != nil {
+				errs[p] = nerr
+			}
+		}
+	}
+	return errs
+}
+
+// operandError is the failure of one operand of a command that takes a fixed few. It classifies
+// as its cause and reads "<operand>: <reason>", the per-file line without its prefix.
+type operandError struct {
+	path string
+	err  error
+}
+
+func (e *operandError) Error() string { return jsonFileName(e.path) + ": " + perFileReason(e.err) }
+func (e *operandError) Unwrap() error { return e.err }
+
+// parseOperands parses the operands of a command that takes a fixed few, under ctx, which a
+// closed output pipe does not cancel. Every failure is reported, not only the first: a line
+// each in text, and the worst as the error returned, for the exit code and the JSON envelope.
+func parseOperands(cmd *cobra.Command, ctx context.Context, realOf func(string) string, pathErrors map[string]error, operands ...string) ([]*wl.Document, error) {
+	docs := make([]*wl.Document, len(operands))
+	var worst error
+	for i, p := range operands {
+		err := pathErrors[p]
+		if err == nil {
+			docs[i], err = parseInput(ctx, realOf(p), p)
+		}
+		if err == nil {
+			continue
+		}
+		if worseError(worst, err) {
+			worst = &operandError{path: p, err: err}
+		}
+		if !jsonMode(cmd) {
+			perFileError(cmd.ErrOrStderr(), p, err)
+		}
+		// Interrupted: the operands left would only read canceled too.
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	if worst != nil && !jsonMode(cmd) {
+		return nil, alreadyRendered(worst)
+	}
+	return docs, worst
 }
 
 // checkEmptyOperands: empty path is exit 2. Shared by expandPaths and copy/diff.

@@ -336,3 +336,90 @@ func TestRenderTagsEscapesNewlineOutsideProseKeys(t *testing.T) {
 		t.Errorf("COMMENT should keep its line break:\n%s", out)
 	}
 }
+
+// TestLongKeyIsElided: a key of any length takes a bounded part of a line in human output,
+// wherever it is printed; JSON keeps it whole.
+func TestLongKeyIsElided(t *testing.T) {
+	t.Parallel()
+	key := strings.Repeat("K", 50000)
+	f := copyFixture(t, sampleFLAC)
+	bounded := func(label, text string, max int) {
+		t.Helper()
+		if strings.Contains(text, strings.Repeat("K", 200)) || len(text) > max {
+			t.Errorf("%s: %d bytes with the key unbounded (limit %d)", label, len(text), max)
+		}
+		if !strings.Contains(text, strings.Repeat("K", 96)+"…[+") {
+			t.Errorf("%s: the elided key is missing:\n%.600s", label, text)
+		}
+	}
+	out, errb, code := runCLI(t, "set", "-q", f, "--set", key+"=v")
+	if code != 0 {
+		t.Fatalf("set exit %d: %.300s", code, errb)
+	}
+	bounded("set -q", out+errb, 1024)
+
+	out, _, _ = runCLI(t, "dump", f)
+	bounded("dump", out, 1024)
+	out, _, _ = runCLI(t, "lint", f)
+	bounded("lint", out, 1024)
+	other := copyFixture(t, td("notags.mp3"))
+	for _, args := range [][]string{
+		{"dump", "--native", f},
+		{"plan", f, "--set", key + "=w"},
+		{"plan", f, "--set", key + "="},
+		{"plan", f, "--set", key + "=w", "--set", strings.ToLower(key) + "=x"},
+		{"plan", f, "--add", "DATE=x", "--set", key + "=w"},
+		{"plan", f, "--set", key + "=\xff"},
+		{"plan", f, "--set", key + "=w", "--clear", key},
+		{"plan", f, "--clear", key},
+		{"plan", "--strict", f, "--set", key + "=w"},
+		{"plan", f, "--add", key + "=w"},
+		{"diff", f, sampleFLAC},
+		{"copy", "--dry-run", f, other},
+		{"copy", "--dry-run", "--strict", f, other},
+		{"copy", f, copyFixture(t, sampleWMA)}, // read-only: every item is listed as dropped
+	} {
+		out, errb, _ := runCLI(t, args...)
+		bounded(strings.Join(args[:2], " "), out+errb, 4096)
+	}
+	out, _, _ = runCLI(t, "lint", "--fix", f)
+	bounded("lint --fix", out, 2048)
+	// The native view names the key where a format stores it as a frame's or an element's own.
+	for _, fixture := range []string{"notags.mp3", "notags.mka"} {
+		native := copyFixture(t, td(fixture))
+		if _, errb, code := runCLI(t, "set", "-q", native, "--set", key+"=v"); code != 0 {
+			t.Fatalf("%s: set exit %d: %.300s", fixture, code, errb)
+		}
+		out, _, _ = runCLI(t, "dump", "--native", native)
+		bounded("dump --native "+fixture, out, 4096)
+	}
+
+	out, _, _ = runCLI(t, "--json", "dump", f)
+	if vals := tagValues(decodeJSONOne[jsonDocument](t, out), key); len(vals) != 1 {
+		t.Errorf("--json should carry the key whole")
+	}
+}
+
+// TestLongTextIsElided: a chapter title, a synced lyric line and a value in the per-family
+// view are held to the bound a tag value is.
+func TestLongTextIsElided(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("v", 50000)
+	f := copyFixture(t, sampleFLAC)
+	if _, errb, code := runCLI(t, "set", "-q", f, "--set", "TITLE="+long, "--add-chapter", "0:01="+long, "--add-synced-lyric", "0:01="+long); code != 0 {
+		t.Fatalf("seed exit %d: %.300s", code, errb)
+	}
+	out, _, _ := runCLI(t, "dump", "--native", f)
+	if n := strings.Count(out, "…[+"); n != 4 || len(out) > 20000 {
+		t.Errorf("dump --native: %d bytes, %d elided values; want the title, its family row, the chapter and the lyric line elided", len(out), n)
+	}
+	out, _, _ = runCLI(t, "plan", f, "--set", "TITLE=x")
+	if len(out) > 5000 {
+		t.Errorf("plan: a change line of %d bytes", len(out))
+	}
+	// A note quotes a value at the length it shows a key.
+	_, errb, _ := runCLI(t, "plan", f, "--set", "DATE="+long, "--add", "TRACKNUMBER="+long)
+	if n := strings.Count(errb, "…[+"); n != 2 || len(errb) > 1024 {
+		t.Errorf("notes: %d bytes, %d elided values", len(errb), n)
+	}
+}

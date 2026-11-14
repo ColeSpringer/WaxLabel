@@ -57,8 +57,8 @@ func nonNil[T any](s []T) []T {
 }
 
 // sanitizingWriter is the human-output boundary: dispatch wraps stdout/stderr once so
-// no renderer can leak terminal controls. [tag.SanitizeText] is idempotent and
-// composes with per-field escapes.
+// no renderer can leak terminal controls or run a line on without end. [tag.SanitizeText]
+// is idempotent and composes with per-field escapes.
 //
 // Keeps '\n' for line separation; newline forgery is per-field [tag.SanitizeLine].
 // JSON uses [sanitizingWriter.Raw].
@@ -70,7 +70,14 @@ type sanitizingWriter struct {
 	// buf holds trailing incomplete UTF-8 between Writes so a split rune is not
 	// escaped as a lone invalid lead byte.
 	buf []byte
+	// line is how much of the current line is written, cut how much of it was left out.
+	line int
+	cut  int64
 }
+
+// maxLineBytes bounds one line of text output, at four values of the length a renderer shows
+// one. A longer line holds something from a file or an argument that nothing bounded.
+const maxLineBytes = 16 << 10
 
 func newSanitizingWriter(w io.Writer) *sanitizingWriter { return &sanitizingWriter{w: w} }
 
@@ -87,26 +94,67 @@ func (s *sanitizingWriter) Write(p []byte) (int, error) {
 	}
 	hold := incompleteSuffix(data)
 	// string(...) copies prefix now so s.buf reslice below cannot alias it.
-	clean := tag.SanitizeText(string(data[:len(data)-hold]))
+	clean, line, cut := capLines(tag.SanitizeText(string(data[:len(data)-hold])), s.line, s.cut)
 	if _, err := io.WriteString(s.w, clean); err != nil {
 		// Nothing committed: keep prior tail, report 0 consumed.
 		return 0, err
 	}
 	// Committed: replace held tail with this write's incomplete remainder.
 	s.buf = append(s.buf[:0], data[len(data)-hold:]...)
+	s.line, s.cut = line, cut
 	return len(p), nil
 }
 
-// Close flushes held partial UTF-8. Incomplete bytes are escaped as invalid;
-// dispatch calls before returning exit code.
+// Close flushes held partial UTF-8 and the count of what a last, unended line was cut by.
+// Incomplete bytes are escaped as invalid; dispatch calls before returning exit code.
 func (s *sanitizingWriter) Close() error {
-	if len(s.buf) == 0 {
+	clean, _, cut := capLines(tag.SanitizeText(string(s.buf)), s.line, s.cut)
+	if cut > 0 {
+		clean += cutHint(cut)
+	}
+	s.buf, s.line, s.cut = nil, 0, 0
+	if clean == "" {
 		return nil
 	}
-	_, err := io.WriteString(s.w, tag.SanitizeText(string(s.buf)))
-	s.buf = nil
+	_, err := io.WriteString(s.w, clean)
 	return err
 }
+
+// capLines is text with every line held to maxLineBytes, cut on a rune boundary, the count
+// of what was left out in its place. line and cut are the state of the line text continues,
+// and of the one it ends in.
+func capLines(text string, line int, cut int64) (string, int, int64) {
+	if cut == 0 && line+len(text) <= maxLineBytes {
+		if i := strings.LastIndexByte(text, '\n'); i >= 0 {
+			return text, len(text) - i - 1, 0
+		}
+		return text, line + len(text), 0
+	}
+	var b strings.Builder
+	for {
+		seg, rest, ended := strings.Cut(text, "\n")
+		keep := min(len(seg), maxLineBytes-line)
+		for keep > 0 && keep < len(seg) && !utf8.RuneStart(seg[keep]) {
+			keep--
+		}
+		b.WriteString(seg[:keep])
+		line, cut = line+keep, cut+int64(len(seg)-keep)
+		if cut > 0 {
+			line = maxLineBytes // nothing more of this line, though the cut backed off a rune
+		}
+		if !ended {
+			return b.String(), line, cut
+		}
+		if cut > 0 {
+			b.WriteString(cutHint(cut))
+		}
+		b.WriteByte('\n')
+		text, line, cut = rest, 0, 0
+	}
+}
+
+// cutHint is what stands for n bytes left out of a line, spelled as [tag.ElideValue] spells it.
+func cutHint(n int64) string { return "…[+" + wl.HumanBytes(n) + "]" }
 
 // incompleteSuffix is the byte length of a trailing incomplete multi-byte rune.
 // Returns 0 on rune boundary or invalid final byte (escape now, do not hold).
@@ -158,7 +206,8 @@ type jsonWarning struct {
 }
 
 // jsonErrBody is code, message, and hint for terminal and per-file JSON errors.
-// Hint matches classifiedError.hint so human and JSON agree.
+// Hint matches classifiedError.hint so human and JSON agree. A message goes in through
+// [jsonText]: it may name a path.
 type jsonErrBody struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -184,7 +233,7 @@ func errorEntry(path string, err error) jsonErrorEntry {
 	return jsonErrorEntry{
 		SchemaVersion: schemaVersion,
 		File:          jsonFileName(path),
-		Error:         jsonErrBody{Code: c.code, Message: perFileReason(err), Hint: c.hint},
+		Error:         jsonErrBody{Code: c.code, Message: jsonText(perFileReason(err)), Hint: c.hint},
 	}
 }
 
@@ -240,7 +289,7 @@ func perFile[P any](
 			// Closed output pipe cancelled the context: stop without printing
 			// "canceled" per remaining file. isPipeClose gates so a file error racing
 			// the close is still recorded.
-			if errors.Is(context.Cause(cmd.Context()), errBrokenPipe) && isPipeClose(err) {
+			if outputClosed(cmd.Context()) && isPipeClose(err) {
 				break
 			}
 			if worseError(worstErr, err) {
@@ -418,7 +467,7 @@ func renderError(w io.Writer, jsonMode, emitList bool, err error) {
 	if jsonMode {
 		env := jsonError{
 			SchemaVersion: schemaVersion,
-			Error:         jsonErrBody{Code: c.code, Message: c.message, Hint: c.hint},
+			Error:         jsonErrBody{Code: c.code, Message: jsonText(c.message), Hint: c.hint},
 		}
 		if emitList {
 			_ = emitJSONList(w, []any{env})
@@ -444,9 +493,10 @@ func renderError(w io.Writer, jsonMode, emitList bool, err error) {
 // omit it; direct errors may not.
 func cleanMessage(msg string) string { return strings.TrimPrefix(msg, "waxlabel: ") }
 
-// perFileError writes "waxlabel: <path>: <reason>" via displayName/perFileReason.
+// perFileError writes "waxlabel: <path>: <reason>" via displayName/perFileReason. The reason is
+// escaped too: it can name a path of its own.
 func perFileError(w io.Writer, path string, err error) {
-	fmt.Fprintf(w, "waxlabel: %s: %s\n", displayName(path), perFileReason(err))
+	fmt.Fprintf(w, "waxlabel: %s: %s\n", displayName(path), tag.SanitizeLine(perFileReason(err)))
 }
 
 // perFileReason renders per-file error when path is already printed: bare *fs.PathError
@@ -496,7 +546,7 @@ func warnPostCommit(w io.Writer, asJSON bool, path string, err error) {
 		return
 	}
 	fmt.Fprintf(w, "waxlabel: %s: written, but a step after the write failed: %s\n",
-		displayName(path), postWriteReason(err))
+		displayName(path), tag.SanitizeLine(postWriteReason(err)))
 }
 
 // jsonPostWrite carries post-commit failure in write payloads (warning, not error;
@@ -507,7 +557,7 @@ type jsonPostWrite struct {
 
 func (j *jsonPostWrite) setPostWrite(err error) {
 	if err != nil {
-		j.PostWriteWarning = postWriteReason(err)
+		j.PostWriteWarning = jsonText(postWriteReason(err))
 	}
 }
 
@@ -532,12 +582,12 @@ type classifiedError struct {
 	multiline bool
 }
 
-// errBrokenPipe is SIGPIPE cancel cause (closed pipe vs interrupt both yield
-// context.Canceled). classifyError: silent exit 0 (`... | head` convention).
+// errBrokenPipe is the cancel cause of a closed output pipe (see newRunContext).
+// classifyError: silent exit 0 (`... | head` convention).
 var errBrokenPipe = errors.New("broken output pipe")
 
 // isPipeClose is context cancel or broken-pipe errno from write racing reader close.
-// perFile pairs it with the errBrokenPipe cause so coincident file errors still record.
+// perFile pairs it with outputClosed so coincident file errors still record.
 func isPipeClose(err error) bool {
 	return errors.Is(err, context.Canceled) || isBrokenPipe(err)
 }
@@ -547,6 +597,11 @@ func isPipeClose(err error) bool {
 func classifyError(err error) classifiedError {
 	if err == nil {
 		return classifiedError{}
+	}
+	if oe, ok := errors.AsType[*operandError](err); ok {
+		c := classifyError(oe.err)
+		c.message = oe.Error()
+		return c
 	}
 	c := classifiedError{message: cleanMessage(err.Error()), exitCode: 1, code: "error"}
 	switch {

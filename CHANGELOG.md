@@ -537,6 +537,77 @@ All notable changes to this project are documented here.
 - Matroska writes a slashed track or disc number that stands among several values as the
   number, and its total under TRACKTOTAL or DISCTOTAL where the file states none, the way it
   is read back. Left slashed, every rewrite of the file added another total.
+- A closed output pipe (`... | head`) no longer cancels the writes of `set`, `copy`,
+  `lint --fix`, `clean --remove` or `export-picture`: they finish, and the exit status is the
+  one the writes earned, where files were left unwritten behind an exit 0. An interrupt still
+  stops them (exit 130). `set --json` and `copy --json` keep a file's failure when the JSON
+  itself cannot be written, and `diff --json` its exit 1 for files that differ.
+- An unquoted value with a space in it is refused before anything is read or written (exit
+  2, naming the stray word) for every flag that takes a value, not `--set` and `--add`
+  alone: `--add-chapter 0:00.5=Intro Part` saved a chapter `Intro`, and `--padding 8 KiB`
+  padded by 8 bytes, before failing on the second word.
+- `lint --json` `fixable` agrees with `--fix`: false on a file the fix cannot be written to
+  (WMA, fragmented MP4, a chained or unaligned Ogg stream, a Matroska file that cannot be
+  rewritten, no audio) and for a stamp under `ENCODEDBY` beside one under `ENCODER`; true
+  for a `conflicting-families` finding the fix settles by removing a stamp, and for
+  `single-valued-multi` of an `ENCODER` it leaves one value or none of.
+- `lint --fix` removes stamps and a legacy container's copies of what the tags hold, and no
+  value the file holds once. A legacy container with a value of its own under a key the tags
+  hold too (another title, a clean encoder name beside a stamp) is kept; it was stripped
+  whenever it held no key of its own. Under a stamped `TSSE`, a WAV `ISFT` naming the real
+  encoder is written to `ENCODER`; it was cleared with the stamp, unreported.
+- `caps` reports a Matroska file no edit can be written to (bytes inside the Segment that
+  are no element, a linked or unread index, an unread Segment CRC-32) as read-only, with
+  the reason, as it does a chained Ogg stream, and `copy` onto one lists each item as
+  dropped before it refuses; the items read `carried`.
+- A file name can no longer forge a line of output: the outcome lines of `set` and `copy`
+  (`Saved`, `Wrote`, `No changes`, `Edit discarded`, `Dry run`), the extension-mismatch
+  warning, and the reason of a per-file error or post-write note print a newline as `\x0a`.
+  The per-file line of a FIFO or other non-regular file names the path once.
+- `caps`, `diff`, `copy` and `export-picture` report each operand on its own. A directory or
+  missing path beside a good file no longer ends `caps` before the file is described, and
+  `diff` and `copy` read both operands, so the exit class no longer depends on their order
+  (`diff missing corrupt` exited 6, `diff corrupt missing` 4). Their JSON error names the
+  operand.
+- Standard input over `--max-size`, or that cannot be buffered, is the `-` operand's own
+  failure (`<stdin>` in its line and JSON element): the other operands are still read, and a
+  corrupt one outranks it. A buffering failure is `io` and names the temp directory;
+  `TMPDIR=/nonexistent` read `not-found` and named the temp file.
+- The first Ctrl-C ends a read of standard input that is still waiting for data (exit 130);
+  it took two.
+- A key the tag model refuses (`--set 'Ä=1'`, `--clear 'a=b'`) reports the `invalid-key`
+  code the README lists; it read `usage`.
+- `--max-size` refuses a size that is not a whole number of bytes, as `--padding` does:
+  `0.5` meant unlimited and `1.5` one byte. A whole size written with a fraction (`8.2MB`,
+  `2.01GB`) is taken exactly; `--padding` refused some. `--output-gain` takes a plain decimal
+  only (`1_0`, `0x1p-2` and `1e1` were accepted), and an empty `--output-gain`,
+  `--synced-lyrics-lang` or `--picture-description` is a usage error, not unset.
+- `caps --format` takes every format and container name the tool prints (`"Ogg Vorbis"`,
+  `"AAC (ADTS)"`, `"Monkey's Audio"`, `WavPack`, `Musepack`), and `rf64`, `bw64` and `aifc`,
+  which report that container as the subformat; `wma` and `asf` report `ASF`, as a file does.
+- A `--remove-picture` value that is neither a role nor a 1-based index is one usage error
+  for the run (exit 2), not a failure per file (exit 6), and `--synced-lyrics-lang` is checked
+  whether or not the run authors lyrics.
+- `--set TRACKNUMBER=3/10 --clear TRACKTOTAL` warns (`number-total-conflict`) that the `/10`
+  is not stored; the total vanished silently.
+- Text output elides a key over 96 bytes, as it elides a long value: a 50,000-character key
+  printed whole in `dump`, `lint`, `plan`, `diff`, `copy`, a warning and the notes of `set`,
+  and an MP4 warning quoted a value whole. A chapter title, a synced lyric line, a picture's
+  or synced lyric set's description and a per-family value of `dump --native` are held to the
+  4 KiB a tag value is, a native block's name and note to 96 bytes, and no line of text
+  output passes 16 KiB, whatever a message quotes. A change line or per-family row of a key
+  with very many values shows about 4 KiB of them and counts the rest (`…[+872 more]`), so
+  the line still reaches its `-> new value`. JSON keeps them whole, but for a lint finding,
+  which quotes a malformed value at 96 bytes.
+- Text output also escapes the invisible operators (U+2061 to U+2064), the deprecated format
+  characters (U+206A to U+206F), interlinear annotation marks, tag characters, the soft
+  hyphen, the combining grapheme joiner, the Mongolian vowel separator, the Khmer inherent
+  vowels and the Hangul fillers, as `\uXXXX` or `\UXXXXXXXX`: a title `Pay\u2062pal` no
+  longer reads `Paypal`. Joiners and variation selectors still print; a flag emoji spelled
+  with tag characters (Scotland's) now shows as escapes.
+- JSON `file`, `output`, `source`, `a` and `b` carry a file name that is not UTF-8 with each
+  invalid byte as `\xNN`, as text output shows it, instead of U+FFFD, which named no file;
+  so does the message of an error that names the path.
 
 ### Changed
 
@@ -648,6 +719,12 @@ All notable changes to this project are documented here.
   `--quiet`), and its JSON gains `warnings`; a chained file it refuses has that warning on
   stderr ahead of the error. `caps` says why a file of a format it writes is read-only, and
   its JSON gains `readOnlyReason`.
+- `tag.ElideKey` and `tag.ElideSnippet`, a key or quoted text shortened for display as
+  `tag.ElideValue` shortens a value; `tag.ElideValues`, a key's values joined for one line,
+  the ones past the display length counted; and `Warning.Text`, a warning's message with the
+  keys it names shortened, which `Warning.String` prints.
+- An `inherited-encoder` warning from an ID3, APEv2 or ASF tag names the field that holds the
+  stamp in `Warning.Keys`.
 
 ## [1.8.0]
 

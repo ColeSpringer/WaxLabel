@@ -11,6 +11,20 @@ import (
 	"github.com/colespringer/waxlabel/internal/testfile"
 )
 
+// TestRepeatedSetNoteQuotesTheValueOnce: the surviving value is quoted with its control bytes
+// escaped once, and at the length a note quotes text.
+func TestRepeatedSetNoteQuotesTheValueOnce(t *testing.T) {
+	t.Parallel()
+	_, note, _ := runCLI(t, "plan", sampleFLAC, "--set", "TITLE=a", "--set", "TITLE=b\nc")
+	if !strings.Contains(note, `last value "b\nc" was used`) {
+		t.Errorf("a newline in the value should read \\n, escaped once:\n%s", note)
+	}
+	_, note, _ = runCLI(t, "plan", sampleFLAC, "--set", "DATE=2001", "--set", "RECORDINGDATE=2002\t"+strings.Repeat("9", 500))
+	if !strings.Contains(note, `last value "2002\t999`) || len(note) > 600 {
+		t.Errorf("the alias note should quote the value the same way, bounded (%d bytes):\n%.300s", len(note), note)
+	}
+}
+
 // TestRepeatedSetNotesTheDiscardedValue: repeated --set warns once with surviving value; identical repeat silent.
 func TestRepeatedSetNotesTheDiscardedValue(t *testing.T) {
 	t.Parallel()

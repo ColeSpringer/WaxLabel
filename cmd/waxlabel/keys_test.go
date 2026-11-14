@@ -90,3 +90,29 @@ func TestKeysRejectsArguments(t *testing.T) {
 		t.Fatalf("keys with an argument exit = %d, want 2 (usage)", code)
 	}
 }
+
+// TestInvalidKeyCode: a key the tag model refuses is the invalid-key class (exit 2), not a
+// generic usage error.
+func TestInvalidKeyCode(t *testing.T) {
+	t.Parallel()
+	for _, edit := range [][]string{
+		{"--set", "Ä=1"}, {"--add", "Ä=1"}, {"--clear", "a=b"}, {"--clear", ""}, {"--set", "=1"},
+	} {
+		for _, cmd := range []string{"plan", "set"} {
+			args := append([]string{cmd, sampleFLAC}, edit...)
+			out, _, code := runCLI(t, append([]string{"--json"}, args...)...)
+			env := decodeJSONOne[jsonError](t, out)
+			if code != 2 || env.Error.Code != "invalid-key" || !strings.Contains(env.Error.Message, "invalid tag key") {
+				t.Errorf("%v --json: exit %d, error %+v; want invalid-key", args, code, env.Error)
+			}
+			if _, errb, code := runCLI(t, args...); code != 2 || !strings.HasPrefix(errb, "waxlabel: invalid tag key") {
+				t.Errorf("%v: exit %d, stderr %q", args, code, errb)
+			}
+		}
+	}
+	// A malformed assignment is still a usage error.
+	out, _, _ := runCLI(t, "--json", "plan", sampleFLAC, "--set", "TITLE")
+	if env := decodeJSONOne[jsonError](t, out); env.Error.Code != "usage" {
+		t.Errorf("--set without '=': code %q, want usage", env.Error.Code)
+	}
+}

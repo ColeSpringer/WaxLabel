@@ -3,6 +3,7 @@ package waxlabel
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/colespringer/waxlabel/tag"
@@ -272,14 +273,42 @@ func TestSplitNumberPairsConflictWarning(t *testing.T) {
 		wantNoConflict(t, splitNumberPairs(&ts, p)) // number not touched
 	})
 
-	t.Run("explicit clear of total -> no warn", func(t *testing.T) {
-		base := tag.NewTagSet()
-		base.Set(tag.TrackTotal, "10")
+	t.Run("clear of the total drops the slash total -> warns", func(t *testing.T) {
+		held := tag.NewTagSet() // a file that already holds a total
+		held.Set(tag.TrackTotal, "10")
+		for _, base := range []tag.TagSet{tag.NewTagSet(), held} {
+			var p tag.TagPatch
+			p.Set(tag.TrackNumber, "3/12")
+			p.Clear(tag.TrackTotal)
+			ts := p.Apply(base)
+			ws := splitNumberPairs(&ts, p)
+			wantConflict(t, ws, tag.TrackTotal, tag.TrackNumber)
+			if _, ok := ts.Get(tag.TrackTotal); ok || !strings.Contains(ws[0].Message, "cleared") {
+				t.Errorf("the clear still wins and the warning says so: %v, total present %v", ws, ok)
+			}
+		}
+	})
+
+	t.Run("total set empty drops the slash total -> warns", func(t *testing.T) {
 		var p tag.TagPatch
-		p.Set(tag.TrackNumber, "3/12")
-		p.Clear(tag.TrackTotal)
-		ts := p.Apply(base)
-		wantNoConflict(t, splitNumberPairs(&ts, p)) // no explicit value to conflict with
+		p.Set(tag.DiscNumber, "1/2")
+		p.Set(tag.DiscTotal, "")
+		ts := p.Apply(tag.NewTagSet())
+		ws := splitNumberPairs(&ts, p)
+		wantConflict(t, ws, tag.DiscTotal, tag.DiscNumber)
+		if !strings.Contains(ws[0].Message, "set empty") {
+			t.Errorf("warning = %q", ws[0].Message)
+		}
+	})
+
+	t.Run("clear of the total beside a number with none -> no warn", func(t *testing.T) {
+		for _, num := range []string{"3", "3/", "abc/1"} {
+			var p tag.TagPatch
+			p.Set(tag.TrackNumber, num)
+			p.Clear(tag.TrackTotal)
+			ts := p.Apply(tag.NewTagSet())
+			wantNoConflict(t, splitNumberPairs(&ts, p))
+		}
 	})
 
 	t.Run("plain number with explicit total -> no warn", func(t *testing.T) {

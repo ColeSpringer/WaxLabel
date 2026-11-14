@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -334,5 +335,138 @@ func TestSanitizingWriterCloseFlushesPartial(t *testing.T) {
 	assertNoRawControl(t, "close-flush", got)
 	if got != `a\xe2\x82` {
 		t.Errorf("Close should flush the held partial as escapes, got %q", got)
+	}
+}
+
+// TestJSONFileNamesEscapeInvalidBytes: a file name that is not UTF-8 reads in JSON as it does
+// in text, each invalid byte as \xNN. Encoded as it is, it would come out as U+FFFD and name
+// no file.
+func TestJSONFileNamesEscapeInvalidBytes(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	named := filepath.Join(dir, "caf\xe9.flac")
+	if err := os.WriteFile(named, data, 0o644); err != nil {
+		t.Skipf("filesystem refused a non-UTF-8 name: %v", err)
+	}
+	want := filepath.Join(dir, `caf\xe9.flac`)
+	outName := filepath.Join(dir, "out\xe9.flac")
+	wantOut := filepath.Join(dir, `out\xe9.flac`)
+	png := filepath.Join(dir, "p\xe9.png")
+
+	// fields decodes one JSON object, or the one element of a list, into a string-valued map.
+	fields := func(out string) map[string]any {
+		t.Helper()
+		var one map[string]any
+		if json.Unmarshal([]byte(out), &one) != nil {
+			one = decodeJSONOne[map[string]any](t, out)
+		}
+		return one
+	}
+	for _, c := range []struct {
+		args []string
+		want map[string]string
+	}{
+		{[]string{"dump", named}, map[string]string{"file": want}},
+		{[]string{"lint", named}, map[string]string{"file": want}},
+		{[]string{"verify", named}, map[string]string{"file": want}},
+		{[]string{"caps", named}, map[string]string{"file": want}},
+		{[]string{"plan", named, "--set", "TITLE=x"}, map[string]string{"file": want}},
+		{[]string{"diff", named, named}, map[string]string{"a": want, "b": want}},
+		{[]string{"copy", "--dry-run", named, named}, map[string]string{"source": want, "file": want}},
+		{[]string{"set", named, "--set", "TITLE=x", "-o", outName}, map[string]string{"file": want, "output": wantOut}},
+		{[]string{"set", named, "--add-cover", writeTempImage(t, "c.png", testfile.PNG())}, map[string]string{"file": want}},
+		{[]string{"export-picture", named, "-o", png}, map[string]string{"file": want, "output": filepath.Join(dir, `p\xe9.png`)}},
+		{[]string{"lint", "--fix", named}, map[string]string{"file": want}},
+		{[]string{"dump", filepath.Join(dir, "gone\xe9.flac")}, map[string]string{"file": filepath.Join(dir, `gone\xe9.flac`)}},
+	} {
+		out, errb, _ := runCLI(t, append([]string{"--json"}, c.args...)...)
+		got := fields(out)
+		for field, want := range c.want {
+			if got[field] != want {
+				t.Errorf("%v: %s = %q, want %q (stderr %q)", c.args[:1], field, got[field], want, errb)
+			}
+		}
+	}
+	// The envelope of a failed operand names it the same way.
+	out, _, _ := runCLI(t, "--json", "diff", filepath.Join(dir, "gone\xe9.flac"), named)
+	var env jsonError
+	if err := json.Unmarshal([]byte(out), &env); err != nil || !strings.HasPrefix(env.Error.Message, filepath.Join(dir, `gone\xe9.flac`)+": ") {
+		t.Errorf("diff envelope message = %q (%v)", env.Error.Message, err)
+	}
+	// So does an error that names a path, whatever built its message.
+	if err := os.MkdirAll(dir+"\xe9", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		code int
+		args []string
+	}{
+		{2, []string{"clean", named}},
+		{2, []string{"plan", named, "--add-cover", dir + "\xe9"}},
+		{6, []string{"plan", named, "--add-cover", filepath.Join(dir, "no\xe9.png")}},
+		{6, []string{"set", named, "--set", "TITLE=x", "-o", filepath.Join(dir, "no\xe9", "out.flac")}},
+	} {
+		args := c.args
+		out, _, code := runCLI(t, append([]string{"--json"}, args...)...)
+		var msg string
+		if one := fields(out); one["error"] != nil {
+			msg, _ = one["error"].(map[string]any)["message"].(string)
+		}
+		if code != c.code || !strings.Contains(msg, `\xe9`) || strings.Contains(msg, "\ufffd") {
+			t.Errorf("%v: exit %d, message %q; want the byte escaped", args[:1], code, msg)
+		}
+	}
+	// A name that is valid UTF-8 is not touched, whatever it holds.
+	if got := jsonFileName("a\nb\u202e\\xe9.flac"); got != "a\nb\u202e\\xe9.flac" {
+		t.Errorf("jsonFileName rewrote a valid name: %q", got)
+	}
+}
+
+// TestJSONPerFileErrorsEscapeInvalidBytes: the reason of a failed save names its directory, and
+// the JSON of set, copy and lint --fix carries a byte of it that is not UTF-8 as \xNN.
+func TestJSONPerFileErrorsEscapeInvalidBytes(t *testing.T) {
+	t.Parallel()
+	requireUnwritableDir(t)
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roDir := filepath.Join(t.TempDir(), "ro\xe9")
+	if err := os.Mkdir(roDir, 0o755); err != nil {
+		t.Skipf("filesystem refused a non-UTF-8 name: %v", err)
+	}
+	file := filepath.Join(roDir, "a.flac")
+	if err := os.WriteFile(file, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(roDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(roDir, 0o755) })
+
+	for _, args := range [][]string{
+		{"set", file, "--set", "TITLE=x"},
+		{"copy", sampleM4B, file},
+		{"lint", "--fix", file},
+	} {
+		out, _, code := runCLI(t, append([]string{"--json"}, args...)...)
+		var one map[string]any
+		if json.Unmarshal([]byte(out), &one) != nil {
+			one = decodeJSONOne[map[string]any](t, out)
+		}
+		body, _ := one["error"].(map[string]any)
+		msg, _ := body["message"].(string)
+		if code != 6 || !strings.Contains(msg, `create temp file in `) || !strings.Contains(msg, `ro\xe9`) {
+			t.Errorf("%s: exit %d, message %q; want the directory named with its byte escaped", args[0], code, msg)
+		}
+	}
+	var j jsonPostWrite
+	j.setPostWrite(errors.New("sync directory " + roDir + ": input/output error"))
+	if !strings.Contains(j.PostWriteWarning, `ro\xe9:`) {
+		t.Errorf("postWriteWarning = %q", j.PostWriteWarning)
 	}
 }
