@@ -705,7 +705,13 @@ func TestCopyWriteFailureNamesTheDestination(t *testing.T) {
 	if code != 6 {
 		t.Fatalf("exit = %d, want 6\n%s", code, stderr)
 	}
-	if !strings.Contains(stderr, "waxlabel: "+displayName(dst)+": ") || !strings.Contains(stderr, "create temp file in "+roDir) {
+	// An existing destination is written through its symlink-resolved path, so the directory
+	// named is the resolved one: macOS temp dirs sit under /var, a link to /private/var.
+	realDir, err := filepath.EvalSymlinks(roDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr, "waxlabel: "+displayName(dst)+": ") || !strings.Contains(stderr, "create temp file in "+realDir+": ") {
 		t.Errorf("stderr should name the destination and its directory: %q", stderr)
 	}
 	if strings.Contains(stderr, ".waxlabel-") {
