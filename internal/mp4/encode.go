@@ -817,7 +817,12 @@ func restoreUnstorableSlots(base, edited tag.TagSet) (tag.TagSet, map[tag.Key]bo
 		restored[key] = true
 	}
 	for _, key := range pairSlotKeys {
-		restore(key, uint16ValueDropped)
+		// A number left holding its total is judged by the number, which is what the
+		// encoder stores of it ([resolvePairSlots]).
+		restore(key, func(s string) bool {
+			num, _, _ := tag.NumberTotalSplit(key, s)
+			return uint16ValueDropped(num)
+		})
 	}
 	restore(tag.MediaType, mediaTypeValueDropped)
 	restore(tag.ITunesAdvisory, advisoryValueDropped)

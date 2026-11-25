@@ -116,7 +116,7 @@ func transferRead(m *core.Media, version byte, opts core.WriteOptions) func(writ
 		changed := foldInfoTrackPair(core.ChangedKeys(tag.NewTagSet(), fields, nil))
 		edited := &core.Media{Tags: fields, Comments: written.Comments, Lyrics: written.Lyrics}
 		needID3 := id3Present || len(written.Pictures) > 0 || len(written.Chapters) > 0 || len(written.SyncedLyrics) > 0 ||
-			id3.NeedsTextFrames(edited) || !infoRepresentable(fields, changed) || legacyStrip
+			id3.NeedsTextFrames(edited) || !infoRepresentable(fields, changed, false) || legacyStrip
 		out := &doc{}
 		if needID3 {
 			out.id3 = id3.TransferTag(written, fields, version, wopts)

@@ -311,11 +311,11 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 			out = append(out, it) // no canonical key: nothing can have edited it
 			continue
 		}
-		// Slash holds number+total; on either change rewrite number without slash and
+		// The number holds its total too; on either change rewrite the number alone and
 		// mark both emitted (else unrelated edit appends stray total). Same as vorbis.
 		if key == tag.TrackNumber || key == tag.DiscNumber {
-			// The value as it reads: a terminator some tagger wrote hides no slash.
-			if vals := splitItemValues(it.Value); len(vals) == 1 && slashed(key, vals[0]) {
+			// The value as it reads: a terminator some tagger wrote hides no total.
+			if vals := splitItemValues(it.Value); len(vals) == 1 && holdsTotal(key, vals[0]) {
 				totKey := tag.TotalKey(key)
 				if changed[key] || changed[totKey] {
 					if !emitted[key] {
@@ -326,7 +326,7 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 					}
 					continue
 				}
-				emitted[totKey] = true // preserved in the slash below; do not append a copy
+				emitted[totKey] = true // preserved in the number below; do not append a copy
 			}
 		}
 		if !changed[key] {
@@ -376,8 +376,8 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 	return out, info
 }
 
-// slashed reports a number that holds its total behind a slash.
-func slashed(key tag.Key, value string) bool {
+// holdsTotal reports a number that holds its total too ("4/9", "4 of 9").
+func holdsTotal(key tag.Key, value string) bool {
 	_, _, split := tag.NumberTotalSplit(key, value)
 	return split
 }

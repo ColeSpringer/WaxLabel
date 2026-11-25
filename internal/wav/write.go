@@ -58,7 +58,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// or lyrics' description and language force an id3 chunk because LIST/INFO cannot store
 	// them (they are ID3 CHAP/CTOC and SYLT frames and COMM/USLT fields).
 	needID3 := id3Present || len(edited.Pictures) > 0 || len(edited.Chapters) > 0 || len(edited.SyncedLyrics) > 0 ||
-		id3.NeedsTextFrames(edited) || !infoRepresentable(edited.Tags, changed) || legacyStrip
+		id3.NeedsTextFrames(edited) || !infoRepresentable(edited.Tags, changed, hasTrackItem(d.info)) || legacyStrip
 	writeINFO := (infoPresent && !stripINFO) || !needID3
 
 	// Build the new INFO items (changed keys re-rendered; everything else kept verbatim).
@@ -130,9 +130,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 
 	// When both LIST/INFO and ID3 are emitted, a multi-valued key keeps its full set only
-	// in ID3.
+	// in ID3, where its frame holds one.
 	if emitINFO && emitID3 {
-		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags, changed)...)
+		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags,
+			func() tag.TagSet { return id3.Project(newID3).Tags }, changed)...)
 	}
 
 	outs, ops, dropped, staleDropped := planChunks(d, newInfo, newID3, emitINFO, emitID3, infoKept, id3Kept, stripINFO)
@@ -210,6 +211,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Report ID3 rebuild losses only when the file as a whole loses them: RecordingDate
 	// can survive verbatim in LIST/INFO ICRD, and the helper checks the re-projected output.
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, id3Info, result.Tags)
+	if emitINFO && !emitID3 {
+		report.Warnings = infoExtraValues(report.Warnings, edited.Tags, changed, result.Tags)
+	}
 	if !id3Kept {
 		report.Warnings = id3.AppendChunkDropped(report.Warnings, d.id3, emitID3)
 	}

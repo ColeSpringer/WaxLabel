@@ -141,7 +141,8 @@ func Project(t *Tag) Projection {
 				}
 				src := "TXXX\x00" + strings.ToUpper(strings.TrimSpace(desc))
 				for _, v := range vals {
-					emit(key, v, src)
+					// A TXXX:TRACKNUMBER holds "n/total" as TRCK does.
+					contribs = core.AppendSplit(contribs, core.Contribution{Key: key, Value: v, Source: src})
 				}
 			}
 		case f.ID == "UFID":
@@ -398,10 +399,11 @@ func nonStandardIDs(frames []Frame) []string {
 	return ids
 }
 
-// emitNumTotal splits "n/total" text values into a number key and a total key via the
-// shared [tag.NumberTotalSplit], so the split and its validity gate match the edit-time
-// pair normalization and the other read paths. A malformed pair ("abc/1", "1/2/3") stays
-// verbatim on the number key; a well-formed "4/9" splits and keeps leading zeros.
+// emitNumTotal splits text values that hold a number and its total ("n/total", "n of
+// total") into a number key and a total key via the shared [tag.NumberTotalSplit], so the
+// split and its validity gate match the edit-time pair normalization and the other read
+// paths. A malformed pair ("abc/1", "1/2/3") stays verbatim on the number key; a
+// well-formed "4/9" splits and keeps leading zeros.
 func emitNumTotal(emit func(tag.Key, string, string), vals []string, numKey, totKey tag.Key, src string) {
 	for _, v := range vals {
 		num, total, _ := tag.NumberTotalSplit(numKey, v)
@@ -415,13 +417,12 @@ func emitNumTotal(emit func(tag.Key, string, string), vals []string, numKey, tot
 }
 
 // movementSplit splits an MVIN "number/total" value into its number and total, the
-// movement analog of [tag.NumberTotalSplit], which is gated to the track/disc keys and
-// whose [tag.ValidNumericValue] gate passes anything for other keys. A value splits only
-// when it contains a '/', each side is empty or a valid movement integer
-// ([tag.ValidMP4IntValue]: unsigned, within uint16), and the sides are not both empty;
-// anything else (no slash, "abc/1", a bare "/") stays whole on the number side with
-// split=false, matching NumberTotalSplit's malformed-stays-verbatim contract. The MVIN
-// read case and composeMovementPair share it.
+// movement analog of [tag.NumberTotalSplit], which is gated to the track/disc keys. A
+// value splits only when it contains a '/', each side is empty or a valid movement
+// integer ([tag.ValidMP4IntValue]: unsigned, within uint16), and the sides are not both
+// empty; anything else (no slash, "abc/1", a bare "/") stays whole on the number side
+// with split=false, matching NumberTotalSplit's malformed-stays-verbatim contract. The
+// MVIN read case and composeMovementPair share it.
 func movementSplit(v string) (num, total string, split bool) {
 	if !strings.ContainsRune(v, '/') {
 		return v, "", false

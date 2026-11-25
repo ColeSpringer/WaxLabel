@@ -27,14 +27,14 @@ func technicalNameReason(name string) string {
 	return name + " is a reserved Matroska technical/statistics tag name (derived from the stream, never read back as a tag), so the value is not written"
 }
 
-// splitNumberReason grades a slashed number among several values, which [splitNumberValues]
-// writes split.
-const splitNumberReason = "a slashed number among several values is stored as the number alone; its total goes under the total key where that holds none"
+// splitNumberReason grades a number holding its total ([tag.NumberTotalSplit]) among several
+// values, which [splitNumberValues] writes split.
+const splitNumberReason = "a number with its total among several values is stored as the number alone; its total goes under the total key where that holds none"
 
 // splitNumberValues is ts as a write stores it: of several TRACKNUMBER or DISCNUMBER values, one
-// spelled "n/total" is written as the number. Its total goes under the total key only where ts
+// holding its total ("n/total", "n of total") is written as the number. Its total goes under the total key only where ts
 // holds none there: a total the set states is the total, and one read out of a number does not
-// join it. A read splits every such SimpleTag ([projectTag]), so one left slashed would read
+// join it. A read splits every such SimpleTag ([projectTag]), so one left whole would read
 // back as a second total on each rewrite. A sole value is the editor's to split. split is false,
 // and ts returned as given, when nothing splits.
 func splitNumberValues(ts tag.TagSet) (out tag.TagSet, split bool) {
@@ -46,14 +46,14 @@ func splitNumberValues(ts tag.TagSet) (out tag.TagSet, split bool) {
 		}
 		nums := make([]string, 0, len(vals))
 		var totals []string
-		slashed := false
+		paired := false
 		for _, v := range vals {
 			num, total, ok := tag.NumberTotalSplit(numKey, v)
 			if !ok {
 				nums = append(nums, v)
 				continue
 			}
-			slashed = true
+			paired = true
 			if num != "" {
 				nums = append(nums, num)
 			}
@@ -61,7 +61,7 @@ func splitNumberValues(ts tag.TagSet) (out tag.TagSet, split bool) {
 				totals = append(totals, total)
 			}
 		}
-		if !slashed {
+		if !paired {
 			continue
 		}
 		if !split {
@@ -76,7 +76,7 @@ func splitNumberValues(ts tag.TagSet) (out tag.TagSet, split bool) {
 }
 
 // TransferClassifier: multi-value TITLE => Lossy (Info.Title is single-valued;
-// first kept); a slashed number among several values => Lossy (stored split); reserved
+// first kept); a number with its total among several values => Lossy (stored split); reserved
 // technical/statistics names => Dropped. Reuses shared reason consts. Plain
 // [core.FieldClassifier]; other fields use format grade.
 func TransferClassifier(key tag.Key, values []string, _ *core.Media) (core.Disposition, string, bool) {

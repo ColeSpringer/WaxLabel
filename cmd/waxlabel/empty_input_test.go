@@ -42,3 +42,22 @@ func TestEmptyNumberAdvisory(t *testing.T) {
 		t.Errorf("TRACKNUMBER=/-5 must not also fire the empty-number note: %q", stderr2)
 	}
 }
+
+// TestOfPairSet: "3 of 12" is stored as the number and its total, with no note; "of 5" notes
+// the missing number as "/5" does.
+func TestOfPairSet(t *testing.T) {
+	file := copyFixture(t, notagsFLAC)
+	_, stderr, code := runCLI(t, "set", file, "--set", "TRACKNUMBER=3 of 12")
+	if code != 0 || strings.Contains(stderr, "note:") {
+		t.Fatalf("TRACKNUMBER=3 of 12: exit %d, stderr %q; want 0 and no note", code, stderr)
+	}
+	jd := dumpJSON(t, file)
+	if n, tot := tagValues(jd, "TRACKNUMBER"), tagValues(jd, "TRACKTOTAL"); len(n) != 1 || n[0] != "3" || len(tot) != 1 || tot[0] != "12" {
+		t.Errorf("stored TRACKNUMBER=%v TRACKTOTAL=%v, want [3] and [12]", n, tot)
+	}
+
+	_, stderr, code = runCLI(t, "set", copyFixture(t, notagsFLAC), "--set", "TRACKNUMBER=of 5")
+	if code != 0 || !strings.Contains(stderr, "no number component") {
+		t.Errorf("TRACKNUMBER=of 5: exit %d, stderr %q; want 0 and the empty-number advisory", code, stderr)
+	}
+}

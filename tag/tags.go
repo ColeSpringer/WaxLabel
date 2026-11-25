@@ -361,9 +361,12 @@ func (t Tags) Patch() TagPatch {
 }
 
 // ParseNumPair resolves a "number" and "total" pair (e.g. track or disc
-// numbering). The number field may use the "n/total" convention; an explicit
-// total wins. Surrounding whitespace is ignored. Exported so codecs that store a
-// structured pair (MP4 trkn/disk) parse the canonical strings as the projection does.
+// numbering). The number field may hold both, as "n/total" or "n of total"; an
+// explicit total wins. Surrounding whitespace is ignored, and a side that is no
+// integer reads 0. Around a '/' each side is read on its own ("3/x" is 3); the
+// word separates only a pair whose sides are each an integer or blank, not both
+// blank ("3 of" is 3, "3 of x" no number). Exported for a caller that holds the
+// two strings and not a [TagSet].
 func ParseNumPair(num, total string) (n, tot int) {
 	// atoi parses a trimmed int and treats every error as 0, including
 	// out-of-range overflow.
@@ -375,17 +378,42 @@ func ParseNumPair(num, total string) (n, tot int) {
 		return v
 	}
 	if num != "" {
-		if before, after, ok := strings.Cut(num, "/"); ok {
-			n = atoi(before)
-			tot = atoi(after)
-		} else {
-			n = atoi(num)
-		}
+		before, after, _ := cutNumberTotal(num)
+		n, tot = atoi(before), atoi(after)
 	}
 	if total != "" {
 		tot = atoi(total)
 	}
 	return n, tot
+}
+
+// cutNumberTotal cuts a number at the separator between it and its total: the first '/',
+// or, in a value with none, the word "of" in any case ("3 of 12", "3OF12"). The word
+// separates only a well-formed pair ([pairSides]), so other text that holds it stays whole;
+// a '/' always cuts. ok is false, and num is v, when v has no separator.
+func cutNumberTotal(v string) (num, total string, ok bool) {
+	if num, total, ok = strings.Cut(v, "/"); ok {
+		return num, total, true
+	}
+	for i := 0; i+1 < len(v); i++ {
+		if (v[i] == 'o' || v[i] == 'O') && (v[i+1] == 'f' || v[i+1] == 'F') {
+			// A side of a pair holds no letters, so only the first "of" can separate one.
+			if pairSides(v[:i], v[i+2:]) {
+				return v[:i], v[i+2:], true
+			}
+			break
+		}
+	}
+	return v, "", false
+}
+
+// pairSides reports whether num and total are the sides of a well-formed pair: each an
+// integer or blank, and not both blank. A blank side ("3/" or "/2") reads 0 in
+// [ParseNumPair], so the value round-trips. A bare separator carries no number, and
+// passing it would let the pair split delete the key.
+func pairSides(num, total string) bool {
+	n, t := strings.TrimSpace(num), strings.TrimSpace(total)
+	return (n != "" || t != "") && (n == "" || validInt(n)) && (t == "" || validInt(t))
 }
 
 // Fold lowercases s and trims surrounding whitespace, for case- and
@@ -407,7 +435,8 @@ func DistinctValues(vals []string) int {
 // into its trimmed number and total substrings. Unlike [ParseNumPair] it keeps the
 // exact substrings, leading zeros included, so an edit-time normalization does not
 // rewrite the value. Either side is "" when absent or blank ("3/" -> "3",""; "/12"
-// -> "","12"). The ID3 read path and the edit-time pair split share it.
+// -> "","12"). It takes no key and judges nothing, so it knows the slash alone: the
+// worded pair is [NumberTotalSplit]'s, under a key that holds one.
 func SplitNumberTotal(v string) (num, total string) {
 	num, total, _ = strings.Cut(v, "/")
 	return strings.TrimSpace(num), strings.TrimSpace(total)
@@ -427,19 +456,22 @@ func TotalKey(k Key) Key {
 	}
 }
 
-// NumberTotalSplit splits a track/disc "n/total" for read paths ([SplitNumberTotal]).
-// Non-pair or malformed returns the value as num with split=false.
+// NumberTotalSplit splits a track or disc number that holds its total too, for read
+// paths: "n/total", or "n of total" as some taggers write it, the word in any case and
+// with or without spaces. Each side is an integer or blank, not both blank; the
+// substrings come back trimmed and otherwise exact, leading zeros included. Anything
+// else, and any other key, returns the value as num with split=false.
 func NumberTotalSplit(k Key, v string) (num, total string, split bool) {
-	if (k == TrackNumber || k == DiscNumber) &&
-		strings.ContainsRune(v, '/') && ValidNumericValue(k, v) {
-		num, total = SplitNumberTotal(v)
-		return num, total, true
+	if k == TrackNumber || k == DiscNumber {
+		if n, t, ok := cutNumberTotal(v); ok && pairSides(n, t) {
+			return strings.TrimSpace(n), strings.TrimSpace(t), true
+		}
 	}
 	return v, "", false
 }
 
-// NormalizeNumberPairs splits slashed TRACKNUMBER/DISCNUMBER in a read projection
-// into number + total when no total is already present.
+// NormalizeNumberPairs splits a TRACKNUMBER/DISCNUMBER pair ([NumberTotalSplit]) in a
+// read projection into number + total when no total is already present.
 func NormalizeNumberPairs(ts *TagSet) {
 	for _, numKey := range []Key{TrackNumber, DiscNumber} {
 		vals, ok := ts.Get(numKey)
@@ -514,32 +546,19 @@ func IsBooleanKey(k Key) bool { return booleanKeys[k] }
 // ValidNumericValue reports whether v is a value the numeric key k accepts
 // without loss. It mirrors [ParseNumPair], so it never flags a value that
 // round-trips: surrounding whitespace is ignored, TrackNumber and DiscNumber
-// accept the "number/total" convention, and the parse is strconv.Atoi (which
-// accepts a leading sign). A non-numeric key is reported valid.
+// accept the "number/total" and "number of total" forms, and the parse is
+// strconv.Atoi (which accepts a leading sign). A non-numeric key is reported valid.
 func ValidNumericValue(k Key, v string) bool {
 	if !numericKeys[k] {
 		return true
 	}
-	// Only the number fields carry "n/total" (ParseNumPair splits only those).
+	// Only the number fields carry a total (ParseNumPair splits only those).
 	if k == TrackNumber || k == DiscNumber {
-		if num, total, ok := strings.Cut(v, "/"); ok {
-			// A bare "/" is malformed: it carries no number, and passing it would let
-			// splitNumberPairs delete the key. One blank side ("3/" or "/2") is fine;
-			// ParseNumPair reads it as 0.
-			if strings.TrimSpace(num) == "" && strings.TrimSpace(total) == "" {
-				return false
-			}
-			return numComponent(num) && numComponent(total)
+		if num, total, ok := cutNumberTotal(v); ok {
+			return pairSides(num, total)
 		}
 	}
 	return validInt(v)
-}
-
-// numComponent reports whether one side of a "number/total" value is acceptable.
-// An empty side ("3/" or "/2") is fine: ParseNumPair reads it as 0, so the value
-// round-trips. Only a non-empty, non-numeric side is malformed.
-func numComponent(s string) bool {
-	return strings.TrimSpace(s) == "" || validInt(s)
 }
 
 // NegativeNumericValue reports whether numeric key k's value v has a negative
@@ -553,7 +572,7 @@ func NegativeNumericValue(k Key, v string) bool {
 		return false
 	}
 	if k == TrackNumber || k == DiscNumber {
-		if num, total, ok := strings.Cut(v, "/"); ok {
+		if num, total, ok := cutNumberTotal(v); ok {
 			return negativeInt(num) || negativeInt(total)
 		}
 	}
@@ -561,15 +580,15 @@ func NegativeNumericValue(k Key, v string) bool {
 }
 
 // EmptyNumberWithTotal reports whether v is a valid "number/total" value for TrackNumber or
-// DiscNumber with an empty number and a numeric total, such as "/5". The value is writable,
-// but the empty number is easy to type by accident, so the CLI reports an advisory. It judges
-// only the submitted pair; an explicit total key can override the embedded total.
+// DiscNumber with an empty number and a numeric total, such as "/5" or "of 5". The value is
+// writable, but the empty number is easy to type by accident, so the CLI reports an advisory.
+// It judges only the submitted pair; an explicit total key can override the embedded total.
 func EmptyNumberWithTotal(k Key, v string) bool {
 	if k != TrackNumber && k != DiscNumber {
 		return false
 	}
-	num, total := SplitNumberTotal(v)
-	return num == "" && validInt(total)
+	num, _, split := NumberTotalSplit(k, v)
+	return split && num == ""
 }
 
 // IsTrimmableKey reports whether k holds a single-token value whose surrounding whitespace is

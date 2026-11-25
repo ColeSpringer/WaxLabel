@@ -83,7 +83,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 
 	ts := core.BuildTagSet(r.contribs)
-	// WM/TrackNumber may be "3/12"; shared split for consistent pairs.
+	// WM/TrackNumber may be "3/12" or "3 of 12"; shared split for consistent pairs.
 	tag.NormalizeNumberPairs(&ts)
 
 	media := &core.Media{

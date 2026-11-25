@@ -578,9 +578,55 @@ All notable changes to this project are documented here.
 - The note for an unknown key spelled like an ID3 frame ID suggests the key that frame holds
   (`TCON`: GENRE, `TDRC`: RECORDINGDATE) instead of the nearest spelling (`TDRC` suggested
   ISRC), and nothing for a frame that holds no one key (`TIPL`, `WOAR`).
+- A track or disc number written `3 of 12` reads as the number and its total in every format,
+  as `3/12` does. It read as no number (0) in `Fields()` and `tag.ParseNumPair`, the canonical
+  `TRACKNUMBER` held the text whole and linted `malformed-number`, and a copy to MP4 dropped
+  it. The word may be in any case, with or without spaces, and either side may be empty; other
+  text that holds it (`Part 3 of 12`) is still `malformed-number`. `--set TRACKNUMBER="3 of 12"`
+  stores 3 and 12, an edit that changes either half rewrites the stored text as the format
+  writes a pair, and an edit that leaves both alone keeps it as it keeps `3/12`.
+  `tag.NumberTotalSplit`, `tag.ValidNumericValue`, `tag.NegativeNumericValue`,
+  `tag.EmptyNumberWithTotal` and, for a track or disc number, `tag.NumericValuesEqual` take
+  the form; `tag.SplitNumberTotal`, which takes no key, still knows the slash alone.
+- A legacy tag that holds a number and its total as one value (an APE `Track=3/12` beside an
+  ID3 `TRCK`) is compared half by half: one that agrees no longer lints
+  `conflicting-families` and `lint --fix` strips it, and a total only it holds is
+  `legacy-only-tags`.
+- An MP4 freeform `TRACKNUMBER` or `DISCNUMBER` item reads as the number and total its text
+  holds, as a keys-store entry does. One with no total (`3/`) hid the total of the `trkn` atom
+  or of another item, which an edit of the number then removed; one that repeats the `trkn`
+  atom linted `conflicting-families`; and with several, one holding a total, clearing the
+  total wrote one.
+- A WAV `IPRT` item that holds a total and no number (`/12`) keeps the total through an edit
+  that names it: setting the value it held dropped the total where an `id3 ` chunk stood
+  beside it, and a new value went to an `id3 ` chunk the file did not have.
+- A WAV track number or total given several values keeps the first and reports the rest
+  `value-dropped`, once, and gains no `id3 ` chunk for them: its `TRCK` frame holds one of
+  each too. A second number added a chunk that held no more, and a second total went with no
+  more than `single-valued-multi`. `native-value-reduced`, which says the `id3 ` chunk keeps
+  the full set, is given only where it does: not for a WAV track number or date, nor for
+  values a slash policy joins.
+- An ID3 `TXXX:TRACKNUMBER` or `TXXX:DISCNUMBER` frame holding `3/12` reads as the number and
+  its total, as `TRCK` does, and an edit of either half leaves one of each. It read whole; a
+  total set beside it gave two numbers, and a new number dropped its total.
+- An edit that re-renders an ID3 `TRCK`, `TPOS` or `MVIN` frame warns `value-dropped` for a
+  value past the first of its number or total that no frame of the written tag holds
+  (`--strict` refuses), as MP4 does. It dropped them unreported. A value a `TXXX` frame still
+  holds, or one that repeats or respells what is kept (`03` beside `3`, `3/12` beside a number
+  3 and a total 12), is not one.
+- An ID3 edit warns `value-dropped` once for one loss. A value no frame took (an all-empty
+  number, genre, date or recording ID, a total beside a number that is none, a v2.3 date with
+  no year) also warned of the trailing empty that went with it, and an empty credit warned
+  twice. An empty value past the first of a number or total is reported as one the frame
+  leaves out: it read as a list's trailing empty, and went unreported under `--id3-multi
+  repeat` or `slash`.
+- An MP4 number set to several values, the first holding its total (`3/12`, `4`), stores the
+  first number, as it does of several plain ones. It kept the number the file had.
 
 ### Changed
 
+- Matroska's transfer reason for a number with its total among several values reads `a number
+  with its total among several values ...`; it read `a slashed number ...`.
 - New files take their mode from the umask (0644 under the usual 022, 0600 under 077)
   instead of a fixed 0644. A rewrite keeps the replaced file's owner and group where the
   caller may set them and, on Linux, its `user.*` attributes and POSIX access ACL, or its

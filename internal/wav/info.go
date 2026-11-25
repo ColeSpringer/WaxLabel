@@ -3,10 +3,13 @@ package wav
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/id3"
 	"github.com/colespringer/waxlabel/internal/mapping"
 	"github.com/colespringer/waxlabel/tag"
 )
@@ -103,8 +106,8 @@ func infoTags(items []infoItem) tag.TagSet {
 		// value, not absent, so --set TITLE= round-trips like the other formats.
 		ts.AddNativeItem(key, it.text())
 	}
-	// IPRT/ITRK map to TrackNumber; split a non-standard IPRT="4/9" as ID3/MP4 do so
-	// every read path agrees.
+	// IPRT/ITRK map to TrackNumber; split a non-standard IPRT="4/9" or "4 of 9" as
+	// ID3/MP4 do so every read path agrees.
 	tag.NormalizeNumberPairs(&ts)
 	return ts
 }
@@ -132,7 +135,7 @@ func infoFamilies(auth tag.TagSet, items []infoItem) []core.FamilyValue {
 		if v == "" {
 			continue
 		}
-		// Split a slashed track/disc number as infoTags does, so a raw "4/9" compared
+		// Split a track number holding its total as infoTags does, so a raw "4/9" compared
 		// against TrackNumber=4 is not graded a conflict.
 		if num, total, split := tag.NumberTotalSplit(key, v); split {
 			if num != "" {
@@ -150,21 +153,24 @@ func infoFamilies(auth tag.TagSet, items []infoItem) []core.FamilyValue {
 
 // infoRepresentable reports whether every changed key in ts can be stored in
 // LIST/INFO: each must map to an INFO identifier and carry at most one value. A
-// present-empty value is representable as a size-1 NUL item (see infoValue).
-func infoRepresentable(ts tag.TagSet, changed map[tag.Key]bool) bool {
+// present-empty value is representable as a size-1 NUL item (see infoValue). A track
+// total rides the track number's item; trackItem says the file holds one, which takes a
+// total that has no number. Several values of a track number or total are no reason for
+// an id3 chunk: its TRCK frame holds one of each too ([infoExtraValues] reports the rest).
+func infoRepresentable(ts tag.TagSet, changed map[tag.Key]bool, trackItem bool) bool {
 	for _, k := range ts.Keys() {
 		if !changed[k] {
 			continue
 		}
+		if ts.ValueCount(k) > 1 && !id3.PairFrameKey(k) {
+			return false
+		}
 		if _, ok := mapping.RIFFKeyInfo(k); !ok {
 			if k == tag.TrackTotal {
-				if _, ok := infoTrackPair(ts); ok {
+				if _, ok := infoTrackPair(ts, trackItem); ok {
 					continue
 				}
 			}
-			return false
-		}
-		if vs, _ := ts.Get(k); len(vs) > 1 {
 			return false
 		}
 	}
@@ -244,25 +250,23 @@ func infoConflictKeys(fams []core.FamilyValue, changed map[tag.Key]bool) []tag.K
 
 // infoValue returns the value INFO stores for key: the first value, since INFO is
 // single-valued. ok is false only when the key is absent, so a present-empty value
-// round-trips through INFO like the other formats.
+// round-trips through INFO like the other formats. The track number's item holds the
+// total too, and holds it alone ("/12") where there is no number: only an item the file
+// already has is asked for a number it lacks.
 func infoValue(ts tag.TagSet, key tag.Key) (string, bool) {
-	v, ok := ts.First(key)
-	if !ok {
-		return v, ok
-	}
 	if key == tag.TrackNumber {
-		if joined, ok := infoTrackPair(ts); ok {
+		if joined, ok := infoTrackPair(ts, true); ok {
 			return joined, true
 		}
 	}
-	return v, true
+	return ts.First(key)
 }
 
 // infoTrackPair returns the single IPRT value that stores both TrackNumber and
-// TrackTotal, and whether one exists.
-func infoTrackPair(ts tag.TagSet) (string, bool) {
+// TrackTotal, and whether one exists. lone allows a total with no number, as "/total".
+func infoTrackPair(ts tag.TagSet, lone bool) (string, bool) {
 	num, ok := ts.First(tag.TrackNumber)
-	if !ok {
+	if !ok && !lone {
 		return "", false
 	}
 	total, ok := ts.First(tag.TrackTotal)
@@ -276,6 +280,14 @@ func infoTrackPair(ts tag.TagSet) (string, bool) {
 	return "", false
 }
 
+// hasTrackItem reports whether items holds one for the track number (IPRT, ITRK).
+func hasTrackItem(items []infoItem) bool {
+	return slices.ContainsFunc(items, func(it infoItem) bool {
+		key, ok := mapping.RIFFInfoKey(it.id4())
+		return ok && key == tag.TrackNumber
+	})
+}
+
 // foldInfoTrackPair adds each half of the track number/total pair to a change set that
 // names the other.
 func foldInfoTrackPair(changed map[tag.Key]bool) map[tag.Key]bool {
@@ -287,13 +299,31 @@ func foldInfoTrackPair(changed map[tag.Key]bool) map[tag.Key]bool {
 }
 
 // nativeReducedWarnings notes each changed multi-valued key reduced to its first value
-// in the single-valued LIST/INFO chunk; the ID3 chunk written alongside keeps the full
-// set. An unchanged key keeps its own items verbatim.
-func nativeReducedWarnings(ts tag.TagSet, changed map[tag.Key]bool) []core.Warning {
-	return core.NativeReducedWarnings(ts, "LIST/INFO", func(k tag.Key) bool {
+// in the single-valued LIST/INFO chunk while the ID3 chunk written alongside, which reads
+// back as id3Tags gives, keeps the full set. An unchanged key keeps its own items verbatim.
+func nativeReducedWarnings(ts tag.TagSet, id3Tags func() tag.TagSet, changed map[tag.Key]bool) []core.Warning {
+	return core.NativeReducedWarnings(ts, id3Tags, "LIST/INFO", func(k tag.Key) bool {
 		_, ok := mapping.RIFFKeyInfo(k)
 		return ok && changed[k]
 	})
+}
+
+// infoExtraValues warns of the track numbers and totals past the first that a write to
+// LIST/INFO alone drops: the item holds one of each. Where an id3 chunk is written too, its
+// frame writer reports them. result is what the written file reads back.
+func infoExtraValues(ws []core.Warning, edited tag.TagSet, changed map[tag.Key]bool, result tag.TagSet) []core.Warning {
+	for _, k := range []tag.Key{tag.TrackNumber, tag.TrackTotal} {
+		vals, _ := edited.Get(k)
+		if !changed[k] || len(vals) < 2 {
+			continue
+		}
+		if lost := core.PairValuesLost(k, vals[1:], result); len(lost) > 0 {
+			ws = core.WarnKeyed(ws, core.WarnValueDropped,
+				fmt.Sprintf("%s holds multiple values but LIST/INFO stores only the first; dropped %q",
+					k, tag.ElideSnippet(strings.Join(lost, " | "))), k)
+		}
+	}
+	return ws
 }
 
 // renderInfo serializes INFO items into a LIST chunk body: the "INFO" list type, then

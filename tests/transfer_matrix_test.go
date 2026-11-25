@@ -97,6 +97,8 @@ var transferSources = []transferSource{
 	{name: "a key stored under a name read as another", data: flacSource("MUSICBRAINZ ALBUM ID=abc", "TITLE=T")},
 	{name: "that key beside the one it reads as", data: flacSource("MUSICBRAINZ ALBUM ID=a", "MUSICBRAINZ_ALBUMID=b", "TITLE=T")},
 	{name: "a slashed number among several", data: flacSource("TRACKNUMBER=3/12", "TRACKNUMBER=4", "TITLE=T")},
+	{name: "a worded pair", data: flacSource("TRACKNUMBER=3 of 12", "DISCNUMBER=1 OF 2", "TITLE=T")},
+	{name: "a worded pair among several", data: flacSource("TRACKNUMBER=3 of 12", "TRACKNUMBER=4", "TITLE=T")},
 	{name: "a total beside a number that is none", data: flacSource("TRACKNUMBER=A", "TRACKTOTAL=12", "MOVEMENT=3/12", "DISCTOTAL=2")},
 	{name: "a numeric genre under the numeric option", data: flacSource("GENRE=Rock", "GENRE=Not A Genre"),
 		opts: []wl.WriteOption{wl.WithNumericGenre()}},

@@ -29,6 +29,10 @@ func TestLintAndNoteAgree(t *testing.T) {
 		{"COMPILATION=1", false},
 		{"RATING=abc", false}, // free-form
 		{"TRACKNUMBER=abc", true},
+		{"TRACKNUMBER=3 of 12", false}, // a number and its total, as 3/12 is
+		{"DISCNUMBER=1 OF 2", false},
+		{"TRACKNUMBER=Part 3 of 12", true},
+		{"TRACKTOTAL=3 of 12", true}, // a total takes no pair
 		{"RECORDINGDATE=banana", true},
 		{"RECORDINGDATE=2021-06", false},
 		{"RELEASECOUNTRY=United Kingdom", true},

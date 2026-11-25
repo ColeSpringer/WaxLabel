@@ -37,6 +37,10 @@ func TestNumTotalNonNumericDropsTotal(t *testing.T) {
 		{"embedded total in a non-numeric number preserved verbatim", "A1/12", "", "A1/12", false},
 		{"numeric pair composes", "3", "12", "3/12", false},
 		{"non-numeric total also dropped", "3", "A", "3", true},
+		{"worded pair composes with its own total", "3 of 12", "", "3/12", false},
+		{"canonical total wins over the worded one", "3 of 12", "20", "3/20", false},
+		{"worded pair with no total", "3 of", "", "3", false},
+		{"worded pair with no number", "of 12", "", "/12", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

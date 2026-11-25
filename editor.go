@@ -77,7 +77,7 @@ func (e *Editor) forgetQualifiers(key tag.Key) {
 }
 
 // Set replaces a key's values ([ResolveAlias]). No values -> absent at Prepare.
-// Set(key, "") stores one empty value. Slash "n/total" on track/disc splits at Prepare.
+// Set(key, "") stores one empty value. A track/disc "n/total" or "n of total" splits at Prepare.
 func (e *Editor) Set(key tag.Key, vals ...string) *Editor {
 	e.patch.Set(ResolveAlias(key), vals...)
 	return e
@@ -367,8 +367,8 @@ func (e *Editor) prepare(opts []WriteOption) (*Plan, error) {
 	// Trim numeric values this edit introduces before the number-pair split, so the
 	// stored form matches what validation and parsing use. Carried values are kept.
 	trimTokenValues(&editedTags, e.patch)
-	// Split a slash-combined "n/total" track or disc number this edit introduced into
-	// the pair every format stores. It runs after rejectInvalidValues: that scan
+	// Split a track or disc number this edit introduced that holds its total too
+	// ("n/total", "n of total") into the pair every format stores. It runs after rejectInvalidValues: that scan
 	// covers only patched keys, so splitting first would move a NUL from "3/\x00"
 	// into an unscanned derived TRACKTOTAL. The conflict warnings it returns are
 	// surfaced below, gated on !e.carried.
@@ -819,7 +819,7 @@ func (e *Editor) prepare(opts []WriteOption) (*Plan, error) {
 		// Warn when a patched value is reduced by the destination's field-level write
 		// capability, using the same projected result tags as the legacy conflict check.
 		wp.Report.Warnings = appendValueReducedWarnings(wp.Report.Warnings, caps, patchKeys, editedTags, result)
-		// The track/disc total-vs-slash conflicts computed at the number-pair split.
+		// The conflicts between an explicit total and a number's own, from the number-pair split.
 		wp.Report.Warnings = append(wp.Report.Warnings, numberConflicts...)
 	}
 	return &Plan{doc: e.doc, plan: wp, opts: wo, commentsAuthored: e.commentsSet, lyricsAuthored: e.lyricsSet}, nil
@@ -1316,11 +1316,11 @@ func rebaseR128Gains(ts *tag.TagSet, patch tag.TagPatch, delta int, keep bool) (
 	return warnings, nil
 }
 
-// splitNumberPairs turns an edit-introduced "n/total" on TRACKNUMBER/DISCNUMBER
-// into the number+total pair every format stores. Only touched number keys;
-// explicit total in the same edit wins. Multi-valued numbers are left alone.
-// Returns conflict warnings when the explicit total disagrees with the slash side, or is
-// cleared or set empty beside one.
+// splitNumberPairs turns an edit-introduced "n/total" or "n of total" on
+// TRACKNUMBER/DISCNUMBER ([tag.NumberTotalSplit]) into the number+total pair every
+// format stores. Only touched number keys; explicit total in the same edit wins.
+// Multi-valued numbers are left alone. Returns conflict warnings when the explicit
+// total disagrees with the number's own, or is cleared or set empty beside one.
 func splitNumberPairs(ts *tag.TagSet, patch tag.TagPatch) []core.Warning {
 	var ws []core.Warning
 	for _, numKey := range []tag.Key{tag.TrackNumber, tag.DiscNumber} {
@@ -1334,7 +1334,7 @@ func splitNumberPairs(ts *tag.TagSet, patch tag.TagPatch) []core.Warning {
 		totKey := tag.TotalKey(numKey)
 		touchesTotal := patch.Touches(totKey)
 		// An explicit total in the same edit wins; warn when it numerically disagrees
-		// with the slash-derived one. A leading-zero-only difference ("1/07" +
+		// with the one the number holds. A leading-zero-only difference ("1/07" +
 		// TRACKTOTAL=7) is not a conflict. A malformed number derives no total.
 		_, derived, split := tag.NumberTotalSplit(numKey, vals[0])
 		if touchesTotal && split && derived != "" {
@@ -1355,9 +1355,9 @@ func splitNumberPairs(ts *tag.TagSet, patch tag.TagPatch) []core.Warning {
 			}
 		}
 		// The shared helper ([tag.NormalizeNumberPairs] uses it too) leaves a value with
-		// no slash or a malformed pair ("abc/1", "1/2/3") verbatim; the set-time note
+		// no total or a malformed pair ("abc/1", "1/2/3") verbatim; the set-time note
 		// flags it. The total is written unless the patch touches the total key, so an
-		// explicit Set/Clear wins while a slash total still updates a base-carried one.
+		// explicit Set/Clear wins while the number's own total still updates a base-carried one.
 		tag.SplitNumberValue(ts, numKey, vals[0], !touchesTotal)
 	}
 	return ws

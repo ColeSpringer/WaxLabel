@@ -297,7 +297,6 @@ func storesDisagree(d *doc, tags tag.TagSet, named map[tag.Key]bool) bool {
 	}
 	read, _, _, _ := storeContribs(readItems(d.second.items))
 	held := core.BuildTagSet(read)
-	tag.NormalizeNumberPairs(&held)
 	for _, k := range held.Keys() {
 		was, _ := held.Get(k)
 		if now, _ := tags.Get(k); named[k] && !slices.Equal(was, now) {

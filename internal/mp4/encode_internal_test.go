@@ -95,6 +95,10 @@ func TestRestoreUnstorablePairSlots(t *testing.T) {
 		{"literal zero is left alone (ZeroUnset)", map[tag.Key]string{tag.TrackNumber: "2"}, map[tag.Key]string{tag.TrackNumber: "0"}, false, nil},
 		{"empty edited slot stays cleared", map[tag.Key]string{tag.TrackNumber: "2"}, map[tag.Key]string{tag.TrackNumber: ""}, false, nil},
 		{"storable edit is not restored", map[tag.Key]string{tag.TrackNumber: "2"}, map[tag.Key]string{tag.TrackNumber: "3"}, false, nil},
+		// A number left holding its total (one of several values) is judged by the number.
+		{"slashed pair is storable", map[tag.Key]string{tag.TrackNumber: "2"}, map[tag.Key]string{tag.TrackNumber: "3/12"}, false, nil},
+		{"worded pair is storable", map[tag.Key]string{tag.DiscNumber: "2"}, map[tag.Key]string{tag.DiscNumber: "1 of 2"}, false, nil},
+		{"pair with an unstorable number restores base", map[tag.Key]string{tag.TrackNumber: "2"}, map[tag.Key]string{tag.TrackNumber: "99999/12"}, true, map[tag.Key]string{tag.TrackNumber: "2"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

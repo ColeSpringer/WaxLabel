@@ -169,6 +169,8 @@ func TestTransferSettlesOnARepeat(t *testing.T) {
 		{"a custom key ID3 reads as another", "notags.mp3", testfile.TaggedFLAC("v", "TCMP=1", "TITLE=T")},
 		{"a slashed number among several onto Matroska", "notags.mka", testfile.TaggedFLAC("v", "TRACKNUMBER=3/12", "TRACKNUMBER=4", "TITLE=T")},
 		{"a slashed number among several onto MP3", "notags.mp3", testfile.TaggedFLAC("v", "TRACKNUMBER=3/12", "TRACKNUMBER=4", "TITLE=T")},
+		{"a worded pair among several onto Matroska", "notags.mka", testfile.TaggedFLAC("v", "TRACKNUMBER=3 of 12", "TRACKNUMBER=4", "TITLE=T")},
+		{"a worded pair among several onto MP3", "notags.mp3", testfile.TaggedFLAC("v", "TRACKNUMBER=3 of 12", "TRACKNUMBER=4", "TITLE=T")},
 		{"a key MP4 reads as another beside that key", "notags.m4a", testfile.TaggedFLAC("v", "MUSICBRAINZ ALBUM ID=a", "MUSICBRAINZ_ALBUMID=b")},
 		{"empty numbers onto a tagged MP4", "sample.m4a", testfile.TaggedFLAC("v", "TRACKNUMBER=", "BPM=", "TITLE=T")},
 		{"loosely declared pictures onto MP3", "notags.mp3", loosePictureFLAC()},

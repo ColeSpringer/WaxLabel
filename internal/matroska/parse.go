@@ -1270,8 +1270,9 @@ func unprojectableTagName(name string) bool {
 	return strings.TrimSpace(name) != "" && !mapping.MatroskaTechnicalName(name)
 }
 
-// projectTag maps one SimpleTag of group g to canonical contributions, splitting a "n/total"
-// track or disc number into its two canonical keys. convention is the file's [titleConvention].
+// projectTag maps one SimpleTag of group g to canonical contributions, splitting a track or
+// disc number that holds its total ("n/total", "n of total") into its two canonical keys.
+// convention is the file's [titleConvention].
 func projectTag(st simpleTag, g tagGroup, convention bool) []scopedContribution {
 	key, ok := tagKey(st, g, convention)
 	if !ok {

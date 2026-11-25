@@ -556,3 +556,25 @@ func TestStrictReAddedPictureIsNoChange(t *testing.T) {
 		t.Error("the second run changed the file")
 	}
 }
+
+// TestStrictRefusesAPairEditThatDropsANumber: an ID3 TRCK frame holding two numbers keeps one
+// when an edit of the total re-renders it. The plan warns, and --strict writes nothing.
+func TestStrictRefusesAPairEditThatDropsANumber(t *testing.T) {
+	t.Parallel()
+	audio, err := os.ReadFile(notagsMP3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := append(testfile.ID3v2(4, testfile.TextFrame(4, "TRCK", "3\x004")), audio...)
+	file := writeTempFile(t, "two-numbers.mp3", data)
+	out, errb, code := runCLI(t, "plan", file, "--set", "TRACKTOTAL=12")
+	if code != 0 || !strings.Contains(out, "value-dropped") || !strings.Contains(out, `dropped "4"`) {
+		t.Errorf("plan: exit %d, want 0 and a value-dropped warning naming 4\n%s%s", code, out, errb)
+	}
+	if _, _, code := runCLI(t, "set", file, "--set", "TRACKTOTAL=12", "--strict"); code != 2 {
+		t.Errorf("set --strict: exit %d, want 2", code)
+	}
+	if got, err := os.ReadFile(file); err != nil || !bytes.Equal(got, data) {
+		t.Errorf("--strict changed the file (err %v)", err)
+	}
+}

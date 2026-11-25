@@ -89,19 +89,24 @@ type RebuildInfo struct {
 	// number is written verbatim and the total dropped. An embedded total ("A1/12" alone)
 	// is not a drop. See detectDroppedTotals.
 	DroppedTotals []tag.Key
+	// ExtraPairValues lists, for each number or total key of a TRCK, TPOS or MVIN frame the
+	// edit re-rendered, the values past the first, an empty one included: the frame holds
+	// one number and one total. The caller warns of those the written tag holds in no other
+	// frame. See detectExtraPairValues.
+	ExtraPairValues []ExtraValues
 	// JoinedValues lists changed keys whose several values the slash policy stored joined as
 	// one, which reads back as a single value; the caller warns value-dropped. See
 	// detectJoinedValues.
 	JoinedValues []tag.Key
 	// DroppedTrailingValues lists changed keys whose trailing empty value a NUL-separated
 	// frame cannot store: the frame emits no trailing terminator and the read path strips a
-	// trailing empty. Populated only for v2.4, or v2.3 under ID3MultiNullSep. See
-	// detectDroppedTrailingValues.
+	// trailing empty. Populated only for v2.4, or v2.3 under ID3MultiNullSep, and never for
+	// a key of a number frame, which holds no list. See detectDroppedTrailingValues.
 	DroppedTrailingValues []tag.Key
 	// DroppedEmptyValues lists changed keys set to an all-empty value that no frame was
 	// written for. Plain text frames store a present-empty value; the genre, number-pair,
-	// movement and date frames do not. Read off the rendered frames. See
-	// detectDroppedEmptyValues.
+	// movement and date frames do not. Read off the rendered frames. An involved-people
+	// role is DroppedInvolvedEmpties' to list. See detectDroppedEmptyValues.
 	DroppedEmptyValues []tag.Key
 	// DroppedInvolvedEmpties lists changed involved-people role keys carrying an empty
 	// value. TIPL/IPLS store function/name pairs and drop a nameless pair on write and
@@ -128,6 +133,12 @@ type RebuildInfo struct {
 	// to the ID3 "undefined" marker ("xxx"/"XXX"): it is stored but reads back with no
 	// language. A carried no-language set has an empty language and is not flagged.
 	SyncedLyricsLangUndefined bool
+}
+
+// ExtraValues is the values of a key past its first, which a frame that holds one leaves out.
+type ExtraValues struct {
+	Key    tag.Key
+	Values []string
 }
 
 // ReducedDate pairs a date key with the value an edit attempted to store before a
@@ -395,6 +406,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	info.DroppedDates, info.ReducedDates, info.CoercedDates = detectDateFates(changed, edited, version)
 	info.NumericGenres = detectNumericGenres(changed, edited)
 	info.DroppedTotals = detectDroppedTotals(changed, edited)
+	info.ExtraPairValues = detectExtraPairValues(changed, edited)
 	info.DroppedTrailingValues = detectDroppedTrailingValues(changed, edited, version, opts.Multi, commentTrailingEmpty)
 	info.DroppedEmptyValues = detectDroppedEmptyValues(changed, edited, produced, version, info)
 	info.DroppedInvolvedEmpties = detectDroppedInvolvedEmpties(changed, edited)
@@ -575,14 +587,22 @@ func frameKeys(f Frame) []tag.Key {
 	case "APIC":
 		return nil
 	case "TXXX":
-		desc, _, ok := decodeUserText(f.Body)
+		desc, vals, ok := decodeUserText(f.Body)
 		if !ok {
 			return nil
 		}
-		if k, ok := mapping.ID3TXXXKey(desc); ok {
-			return []tag.Key{k}
+		k, ok := mapping.ID3TXXXKey(desc)
+		if !ok {
+			return nil
 		}
-		return nil
+		// A number that holds its total too reads as both keys.
+		if slices.ContainsFunc(vals, func(v string) bool {
+			_, total, split := tag.NumberTotalSplit(k, v)
+			return split && total != ""
+		}) {
+			return []tag.Key{k, tag.TotalKey(k)}
+		}
+		return []tag.Key{k}
 	case "UFID":
 		owner, _, ok := decodeUFID(f.Body)
 		if !ok || owner != musicBrainzOwner {
@@ -1087,8 +1107,9 @@ func renderNumTotal(version byte, id string, edited tag.TagSet, numKey, totKey t
 // share. It returns the TRCK/TPOS value to write and whether a canonical total was
 // dropped. "n/total" is composed only when the result is a valid numeric value the reader
 // splits back; otherwise the number is written verbatim. An explicit canonical total wins
-// over one embedded in the number ("5/12" plus TRACKTOTAL never composes "5/12/20").
-// SplitNumberTotal keeps exact digit strings, including leading zeros.
+// over one embedded in the number ("5/12" plus TRACKTOTAL never composes "5/12/20"), and a
+// number holding its total in words ("5 of 12") composes with a slash. The split keeps exact
+// digit strings, including leading zeros.
 func composeNumTotal(numKey tag.Key, num, canonicalTotal string) (value string, totalDropped bool) {
 	// A non-empty number that is not a valid numeric value ("1/2/3", "A1/12") cannot be
 	// recomposed without dropping text, so keep it verbatim and report any canonical total
@@ -1097,7 +1118,10 @@ func composeNumTotal(numKey tag.Key, num, canonicalTotal string) (value string, 
 	if strings.TrimSpace(num) != "" && !tag.ValidNumericValue(numKey, num) {
 		return num, canonicalTotal != ""
 	}
-	nPart, embeddedTotal := tag.SplitNumberTotal(num)
+	nPart, embeddedTotal, split := tag.NumberTotalSplit(numKey, num)
+	if !split {
+		nPart = strings.TrimSpace(num) // a plain number, or none
+	}
 	finalTotal := canonicalTotal
 	if finalTotal == "" {
 		finalTotal = embeddedTotal
@@ -1188,6 +1212,37 @@ func detectDroppedTotals(changed map[tag.Key]bool, edited tag.TagSet) []tag.Key 
 	return dropped
 }
 
+// pairFrameKeys are the number and total keys of the frames that hold one of each: TRCK,
+// TPOS and MVIN.
+var pairFrameKeys = [][2]tag.Key{
+	{tag.TrackNumber, tag.TrackTotal}, {tag.DiscNumber, tag.DiscTotal}, {tag.Movement, tag.MovementTotal},
+}
+
+// PairFrameKey reports whether k is the number or the total of a TRCK, TPOS or MVIN frame,
+// which holds one value of it however many it is given.
+func PairFrameKey(k tag.Key) bool {
+	return slices.ContainsFunc(pairFrameKeys, func(p [2]tag.Key) bool { return p[0] == k || p[1] == k })
+}
+
+// detectExtraPairValues finds the values a re-rendered TRCK, TPOS or MVIN frame leaves out. The
+// frame is rendered from the first number and the first total on every version and policy, so
+// any further value of either key, an empty one included, goes when an edit of either
+// re-renders it; an untouched frame keeps what it held.
+func detectExtraPairValues(changed map[tag.Key]bool, edited tag.TagSet) []ExtraValues {
+	var out []ExtraValues
+	for _, pair := range pairFrameKeys {
+		if !changed[pair[0]] && !changed[pair[1]] {
+			continue
+		}
+		for _, k := range pair {
+			if vals, _ := edited.Get(k); len(vals) > 1 {
+				out = append(out, ExtraValues{Key: k, Values: vals[1:]})
+			}
+		}
+	}
+	return out
+}
+
 // detectDroppedTrailingValues finds the changed keys whose value ends in a trailing empty
 // (len > 1, final "") that a NUL-separated frame cannot store: it emits no trailing
 // terminator, and decodeStringsTracked strips exactly that empty on read. Only v2.4 and
@@ -1195,8 +1250,9 @@ func detectDroppedTotals(changed map[tag.Key]bool, edited tag.TagSet) []tag.Key 
 // frame and slash-join collapses the whole value, so neither warns. Involved-people roles
 // are excluded: detectDroppedInvolvedEmpties covers them (WRITER is a TXXX key and stays
 // here). So are COMMENT, whose frames hold the texts of one description and language each
-// (commentTrailingEmpty is [textFrames]' verdict), and LYRICS, one frame per text. Sorted for
-// deterministic warning order.
+// (commentTrailingEmpty is [textFrames]' verdict), LYRICS, one frame per text, and the keys of
+// a number frame, which holds one number and one total and no list (detectExtraPairValues).
+// Sorted for deterministic warning order.
 func detectDroppedTrailingValues(changed map[tag.Key]bool, edited tag.TagSet, version byte, pol core.ID3MultiValuePolicy, commentTrailingEmpty bool) []tag.Key {
 	var dropped []tag.Key
 	if commentTrailingEmpty {
@@ -1209,7 +1265,7 @@ func detectDroppedTrailingValues(changed map[tag.Key]bool, edited tag.TagSet, ve
 		if _, isInvolvedRole := mapping.ID3InvolvedFunction(k); isInvolvedRole {
 			continue // handled by detectDroppedInvolvedEmpties (all positions, all versions/policies)
 		}
-		if k == tag.Comment || k == tag.Lyrics {
+		if k == tag.Comment || k == tag.Lyrics || PairFrameKey(k) {
 			continue
 		}
 		vals, ok := edited.Get(k)
@@ -1246,7 +1302,8 @@ func detectJoinedValues(changed map[tag.Key]bool, edited tag.TagSet, frames []Fr
 
 // detectDroppedEmptyValues finds the changed keys set to an all-empty value for which no
 // frame was written, so the key reads back absent. Keys the date and total detectors
-// already report are skipped so one drop warns once.
+// already report are skipped so one drop warns once, and so is an involved-people role,
+// whose every empty detectDroppedInvolvedEmpties reports.
 func detectDroppedEmptyValues(changed map[tag.Key]bool, edited tag.TagSet, produced map[string]bool, version byte, info RebuildInfo) []tag.Key {
 	reported := make(map[tag.Key]bool, len(info.DroppedDates)+len(info.DroppedTotals))
 	for _, k := range info.DroppedDates {
@@ -1259,6 +1316,9 @@ func detectDroppedEmptyValues(changed map[tag.Key]bool, edited tag.TagSet, produ
 	for k := range changed {
 		vals, ok := edited.Get(k)
 		if !ok || len(vals) == 0 || !allEmpty(vals) || reported[k] {
+			continue
+		}
+		if _, isInvolvedRole := mapping.ID3InvolvedFunction(k); isInvolvedRole {
 			continue
 		}
 		wrote := false
@@ -1588,12 +1648,18 @@ func AppendMalformedTailDropped(ws []core.Warning, srcTag *Tag, written bool) []
 // container, such as WAV's LIST/INFO ICRD. Keyed warnings let --strict name the field
 // and keep the four ID3-backed codecs' wording aligned.
 func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.TagSet) []core.Warning {
+	// One loss warns once. whole collects the keys a warning here reports dropped whole;
+	// the warnings for a part of a value (a value past the first, a trailing empty) skip
+	// them. It is filled as the warnings are, so a drop another container made good
+	// (retained) leaves the part to be reported.
+	whole := map[tag.Key]bool{}
 	for _, k := range info.DroppedDates {
 		if v, _ := retained.First(k); v != "" {
 			continue // retained in another container (e.g. WAV's ICRD); not actually dropped
 		}
 		ws = core.WarnKeyed(ws, core.WarnValueDropped,
 			fmt.Sprintf("%s value cannot be represented in ID3v2.3 (it has no valid 4-digit year) and was dropped", k), k)
+		whole[k] = true
 	}
 	for _, k := range info.DroppedTotals {
 		if v, _ := retained.First(k); v != "" {
@@ -1606,18 +1672,40 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 			msg = fmt.Sprintf("%s cannot join the movement number in a valid \"number/total\" MVIN frame and was dropped", k)
 		}
 		ws = core.WarnKeyed(ws, core.WarnValueDropped, msg, k)
+		whole[k] = true
+	}
+	// An all-empty value no frame took is lost unless another container still stores an
+	// empty one (WAV's LIST/INFO holds one): the file as a whole did not lose it.
+	emptyLost := func(k tag.Key) bool { return retained.ValueCount(k) == 0 }
+	for _, k := range info.DroppedEmptyValues {
+		whole[k] = whole[k] || emptyLost(k)
+	}
+	for _, ev := range info.ExtraPairValues {
+		if whole[ev.Key] {
+			continue
+		}
+		// A value another frame still holds (a TXXX total beside TRCK), or one that repeats
+		// or respells what is kept, is not lost.
+		lost := core.PairValuesLost(ev.Key, ev.Values, retained)
+		if len(lost) == 0 {
+			continue
+		}
+		ws = core.WarnKeyed(ws, core.WarnValueDropped,
+			fmt.Sprintf("%s holds multiple values but its ID3 frame stores only the first; dropped %q",
+				ev.Key, tag.ElideSnippet(strings.Join(lost, " | "))), ev.Key)
 	}
 	// Trailing-empty drops are emitted unconditionally: retained is the already-stripped
 	// re-projection, so a retained guard would suppress every one, and no container keeps
 	// a trailing empty (WAV's LIST/INFO strips it too).
 	for _, k := range info.DroppedTrailingValues {
+		if whole[k] {
+			continue
+		}
 		ws = core.WarnKeyed(ws, core.WarnValueDropped,
 			fmt.Sprintf("%s: a trailing empty value cannot be represented in an ID3 text frame and was dropped", k), k)
 	}
-	// Suppressed when another container still stores the empty value (WAV's LIST/INFO holds
-	// one), since the file as a whole did not lose it.
 	for _, k := range info.DroppedEmptyValues {
-		if v, ok := retained.Get(k); ok && len(v) > 0 {
+		if !emptyLost(k) {
 			continue
 		}
 		ws = core.WarnKeyed(ws, core.WarnValueDropped,

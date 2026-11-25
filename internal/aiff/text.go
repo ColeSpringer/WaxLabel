@@ -186,9 +186,9 @@ func textOut(it textItem) outChunk {
 
 // nativeReducedWarnings notes each multi-valued key reduced to its first value in a
 // single-valued native text chunk (NAME/AUTH/"(c) ") while the full set is kept in the
-// ID3 chunk written alongside it.
-func nativeReducedWarnings(ts tag.TagSet, changed map[tag.Key]bool) []core.Warning {
-	return core.NativeReducedWarnings(ts, "text chunk", func(k tag.Key) bool {
+// ID3 chunk written alongside it, which reads back as id3Tags gives.
+func nativeReducedWarnings(ts tag.TagSet, id3Tags func() tag.TagSet, changed map[tag.Key]bool) []core.Warning {
+	return core.NativeReducedWarnings(ts, id3Tags, "text chunk", func(k tag.Key) bool {
 		_, ok := mapping.AIFFKeyText(k)
 		return ok && k != tag.Comment && changed[k]
 	})

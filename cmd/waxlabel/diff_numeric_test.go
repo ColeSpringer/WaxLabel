@@ -100,3 +100,18 @@ func TestDiffNumericFoldEitherSide(t *testing.T) {
 		}
 	}
 }
+
+// TestDiffWordedPairIsItsNumbers: a number written "3 of 12" and one stored as 3/12 are the
+// same tags, in text formats too.
+func TestDiffWordedPairIsItsNumbers(t *testing.T) {
+	t.Parallel()
+	worded := rawFLAC(t, "TRACKNUMBER=3 of 12")
+	for _, fixture := range []string{notagsMP3, notagsFLAC} {
+		other := buildTransferSource(t, fixture, func(e *wl.Editor) *wl.Editor {
+			return e.Set(tag.TrackNumber, "3").Set(tag.TrackTotal, "12")
+		})
+		if out, errb, code := runCLI(t, "diff", worded, other); code != 0 {
+			t.Errorf("diff against %s: exit %d, want 0\n%s%s", fixture, code, out, errb)
+		}
+	}
+}

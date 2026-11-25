@@ -63,10 +63,10 @@ func TestInfoRepresentableIgnoresUntouchedKeys(t *testing.T) {
 	ts := tag.NewTagSet()
 	ts.Set(tag.Title, "a", "b") // two INAM items, untouched: already in INFO
 	ts.Set(tag.Album, "Z")
-	if !infoRepresentable(ts, map[tag.Key]bool{tag.Album: true}) {
+	if !infoRepresentable(ts, map[tag.Key]bool{tag.Album: true}, false) {
 		t.Error("an untouched multi-value key must not force an id3 chunk")
 	}
-	if infoRepresentable(ts, map[tag.Key]bool{tag.Title: true}) {
+	if infoRepresentable(ts, map[tag.Key]bool{tag.Title: true}, false) {
 		t.Error("a changed multi-value key is not INFO-representable")
 	}
 }

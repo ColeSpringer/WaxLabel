@@ -150,16 +150,7 @@ func decodeMdtaItem(it item) itemResult {
 		}
 		// A track or disc entry holds "n/total" as one text, as ffmpeg writes it: two values
 		// of two keys, like the trkn atom's.
-		if num, total, split := tag.NumberTotalSplit(key, string(a.value)); split {
-			if num != "" {
-				contribs = append(contribs, core.Contribution{Key: key, Value: num, Source: src})
-			}
-			if total != "" {
-				contribs = append(contribs, core.Contribution{Key: tag.TotalKey(key), Value: total, Source: src})
-			}
-			continue
-		}
-		contribs = append(contribs, core.Contribution{Key: key, Value: string(a.value), Source: src})
+		contribs = core.AppendSplit(contribs, core.Contribution{Key: key, Value: string(a.value), Source: src})
 	}
 	return itemResult{contribs: contribs, owned: true}
 }
@@ -362,7 +353,8 @@ func decodeFreeform(it item) itemResult {
 		if !utf8.Valid(a.value) {
 			return itemResult{owned: false}
 		}
-		contribs = append(contribs, core.Contribution{Key: key, Value: string(a.value), Source: src})
+		// A number that holds its total too is two values of two keys, as in a keys store.
+		contribs = core.AppendSplit(contribs, core.Contribution{Key: key, Value: string(a.value), Source: src})
 	}
 	return itemResult{contribs: contribs, owned: true}
 }
@@ -397,19 +389,12 @@ func parseLabelAtom(p []byte, pos int64, want string) (string, int64, bool) {
 	return string(p[pos+12 : pos+size]), pos + size, true
 }
 
-// itemKeys returns the keys an item holds values of: its contributions', and the total's when a
-// number holds a slash pair.
+// itemKeys returns the keys an item holds values of.
 func itemKeys(r itemResult) []tag.Key {
 	var keys []tag.Key
-	add := func(k tag.Key) {
-		if !slices.Contains(keys, k) {
-			keys = append(keys, k)
-		}
-	}
 	for _, c := range r.contribs {
-		add(c.Key)
-		if _, _, split := tag.NumberTotalSplit(c.Key, c.Value); split {
-			add(tag.TotalKey(c.Key))
+		if !slices.Contains(keys, c.Key) {
+			keys = append(keys, c.Key)
 		}
 	}
 	return keys
@@ -540,7 +525,6 @@ func viewStores(d *doc) storesView {
 	v.contribs, v.all, v.pics, v.numericGenre = storeContribs(d.reading())
 	promote := func(from []core.Contribution) (promoted map[tag.Key]bool) {
 		held := core.BuildTagSet(v.contribs)
-		tag.NormalizeNumberPairs(&held) // a number's "n/total" holds the total too
 		promoted = map[tag.Key]bool{}
 		for _, c := range from {
 			if held.Has(c.Key) {
@@ -549,9 +533,6 @@ func viewStores(d *doc) storesView {
 			}
 			v.contribs, v.all = append(v.contribs, c), append(v.all, c)
 			promoted[c.Key] = true
-			if _, _, split := tag.NumberTotalSplit(c.Key, c.Value); split {
-				promoted[tag.TotalKey(c.Key)] = true
-			}
 		}
 		return promoted
 	}
@@ -585,8 +566,6 @@ func unread(all, read []core.Contribution) []core.Contribution {
 func project(d *doc) (tags tag.TagSet, pics []core.Picture, families []core.FamilyValue, numericGenre bool) {
 	v := viewStores(d)
 	tags = core.BuildTagSet(v.contribs)
-	// A text item of a number key, a freeform TRACKNUMBER say, may hold "n/total".
-	tag.NormalizeNumberPairs(&tags)
 	families = core.BuildFamilies(v.all, core.FamilyMP4)
 	for _, c := range v.secondary {
 		families = append(families, core.FamilyValue{

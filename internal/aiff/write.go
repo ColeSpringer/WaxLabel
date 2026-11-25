@@ -10,6 +10,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
+	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -127,7 +128,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// When both native text chunks and ID3 are emitted, any multi-valued key backed by a
 	// single-valued text chunk keeps its full set only in ID3.
 	if emitText && emitID3 {
-		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags, changed)...)
+		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags,
+			func() tag.TagSet { return id3.Project(newID3).Tags }, changed)...)
 	}
 
 	outs, ops, dropped, staleDropped := planChunks(d, tp, newID3, emitText, emitID3, id3Kept, stripText)

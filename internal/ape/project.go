@@ -65,7 +65,7 @@ func Project(t *Tag) Projection {
 	}
 
 	ts := core.BuildTagSet(contribs)
-	// Same slashed track/disc normalization as the text codecs.
+	// Same track/disc pair normalization as the text codecs.
 	tag.NormalizeNumberPairs(&ts)
 	return Projection{
 		Tags:     ts,

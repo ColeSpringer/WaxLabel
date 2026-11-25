@@ -279,3 +279,177 @@ func TestWAVSlashedTrackRejectsNonNumericPair(t *testing.T) {
 		t.Errorf("TRACKNUMBER = %v, want [A1] untouched", v)
 	}
 }
+
+// An IPRT item that holds a total and no number ("/12", "of 12") is the total's place in the
+// file: an edit that names the total keeps it there, and does not drop it where an id3 chunk
+// that never held it stands beside.
+func TestWAVLoneTotalStaysInItsItem(t *testing.T) {
+	wav := func(iprt string, chunks ...[]byte) []byte {
+		all := append([][]byte{testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"IPRT", iprt})}, chunks...)
+		return testfile.WAV(append(all, testfile.WAVData(400))...)
+	}
+	id3Title := wavID3(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "T")))
+	total := func(t *testing.T, data []byte) []string {
+		t.Helper()
+		v, _ := mustParseBytes(t, data).Get(tag.TrackTotal)
+		return v
+	}
+	for _, iprt := range []string{"/12", "of 12"} {
+		for name, data := range map[string][]byte{"INFO alone": wav(iprt), "INFO beside an id3 chunk": wav(iprt, id3Title)} {
+			// The value the file holds, set again.
+			plan, err := mustParseBytes(t, data).Edit().Set(tag.TrackTotal, "12").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := applyToBytes(t, data, plan)
+			if got := total(t, out); !slices.Equal(got, []string{"12"}) {
+				t.Errorf("IPRT=%q, %s: TRACKTOTAL = %v after setting 12 again, want [12]", iprt, name, got)
+			}
+			if again, err := mustParseBytes(t, out).Edit().Set(tag.TrackTotal, "12").Prepare(); err != nil || !again.IsNoOp() {
+				t.Errorf("IPRT=%q, %s: the same set again is not a no-op (err %v)", iprt, name, err)
+			}
+			// Another value.
+			plan, err = mustParseBytes(t, data).Edit().Set(tag.TrackTotal, "20").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = applyToBytes(t, data, plan)
+			if got := total(t, out); !slices.Equal(got, []string{"20"}) {
+				t.Errorf("IPRT=%q, %s: TRACKTOTAL = %v, want [20]", iprt, name, got)
+			}
+			if !bytes.Contains(out, append([]byte("/20"), 0)) {
+				t.Errorf("IPRT=%q, %s: the item does not hold /20", iprt, name)
+			}
+			if name == "INFO alone" && bytes.Contains(out, []byte("id3 ")) {
+				t.Errorf("IPRT=%q: a total that has its item forced an id3 chunk", iprt)
+			}
+			// Cleared.
+			plan, err = mustParseBytes(t, data).Edit().Clear(tag.TrackTotal).Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := total(t, applyToBytes(t, data, plan)); got != nil {
+				t.Errorf("IPRT=%q, %s: TRACKTOTAL = %v after a clear, want none", iprt, name, got)
+			}
+		}
+	}
+}
+
+// A second total has no place in the track item, as a second number has none: the plan says
+// it is dropped.
+func TestWAVSecondTotalIsReportedDropped(t *testing.T) {
+	for _, iprt := range []string{"3/12", "/12", "3 of 12"} {
+		data := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"IPRT", iprt}), testfile.WAVData(400))
+		plan, err := mustParseBytes(t, data).Edit().Set(tag.TrackTotal, "12", "13").Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := mustParseBytes(t, applyToBytes(t, data, plan)).Get(tag.TrackTotal)
+		warned := slices.ContainsFunc(plan.Report().Warnings, func(w wl.Warning) bool {
+			return w.Code == wl.WarnValueDropped && slices.Contains(w.Keys, tag.TrackTotal)
+		})
+		if lost := !slices.Contains(got, "13"); lost != warned {
+			t.Errorf("IPRT=%q: TRACKTOTAL reads %v, value-dropped warned = %v: %v", iprt, got, warned, plan.Report().Warnings)
+		}
+		if !slices.Contains(got, "12") {
+			t.Errorf("IPRT=%q: TRACKTOTAL reads %v, want the first total kept", iprt, got)
+		}
+	}
+}
+
+// A track number or total given several values keeps its first in LIST/INFO and in an ID3 TRCK
+// frame alike, so the rest calls for no id3 chunk: the file keeps its shape, and the plan says
+// once what is dropped.
+func TestWAVSeveralTrackValuesAddNoID3Chunk(t *testing.T) {
+	infoOnly := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"INAM", "T"}, [2]string{"IPRT", "3/12"}), testfile.WAVData(400))
+	for _, tc := range []struct {
+		name string
+		key  tag.Key
+		vals []string
+		num  string
+		tot  string
+	}{
+		{"totals", tag.TrackTotal, []string{"13", "14"}, "3", "13"},
+		{"numbers", tag.TrackNumber, []string{"4", "5"}, "4", "12"},
+	} {
+		plan, err := mustParseBytes(t, infoOnly).Edit().Set(tc.key, tc.vals...).Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, infoOnly, plan)
+		if bytes.Contains(out, []byte("id3 ")) {
+			t.Errorf("%s: an id3 chunk was added, which holds no more than LIST/INFO", tc.name)
+		}
+		re := mustParseBytes(t, out)
+		if n, _ := re.Get(tag.TrackNumber); !slices.Equal(n, []string{tc.num}) {
+			t.Errorf("%s: TRACKNUMBER = %v, want [%s]", tc.name, n, tc.num)
+		}
+		if tot, _ := re.Get(tag.TrackTotal); !slices.Equal(tot, []string{tc.tot}) {
+			t.Errorf("%s: TRACKTOTAL = %v, want [%s]", tc.name, tot, tc.tot)
+		}
+		if n := countKeyed(plan, wl.WarnValueDropped, tc.key); n != 1 {
+			t.Errorf("%s: %d value-dropped warnings for %s, want 1: %v", tc.name, n, tc.key, plan.Report().Warnings)
+		}
+	}
+	// Several artists still call for one: an ID3 frame holds them all.
+	plan, err := mustParseBytes(t, infoOnly).Edit().Set(tag.Artist, "A", "B").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := applyToBytes(t, infoOnly, plan); !bytes.Contains(out, []byte("id3 ")) {
+		t.Error("two artists added no id3 chunk to hold them")
+	}
+}
+
+// native-value-reduced says the id3 chunk keeps the full set, so it is given only where the
+// chunk does: not for a track number or a date, whose frames hold one value.
+func TestWAVNativeReducedOnlyWhereID3KeepsAll(t *testing.T) {
+	title := wavID3(testfile.ID3v2(4, testfile.TextFrame(4, "TIT2", "T")))
+	both := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"INAM", "T"}), title, testfile.WAVData(400))
+	for _, tc := range []struct {
+		key  tag.Key
+		vals []string
+	}{
+		{tag.TrackNumber, []string{"4", "5"}},
+		{tag.RecordingDate, []string{"2001", "2002"}},
+		{tag.Artist, []string{"A", "B"}},
+		{tag.Genre, []string{"Rock", "Pop"}},
+		{tag.Engineer, []string{"A", "B"}},
+	} {
+		plan, err := mustParseBytes(t, both).Edit().Set(tc.key, tc.vals...).Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := mustParseBytes(t, applyToBytes(t, both, plan)).Get(tc.key)
+		kept := slices.Equal(got, tc.vals)
+		if reduced := countKeyed(plan, wl.WarnNativeValueReduced, tc.key) > 0; reduced != kept {
+			t.Errorf("%s set to %v reads %v: native-value-reduced given = %v", tc.key, tc.vals, got, reduced)
+		}
+		if n := countKeyed(plan, wl.WarnValueDropped, tc.key); n > 1 {
+			t.Errorf("%s: %d value-dropped warnings: %v", tc.key, n, plan.Report().Warnings)
+		}
+	}
+	// Nor where a v2.3 chunk joins the values under the slash policy.
+	v23 := testfile.WAV(testfile.WAVFmtPCM(), testfile.WAVInfo([2]string{"INAM", "T"}),
+		wavID3(testfile.ID3v2(3, testfile.TextFrame(3, "TIT2", "T"))), testfile.WAVData(400))
+	plan, err := mustParseBytes(t, v23).Edit().Set(tag.Artist, "A", "B").Prepare(wl.WithID3MultiValue(wl.ID3MultiSlash))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := mustParseBytes(t, applyToBytes(t, v23, plan)).Get(tag.Artist); slices.Equal(got, []string{"A", "B"}) {
+		t.Fatalf("ARTIST reads %v under the slash policy, want the values joined", got)
+	}
+	if countKeyed(plan, wl.WarnNativeValueReduced, tag.Artist) != 0 {
+		t.Errorf("native-value-reduced given for values the id3 chunk joined: %v", plan.Report().Warnings)
+	}
+}
+
+// countKeyed counts the plan's warnings of code that name key.
+func countKeyed(plan *wl.Plan, code wl.WarningCode, key tag.Key) (n int) {
+	for _, w := range plan.Report().Warnings {
+		if w.Code == code && slices.Contains(w.Keys, key) {
+			n++
+		}
+	}
+	return n
+}

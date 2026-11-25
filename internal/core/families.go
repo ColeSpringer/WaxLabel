@@ -14,6 +14,45 @@ type Contribution struct {
 	Source string
 }
 
+// AppendSplit appends c to dst as a read gives it: a track or disc number that holds its total
+// too ([tag.NumberTotalSplit]) as one contribution for each half it holds, anything else whole.
+func AppendSplit(dst []Contribution, c Contribution) []Contribution {
+	num, total, split := tag.NumberTotalSplit(c.Key, c.Value)
+	if !split {
+		return append(dst, c)
+	}
+	if num != "" {
+		dst = append(dst, Contribution{Key: c.Key, Value: num, Source: c.Source})
+	}
+	if total != "" {
+		dst = append(dst, Contribution{Key: tag.TotalKey(c.Key), Value: total, Source: c.Source})
+	}
+	return dst
+}
+
+// PairValuesLost returns the values of extra, the values of number or total key k past the
+// one its slot stores, that held does not account for. A value is accounted for when its
+// number, and its total where it is a number holding one, are each among held's values of
+// those keys as numbers: "03" by "3", and "3/12" by a number 3 and a total 12.
+func PairValuesLost(k tag.Key, extra []string, held tag.TagSet) []string {
+	holds := func(key tag.Key, want string) bool {
+		return held.AnyValue(key, func(got string) bool {
+			return tag.NumericValuesEqual(key, []string{got}, []string{want})
+		})
+	}
+	var lost []string
+	for _, v := range extra {
+		num, total, split := tag.NumberTotalSplit(k, v)
+		switch {
+		case !split && holds(k, v):
+		case split && (num == "" || holds(k, num)) && (total == "" || holds(tag.TotalKey(k), total)):
+		default:
+			lost = append(lost, v)
+		}
+	}
+	return lost
+}
+
 // BuildTagSet assembles the authoritative TagSet from contributions, preserving
 // their order.
 func BuildTagSet(contribs []Contribution) tag.TagSet {
@@ -208,13 +247,19 @@ func UnsubsumedKeys(losing tag.TagSet, holders ...tag.TagSet) []tag.Key {
 }
 
 // LegacyFamilies projects legacy pairs into family entries without promoting to canonical tags.
+// A number holding its total gives an entry for each half ([AppendSplit]), as auth holds them,
+// so a legacy "3/12" agrees with a number 3 and a total 12.
 func LegacyFamilies(auth tag.TagSet, family Family, pairs []Contribution) []FamilyValue {
 	out := make([]FamilyValue, 0, len(pairs))
+	var halves []Contribution
 	for _, p := range pairs {
-		out = append(out, FamilyValue{
-			Key: p.Key, Family: family, Scope: ScopeTrack,
-			Values: []string{p.Value}, Selected: FamilySelected(auth, p.Key, p.Value), Legacy: true,
-		})
+		halves = AppendSplit(halves[:0], p)
+		for _, h := range halves {
+			out = append(out, FamilyValue{
+				Key: h.Key, Family: family, Scope: ScopeTrack,
+				Values: []string{h.Value}, Selected: FamilySelected(auth, h.Key, h.Value), Legacy: true,
+			})
+		}
 	}
 	return out
 }

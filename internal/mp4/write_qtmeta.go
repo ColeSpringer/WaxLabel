@@ -274,7 +274,6 @@ func syncSecond(s *metaStore, edited *core.Media, picturesChanged bool) (secondW
 	rd := readItems(s.items)
 	contribs, _, pics, _ := storeContribs(rd)
 	held := core.BuildTagSet(contribs)
-	tag.NormalizeNumberPairs(&held)
 	want := tag.NewTagSet()
 	for _, k := range held.Keys() {
 		if vals, ok := edited.Tags.Get(k); ok {

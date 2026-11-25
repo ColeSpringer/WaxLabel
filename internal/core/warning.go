@@ -97,8 +97,8 @@ const (
 	WarnSyncedLyricsTimestampClamped
 	// WarnInvalidTagKey: Vorbis name not mappable to canonical key; preserved in file. Read; keyless.
 	WarnInvalidTagKey
-	// WarnNumberTotalConflict: slash number and explicit total disagree, or the total is cleared beside a
-	// slash total. Edit only; Warning.Keys; not --strict.
+	// WarnNumberTotalConflict: the total a number holds ("3/12", "3 of 12") and the explicit total
+	// disagree, or the total is cleared beside it. Edit only; Warning.Keys; not --strict.
 	WarnNumberTotalConflict
 	// WarnValueCoerced: value normalized instead of dropped (vs WarnValueDropped). Plan; Warning.Keys; --strict.
 	WarnValueCoerced
@@ -344,17 +344,27 @@ func WarnNativeReduced(ws []Warning, key tag.Key, n int, container string) []War
 		key)
 }
 
-// NativeReducedWarnings collects WarnNativeValueReduced for keys reduced in a native slot.
-func NativeReducedWarnings(ts tag.TagSet, container string, reduces func(tag.Key) bool) []Warning {
+// NativeReducedWarnings collects WarnNativeValueReduced for keys reduced in a native slot. The
+// warning says the ID3 chunk keeps the full set, so it is given only for a key whose values
+// id3, what that chunk reads back, holds whole: not for one whose frame holds a single value
+// (a track number, a date) or joins them. id3 is asked only when a key holds several values.
+func NativeReducedWarnings(ts tag.TagSet, id3 func() tag.TagSet, container string, reduces func(tag.Key) bool) []Warning {
 	var ws []Warning
+	var held tag.TagSet
+	asked := false
 	for _, k := range ts.Keys() {
-		if !reduces(k) {
+		if !reduces(k) || ts.ValueCount(k) < 2 {
 			continue
 		}
-		if n := ts.ValueCount(k); n > 1 {
-			if v, ok := ts.First(k); ok && v != "" {
-				ws = WarnNativeReduced(ws, k, n, container)
-			}
+		if v, ok := ts.First(k); !ok || v == "" {
+			continue
+		}
+		if !asked {
+			held, asked = id3(), true
+		}
+		want, _ := ts.Get(k)
+		if got, _ := held.Get(k); slices.Equal(got, want) {
+			ws = WarnNativeReduced(ws, k, len(want), container)
 		}
 	}
 	return ws

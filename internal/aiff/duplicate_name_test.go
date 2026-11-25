@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/id3"
 	"github.com/colespringer/waxlabel/internal/testfile"
 	"github.com/colespringer/waxlabel/tag"
 )
@@ -26,12 +27,12 @@ func TestDuplicateNamePreserved(t *testing.T) {
 	}
 	// An edit that changes the key reduces the pair to the single-valued NAME chunk and
 	// keeps it whole in ID3: a reduction to report.
-	if ws := nativeReducedWarnings(m.Tags, map[tag.Key]bool{tag.Title: true}); len(ws) != 1 {
+	if ws := nativeReducedWarnings(m.Tags, id3Holds(m), map[tag.Key]bool{tag.Title: true}); len(ws) != 1 {
 		t.Errorf("a changed duplicate Title should warn native-value-reduced once, got %v", ws)
 	}
 	// An edit that does not name the key re-renders no chunk, so both values survive in the
 	// chunks themselves and there is no reduction to report.
-	if ws := nativeReducedWarnings(m.Tags, nil); len(ws) != 0 {
+	if ws := nativeReducedWarnings(m.Tags, id3Holds(m), nil); len(ws) != 0 {
 		t.Errorf("an untouched multi-value key must not warn native-value-reduced, got %v", ws)
 	}
 }
@@ -49,4 +50,9 @@ func TestDuplicateAnnoStillAccumulates(t *testing.T) {
 	if !ok || len(vals) != 2 {
 		t.Fatalf("Comment = %v (ok=%v), want two accumulated values", vals, ok)
 	}
+}
+
+// id3Holds gives what an ID3v2.4 chunk written from m's tags reads back.
+func id3Holds(m *core.Media) func() tag.TagSet {
+	return func() tag.TagSet { return id3.Project(id3.TransferTag(m, m.Tags, 4, id3.WriteOpts{})).Tags }
 }

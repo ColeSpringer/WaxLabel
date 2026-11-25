@@ -380,3 +380,46 @@ func TestNumberTotalConflictWarningSurfacing(t *testing.T) {
 		}
 	})
 }
+
+// TestSplitNumberPairsOf: an edit-introduced "n of total" splits as "n/total" does, an explicit
+// total still wins and warns, and text that only holds the word is left verbatim.
+func TestSplitNumberPairsOf(t *testing.T) {
+	apply := func(base tag.TagSet, p tag.TagPatch) (tag.TagSet, []Warning) {
+		ts := p.Apply(base)
+		return ts, splitNumberPairs(&ts, p)
+	}
+	get := func(ts tag.TagSet, k tag.Key) []string { v, _ := ts.Get(k); return v }
+
+	for _, c := range []struct {
+		in         string
+		num, total []string
+	}{
+		{"3 of 12", []string{"3"}, []string{"12"}},
+		{"03 OF 09", []string{"03"}, []string{"09"}},
+		{"of 12", nil, []string{"12"}},
+		{"3 of", []string{"3"}, nil},
+		{"Part 3 of 12", []string{"Part 3 of 12"}, nil},
+		{"of", []string{"of"}, nil},
+	} {
+		var p tag.TagPatch
+		p.Set(tag.TrackNumber, c.in)
+		ts, ws := apply(tag.NewTagSet(), p)
+		if n, tot := get(ts, tag.TrackNumber), get(ts, tag.TrackTotal); !slices.Equal(n, c.num) || !slices.Equal(tot, c.total) {
+			t.Errorf("%q: num=%v total=%v, want num=%v total=%v", c.in, n, tot, c.num, c.total)
+		}
+		if len(ws) != 0 {
+			t.Errorf("%q: warnings %v, want none", c.in, ws)
+		}
+	}
+
+	var p tag.TagPatch
+	p.Set(tag.DiscNumber, "1 of 2")
+	p.Set(tag.DiscTotal, "5")
+	ts, ws := apply(tag.NewTagSet(), p)
+	if n, tot := get(ts, tag.DiscNumber), get(ts, tag.DiscTotal); !slices.Equal(n, []string{"1"}) || !slices.Equal(tot, []string{"5"}) {
+		t.Errorf("explicit total: num=%v total=%v, want [1] and [5]", n, tot)
+	}
+	if len(ws) != 1 || ws[0].Code != WarnNumberTotalConflict {
+		t.Errorf("explicit total: warnings %v, want one number-total-conflict", ws)
+	}
+}

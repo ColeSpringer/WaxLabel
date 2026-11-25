@@ -26,19 +26,28 @@ func NumericValuesEqual(k Key, a, b []string) bool {
 		canon = canonicalUnsignedToken
 	}
 	for i := range a {
-		if !numericTokenEqual(a[i], b[i], canon) {
+		if !numericTokenEqual(k, a[i], b[i], canon) {
 			return false
 		}
 	}
 	return true
 }
 
-// numericTokenEqual compares one numeric value, splitting a slashed "n/total" pair (SplitNumberTotal)
-// and comparing each side by its canonical form.
-func numericTokenEqual(a, b string, canon func(string) string) bool {
-	an, at := SplitNumberTotal(a)
-	bn, bt := SplitNumberTotal(b)
+// numericTokenEqual compares one numeric value of key k, splitting a number/total pair and
+// comparing each side by its canonical form.
+func numericTokenEqual(k Key, a, b string, canon func(string) string) bool {
+	an, at := splitNumericToken(k, a)
+	bn, bt := splitNumericToken(k, b)
 	return canon(an) == canon(bn) && canon(at) == canon(bt)
+}
+
+// splitNumericToken splits v as a pair of key k ([NumberTotalSplit]), so a track or disc
+// "3 of 12" equals "3/12". Any other value splits on a '/' alone, under any key.
+func splitNumericToken(k Key, v string) (num, total string) {
+	if n, t, ok := NumberTotalSplit(k, v); ok {
+		return n, t
+	}
+	return SplitNumberTotal(v)
 }
 
 // canonicalBPMToken folds a BPM token to the whole number tmpo stores, but only when storing
